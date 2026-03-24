@@ -4,6 +4,7 @@ WAST is a modern web application security testing tool designed for both AI agen
 
 ## Features
 
+- **Safe by Default**: Testing runs in safe mode by default (passive checks only), preventing accidental active testing
 - **AI-First Design**: All commands support structured output formats (JSON/YAML/SARIF) for seamless AI agent integration
 - **SARIF Output**: Native support for SARIF 2.1.0 format for integration with GitHub Code Scanning, VS Code, and other security tools
 - **Comprehensive Testing**: Full-spectrum web security testing from reconnaissance to vulnerability scanning
@@ -65,9 +66,47 @@ wast recon example.com
 # Crawl a website
 wast crawl https://example.com
 
-# Run a security scan
+# Run a security scan (safe mode - passive checks only)
 wast scan https://example.com
+
+# Run active vulnerability testing (requires explicit permission)
+wast scan https://example.com --active
 ```
+
+### Safe Mode
+
+**WAST runs in safe mode by default** to prevent accidental active vulnerability testing against systems you don't own or have permission to test.
+
+#### Safe Mode (Default)
+In safe mode, only **passive security checks** are performed:
+- HTTP security headers analysis
+- SSL/TLS configuration review
+- Cookie security attributes
+- CORS policy validation
+
+```bash
+# Safe mode is the default - only passive checks
+wast scan https://example.com
+wast scan https://example.com --safe-mode=true
+```
+
+#### Active Testing Mode
+Active testing mode sends **potentially dangerous payloads** to the target and should only be used on systems you own or have explicit permission to test:
+
+```bash
+# Enable active vulnerability testing
+wast scan https://example.com --active
+
+# Or explicitly disable safe mode
+wast scan https://example.com --safe-mode=false
+```
+
+**Active testing includes:**
+- Cross-Site Scripting (XSS) payload injection
+- SQL Injection (SQLi) testing with various payloads
+- Cross-Site Request Forgery (CSRF) token analysis
+
+⚠️ **WARNING**: Active testing sends attack payloads to the target. Only use `--active` on systems you own or have written permission to test. Unauthorized testing may be illegal and could trigger security alerts.
 
 ### Output Formats
 

@@ -2013,6 +2013,235 @@ func TestAPIDiscoveryWithAllSettings(t *testing.T) {
 	}
 }
 
+// TestScanSafeMode tests scan command with safe mode enabled (default)
+func TestScanSafeMode(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	cmd.SetArgs([]string{"http://localhost"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Verify safe mode message
+	if !strings.Contains(result.Message, "passive checks only") {
+		t.Errorf("Expected message to indicate passive checks only, got: %s", result.Message)
+	}
+
+	// Verify PassiveOnly flag in result data
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || !passiveOnly {
+		t.Error("Expected passive_only to be true in safe mode")
+	}
+
+	// Verify active scanners (XSS, SQLi, CSRF) are not present
+	if _, hasXSS := data["xss"]; hasXSS {
+		t.Error("Expected XSS results to be absent in safe mode")
+	}
+	if _, hasSQLi := data["sqli"]; hasSQLi {
+		t.Error("Expected SQLi results to be absent in safe mode")
+	}
+	if _, hasCSRF := data["csrf"]; hasCSRF {
+		t.Error("Expected CSRF results to be absent in safe mode")
+	}
+
+	// Verify headers are still present (passive scan)
+	if _, hasHeaders := data["headers"]; !hasHeaders {
+		t.Error("Expected headers to be present in safe mode")
+	}
+}
+
+// TestScanActiveFlagEnabled tests scan command with --active flag
+func TestScanActiveFlagEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	cmd.SetArgs([]string{"http://localhost", "--active"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Verify active testing message
+	if !strings.Contains(result.Message, "active testing enabled") {
+		t.Errorf("Expected message to indicate active testing, got: %s", result.Message)
+	}
+
+	// Verify PassiveOnly flag is false
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || passiveOnly {
+		t.Error("Expected passive_only to be false with --active flag")
+	}
+
+	// Verify active scanners (XSS, SQLi, CSRF) are present
+	if _, hasXSS := data["xss"]; !hasXSS {
+		t.Error("Expected XSS results to be present with --active flag")
+	}
+	if _, hasSQLi := data["sqli"]; !hasSQLi {
+		t.Error("Expected SQLi results to be present with --active flag")
+	}
+	if _, hasCSRF := data["csrf"]; !hasCSRF {
+		t.Error("Expected CSRF results to be present with --active flag")
+	}
+}
+
+// TestScanSafeModeExplicitFalse tests scan command with --safe-mode=false
+func TestScanSafeModeExplicitFalse(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	cmd.SetArgs([]string{"http://localhost", "--safe-mode=false"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Verify active testing message
+	if !strings.Contains(result.Message, "active testing enabled") {
+		t.Errorf("Expected message to indicate active testing, got: %s", result.Message)
+	}
+
+	// Verify PassiveOnly flag is false
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || passiveOnly {
+		t.Error("Expected passive_only to be false with --safe-mode=false")
+	}
+}
+
+// TestScanSafeModeExplicitTrue tests scan command with --safe-mode=true
+func TestScanSafeModeExplicitTrue(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	cmd.SetArgs([]string{"http://localhost", "--safe-mode=true"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Verify safe mode message
+	if !strings.Contains(result.Message, "passive checks only") {
+		t.Errorf("Expected message to indicate passive checks only, got: %s", result.Message)
+	}
+
+	// Verify PassiveOnly flag is true
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || !passiveOnly {
+		t.Error("Expected passive_only to be true with --safe-mode=true")
+	}
+}
+
+// TestScanActiveOverridesSafeMode tests that --active takes precedence over --safe-mode
+func TestScanActiveOverridesSafeMode(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	// Both flags provided, --active should win
+	cmd.SetArgs([]string{"http://localhost", "--safe-mode=true", "--active"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	// Verify active testing is enabled (--active overrides --safe-mode)
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || passiveOnly {
+		t.Error("Expected passive_only to be false when --active flag is used")
+	}
+}
+
+// TestScanCommandFlags tests that safe mode flags are properly registered
+func TestScanCommandFlags(t *testing.T) {
+	cmd := NewScanCmd(testFormatter(&bytes.Buffer{}), testAuthConfig, testRateLimitConfig)
+
+	// Check safe-mode flag
+	safeModeFlag := cmd.Flag("safe-mode")
+	if safeModeFlag == nil {
+		t.Error("Expected 'safe-mode' flag to be registered")
+	} else {
+		if safeModeFlag.DefValue != "true" {
+			t.Errorf("Expected default safe-mode to be true, got %s", safeModeFlag.DefValue)
+		}
+	}
+
+	// Check active flag
+	activeFlag := cmd.Flag("active")
+	if activeFlag == nil {
+		t.Error("Expected 'active' flag to be registered")
+	} else {
+		if activeFlag.DefValue != "false" {
+			t.Errorf("Expected default active to be false, got %s", activeFlag.DefValue)
+		}
+	}
+}
+
 // TestAPISpecWithAllOptions tests spec file with all options combined
 func TestAPISpecWithAllOptions(t *testing.T) {
 	specContent := `{
