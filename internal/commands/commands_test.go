@@ -64,7 +64,7 @@ func TestReconCmd(t *testing.T) {
 	}
 
 	// Test command execution
-	cmd.SetArgs([]string{"example.com"})
+	cmd.SetArgs([]string{"localhost"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -91,7 +91,7 @@ func TestCrawlCmd(t *testing.T) {
 		t.Errorf("Expected Use 'crawl [target]', got %s", cmd.Use)
 	}
 
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -154,7 +154,7 @@ func TestScanCmd(t *testing.T) {
 		t.Errorf("Expected Use 'scan [target]', got %s", cmd.Use)
 	}
 
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -204,7 +204,7 @@ func TestReconResultData(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewReconCmd(testFormatter(&buf), testAuthConfig)
 
-	cmd.SetArgs([]string{"example.com"})
+	cmd.SetArgs([]string{"localhost"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -221,7 +221,7 @@ func TestReconResultData(t *testing.T) {
 		t.Fatalf("Expected data to be a map, got %T", result.Data)
 	}
 
-	if target, ok := data["target"].(string); !ok || target != "example.com" {
+	if target, ok := data["target"].(string); !ok || target != "localhost" {
 		t.Errorf("Expected target 'example.com', got %v", data["target"])
 	}
 
@@ -229,7 +229,7 @@ func TestReconResultData(t *testing.T) {
 	if dns, ok := data["dns"].(map[string]interface{}); !ok {
 		t.Errorf("Expected dns data to be present")
 	} else {
-		if domain, ok := dns["domain"].(string); !ok || domain != "example.com" {
+		if domain, ok := dns["domain"].(string); !ok || domain != "localhost" {
 			t.Errorf("Expected dns domain 'example.com', got %v", dns["domain"])
 		}
 	}
@@ -325,8 +325,8 @@ func TestReconWithFlags(t *testing.T) {
 	}{
 		{
 			name:   "WithTimeout",
-			args:   []string{"example.com", "--timeout", "5s"},
-			target: "example.com",
+			args:   []string{"localhost", "--timeout", "5s"},
+			target: "localhost",
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -335,8 +335,8 @@ func TestReconWithFlags(t *testing.T) {
 		},
 		{
 			name:   "WithSubdomains",
-			args:   []string{"example.com", "--subdomains"},
-			target: "example.com",
+			args:   []string{"localhost", "--subdomains"},
+			target: "localhost",
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -345,8 +345,8 @@ func TestReconWithFlags(t *testing.T) {
 		},
 		{
 			name:   "WithTimeoutAndSubdomains",
-			args:   []string{"example.com", "--timeout", "5s", "--subdomains"},
-			target: "example.com",
+			args:   []string{"localhost", "--timeout", "5s", "--subdomains"},
+			target: "localhost",
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -389,7 +389,7 @@ func TestCrawlWithFlags(t *testing.T) {
 	}{
 		{
 			name: "WithDepth",
-			args: []string{"https://example.com", "--depth", "5"},
+			args: []string{"http://localhost", "--depth", "5"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -398,7 +398,7 @@ func TestCrawlWithFlags(t *testing.T) {
 		},
 		{
 			name: "WithTimeout",
-			args: []string{"https://example.com", "--timeout", "60s"},
+			args: []string{"http://localhost", "--timeout", "60s"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -407,7 +407,7 @@ func TestCrawlWithFlags(t *testing.T) {
 		},
 		{
 			name: "WithUserAgent",
-			args: []string{"https://example.com", "--user-agent", "CustomBot/1.0"},
+			args: []string{"http://localhost", "--user-agent", "CustomBot/1.0"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -416,7 +416,7 @@ func TestCrawlWithFlags(t *testing.T) {
 		},
 		{
 			name: "WithNoRobots",
-			args: []string{"https://example.com", "--no-robots"},
+			args: []string{"http://localhost", "--no-robots"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -425,7 +425,7 @@ func TestCrawlWithFlags(t *testing.T) {
 		},
 		{
 			name: "WithAllFlags",
-			args: []string{"https://example.com", "--depth", "5", "--timeout", "60s", "--user-agent", "CustomBot/1.0", "--no-robots"},
+			args: []string{"http://localhost", "--depth", "5", "--timeout", "60s", "--user-agent", "CustomBot/1.0", "--no-robots"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -468,7 +468,7 @@ func TestScanWithFlags(t *testing.T) {
 	}{
 		{
 			name: "WithTimeout",
-			args: []string{"https://example.com", "--timeout", "60"},
+			args: []string{"http://localhost", "--timeout", "60"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -477,7 +477,7 @@ func TestScanWithFlags(t *testing.T) {
 		},
 		{
 			name: "WithShortTimeout",
-			args: []string{"https://example.com", "--timeout", "5"},
+			args: []string{"http://localhost", "--timeout", "5"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -562,7 +562,7 @@ func TestCrawlWithAuth(t *testing.T) {
 	}
 
 	cmd := NewCrawlCmd(testFormatter(&buf), authFunc, testRateLimitConfig)
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -590,7 +590,7 @@ func TestScanWithAuth(t *testing.T) {
 	}
 
 	cmd := NewScanCmd(testFormatter(&buf), authFunc, testRateLimitConfig)
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -646,7 +646,7 @@ func TestCrawlWithRateLimit(t *testing.T) {
 	}
 
 	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, rateLimitFunc)
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -674,7 +674,7 @@ func TestScanWithRateLimit(t *testing.T) {
 	}
 
 	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, rateLimitFunc)
-	cmd.SetArgs([]string{"https://example.com"})
+	cmd.SetArgs([]string{"http://localhost"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -873,7 +873,7 @@ func TestCombinedAuthAndRateLimit(t *testing.T) {
 			cmdFunc: func() *cobra.Command {
 				var buf bytes.Buffer
 				cmd := NewCrawlCmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://example.com"})
+				cmd.SetArgs([]string{"http://localhost"})
 				return cmd
 			},
 		},
@@ -882,7 +882,7 @@ func TestCombinedAuthAndRateLimit(t *testing.T) {
 			cmdFunc: func() *cobra.Command {
 				var buf bytes.Buffer
 				cmd := NewScanCmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://example.com"})
+				cmd.SetArgs([]string{"http://localhost"})
 				return cmd
 			},
 		},
@@ -914,7 +914,7 @@ func TestReconWithDifferentTargets(t *testing.T) {
 		name   string
 		target string
 	}{
-		{"SimpleDomain", "example.com"},
+		{"SimpleDomain", "localhost"},
 		{"Subdomain", "www.example.com"},
 		{"WithHyphen", "test-site.example.com"},
 	}
@@ -949,7 +949,7 @@ func TestScanWithDifferentTargets(t *testing.T) {
 		target string
 	}{
 		{"HTTP", "http://example.com"},
-		{"HTTPS", "https://example.com"},
+		{"HTTPS", "http://localhost"},
 	}
 
 	for _, tt := range tests {
@@ -983,7 +983,7 @@ func TestCrawlContextHandling(t *testing.T) {
 	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	// Use a very short timeout to ensure it completes quickly
-	cmd.SetArgs([]string{"https://example.com", "--timeout", "1s", "--depth", "1"})
+	cmd.SetArgs([]string{"http://localhost", "--timeout", "1s", "--depth", "1"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1006,7 +1006,7 @@ func TestScanContextHandling(t *testing.T) {
 	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	// Use a short timeout
-	cmd.SetArgs([]string{"https://example.com", "--timeout", "5"})
+	cmd.SetArgs([]string{"http://localhost", "--timeout", "5"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1181,7 +1181,7 @@ func TestReconWithAuthConfig(t *testing.T) {
 	}
 
 	cmd := NewReconCmd(testFormatter(&buf), authFunc)
-	cmd.SetArgs([]string{"example.com"})
+	cmd.SetArgs([]string{"localhost"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1215,11 +1215,11 @@ func TestInterceptWithAuthConfig(t *testing.T) {
 // TestCompleteScanResultStructure tests the CompleteScanResult structure
 func TestCompleteScanResultStructure(t *testing.T) {
 	result := CompleteScanResult{
-		Target: "https://example.com",
+		Target: "http://localhost",
 		Errors: []string{"error1", "error2"},
 	}
 
-	if result.Target != "https://example.com" {
+	if result.Target != "http://localhost" {
 		t.Errorf("Expected target 'https://example.com', got %s", result.Target)
 	}
 
@@ -1231,13 +1231,13 @@ func TestCompleteScanResultStructure(t *testing.T) {
 // TestScanResultStructure tests the ScanResult structure
 func TestScanResultStructure(t *testing.T) {
 	result := ScanResult{
-		Target:       "https://example.com",
+		Target:       "http://localhost",
 		ScanTypes:    []string{"xss", "sqli"},
 		Capabilities: []string{"detection", "analysis"},
 		Status:       "ready",
 	}
 
-	if result.Target != "https://example.com" {
+	if result.Target != "http://localhost" {
 		t.Errorf("Expected target 'https://example.com', got %s", result.Target)
 	}
 
@@ -1266,12 +1266,12 @@ func TestAPIResultStructure(t *testing.T) {
 // TestReconResultStructure tests the ReconResult structure
 func TestReconResultStructure(t *testing.T) {
 	result := ReconResult{
-		Target:  "example.com",
+		Target:  "localhost",
 		Methods: []string{"dns", "tls"},
 		Status:  "ready",
 	}
 
-	if result.Target != "example.com" {
+	if result.Target != "localhost" {
 		t.Errorf("Expected target 'example.com', got %s", result.Target)
 	}
 
@@ -1284,7 +1284,7 @@ func TestReconResultStructure(t *testing.T) {
 func TestCrawlWithZeroDepth(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
-	cmd.SetArgs([]string{"https://example.com", "--depth", "0", "--timeout", "1s"})
+	cmd.SetArgs([]string{"http://localhost", "--depth", "0", "--timeout", "1s"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1324,15 +1324,15 @@ func TestCrawlWithMultipleFlags(t *testing.T) {
 	}{
 		{
 			name: "DepthAndUserAgent",
-			args: []string{"https://example.com", "--depth", "2", "--user-agent", "TestBot/1.0", "--timeout", "5s"},
+			args: []string{"http://localhost", "--depth", "2", "--user-agent", "TestBot/1.0", "--timeout", "5s"},
 		},
 		{
 			name: "NoRobotsAndTimeout",
-			args: []string{"https://example.com", "--no-robots", "--timeout", "3s"},
+			args: []string{"http://localhost", "--no-robots", "--timeout", "3s"},
 		},
 		{
 			name: "AllFlagsCombined",
-			args: []string{"https://example.com", "--depth", "1", "--timeout", "5s", "--user-agent", "Bot", "--no-robots"},
+			args: []string{"http://localhost", "--depth", "1", "--timeout", "5s", "--user-agent", "Bot", "--no-robots"},
 		},
 	}
 
@@ -1367,15 +1367,15 @@ func TestReconMultipleFlagCombinations(t *testing.T) {
 	}{
 		{
 			name: "ShortTimeout",
-			args: []string{"example.com", "--timeout", "2s"},
+			args: []string{"localhost", "--timeout", "2s"},
 		},
 		{
 			name: "LongTimeout",
-			args: []string{"example.com", "--timeout", "15s"},
+			args: []string{"localhost", "--timeout", "15s"},
 		},
 		{
 			name: "SubdomainsWithLongTimeout",
-			args: []string{"example.com", "--subdomains", "--timeout", "8s"},
+			args: []string{"localhost", "--subdomains", "--timeout", "8s"},
 		},
 	}
 
@@ -1474,7 +1474,7 @@ func TestScanMultipleTimeouts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
-			cmd.SetArgs([]string{"https://example.com", "--timeout", tt.timeout})
+			cmd.SetArgs([]string{"http://localhost", "--timeout", tt.timeout})
 
 			err := cmd.Execute()
 			if err != nil {
@@ -1511,7 +1511,7 @@ func TestCombinedAuthRateLimitAndFlags(t *testing.T) {
 			cmdFunc: func() error {
 				var buf bytes.Buffer
 				cmd := NewCrawlCmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://example.com", "--depth", "2", "--timeout", "5s", "--no-robots"})
+				cmd.SetArgs([]string{"http://localhost", "--depth", "2", "--timeout", "5s", "--no-robots"})
 				return cmd.Execute()
 			},
 		},
@@ -1520,7 +1520,7 @@ func TestCombinedAuthRateLimitAndFlags(t *testing.T) {
 			cmdFunc: func() error {
 				var buf bytes.Buffer
 				cmd := NewScanCmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://example.com", "--timeout", "10"})
+				cmd.SetArgs([]string{"http://localhost", "--timeout", "10"})
 				return cmd.Execute()
 			},
 		},
@@ -1549,7 +1549,7 @@ func TestCombinedAuthRateLimitAndFlags(t *testing.T) {
 func TestReconWithSubdomainsOnly(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewReconCmd(testFormatter(&buf), testAuthConfig)
-	cmd.SetArgs([]string{"example.com", "--subdomains"})
+	cmd.SetArgs([]string{"localhost", "--subdomains"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1570,7 +1570,7 @@ func TestReconWithSubdomainsOnly(t *testing.T) {
 func TestCrawlMinimalSettings(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
-	cmd.SetArgs([]string{"https://example.com", "--timeout", "2s"})
+	cmd.SetArgs([]string{"http://localhost", "--timeout", "2s"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1722,7 +1722,7 @@ func TestCrawlWithCustomUserAgents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
-			cmd.SetArgs([]string{"https://example.com", "--user-agent", tt.userAgent, "--timeout", "3s"})
+			cmd.SetArgs([]string{"http://localhost", "--user-agent", tt.userAgent, "--timeout", "3s"})
 
 			err := cmd.Execute()
 			if err != nil {
