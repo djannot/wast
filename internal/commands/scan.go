@@ -25,6 +25,7 @@ type CompleteScanResult struct {
 	Headers *scanner.HeaderScanResult `json:"headers,omitempty" yaml:"headers,omitempty"`
 	XSS     *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
 	SQLi    *scanner.SQLiScanResult   `json:"sqli,omitempty" yaml:"sqli,omitempty"`
+	CSRF    *scanner.CSRFScanResult   `json:"csrf,omitempty" yaml:"csrf,omitempty"`
 	Errors  []string                  `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
@@ -88,6 +89,7 @@ Examples:
 						"cors_policy",
 						"xss_detection",
 						"sqli_detection",
+						"csrf_detection",
 					},
 					Capabilities: []string{
 						"http_security_headers",
@@ -98,6 +100,9 @@ Examples:
 						"sqli_vulnerability_detection",
 						"error_based_sqli_testing",
 						"boolean_based_sqli_testing",
+						"csrf_token_detection",
+						"csrf_samesite_validation",
+						"csrf_form_analysis",
 						"severity_rating",
 						"remediation_guidance",
 					},
@@ -117,12 +122,16 @@ Examples:
 			sqliOpts := []scanner.SQLiOption{
 				scanner.WithSQLiTimeout(time.Duration(timeout) * time.Second),
 			}
+			csrfOpts := []scanner.CSRFOption{
+				scanner.WithCSRFTimeout(time.Duration(timeout) * time.Second),
+			}
 
 			// Add authentication if configured
 			if !authConfig.IsEmpty() {
 				headerOpts = append(headerOpts, scanner.WithAuth(authConfig))
 				xssOpts = append(xssOpts, scanner.WithXSSAuth(authConfig))
 				sqliOpts = append(sqliOpts, scanner.WithSQLiAuth(authConfig))
+				csrfOpts = append(csrfOpts, scanner.WithCSRFAuth(authConfig))
 			}
 
 			// Add rate limiting if configured
@@ -130,18 +139,21 @@ Examples:
 				headerOpts = append(headerOpts, scanner.WithRateLimitConfig(rateLimitConfig))
 				xssOpts = append(xssOpts, scanner.WithXSSRateLimitConfig(rateLimitConfig))
 				sqliOpts = append(sqliOpts, scanner.WithSQLiRateLimitConfig(rateLimitConfig))
+				csrfOpts = append(csrfOpts, scanner.WithCSRFRateLimitConfig(rateLimitConfig))
 			}
 
 			// Create scanners
 			headerScanner := scanner.NewHTTPHeadersScanner(headerOpts...)
 			xssScanner := scanner.NewXSSScanner(xssOpts...)
 			sqliScanner := scanner.NewSQLiScanner(sqliOpts...)
+			csrfScanner := scanner.NewCSRFScanner(csrfOpts...)
 
 			// Perform the scans
 			ctx := context.Background()
 			headerResult := headerScanner.Scan(ctx, target)
 			xssResult := xssScanner.Scan(ctx, target)
 			sqliResult := sqliScanner.Scan(ctx, target)
+			csrfResult := csrfScanner.Scan(ctx, target)
 
 			// Combine results
 			combinedResult := CompleteScanResult{
@@ -149,6 +161,7 @@ Examples:
 				Headers: headerResult,
 				XSS:     xssResult,
 				SQLi:    sqliResult,
+				CSRF:    csrfResult,
 				Errors:  make([]string, 0),
 			}
 
@@ -162,9 +175,12 @@ Examples:
 			if len(sqliResult.Errors) > 0 {
 				combinedResult.Errors = append(combinedResult.Errors, sqliResult.Errors...)
 			}
+			if len(csrfResult.Errors) > 0 {
+				combinedResult.Errors = append(combinedResult.Errors, csrfResult.Errors...)
+			}
 
 			// Output result based on whether it succeeded
-			hasResults := headerResult.HasResults() || xssResult.HasResults() || sqliResult.HasResults()
+			hasResults := headerResult.HasResults() || xssResult.HasResults() || sqliResult.HasResults() || csrfResult.HasResults()
 			if len(combinedResult.Errors) > 0 && !hasResults {
 				formatter.Failure("scan", "Security scan failed", combinedResult)
 			} else {
