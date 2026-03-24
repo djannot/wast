@@ -21,11 +21,13 @@ const (
 	FormatYAML Format = "yaml"
 	// FormatText outputs data as human-readable text.
 	FormatText Format = "text"
+	// FormatSARIF outputs data as SARIF 2.1.0 (Static Analysis Results Interchange Format).
+	FormatSARIF Format = "sarif"
 )
 
 // ValidFormats returns all valid output format strings.
 func ValidFormats() []string {
-	return []string{string(FormatJSON), string(FormatYAML), string(FormatText)}
+	return []string{string(FormatJSON), string(FormatYAML), string(FormatText), string(FormatSARIF)}
 }
 
 // IsValidFormat checks if the given format string is valid.
@@ -91,6 +93,8 @@ func (f *Formatter) Output(data interface{}) error {
 		return f.outputJSON(data)
 	case FormatYAML:
 		return f.outputYAML(data)
+	case FormatSARIF:
+		return f.outputSARIF(data)
 	default:
 		return f.outputText(data)
 	}

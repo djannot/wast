@@ -4,7 +4,8 @@ WAST is a modern web application security testing tool designed for both AI agen
 
 ## Features
 
-- **AI-First Design**: All commands support structured output formats (JSON/YAML) for seamless AI agent integration
+- **AI-First Design**: All commands support structured output formats (JSON/YAML/SARIF) for seamless AI agent integration
+- **SARIF Output**: Native support for SARIF 2.1.0 format for integration with GitHub Code Scanning, VS Code, and other security tools
 - **Comprehensive Testing**: Full-spectrum web security testing from reconnaissance to vulnerability scanning
 - **Cross-Platform**: Single binary distribution for Linux, macOS, and Windows
 - **Modular Architecture**: Command-based structure for targeted testing
@@ -81,7 +82,53 @@ wast scan https://example.com --output json
 
 # YAML output
 wast scan https://example.com --output yaml
+
+# SARIF 2.1.0 output (for security tool integration)
+wast scan https://example.com --output sarif
 ```
+
+#### SARIF Output Format
+
+SARIF (Static Analysis Results Interchange Format) is the industry-standard format for security tool output. WAST implements SARIF 2.1.0 with full support for:
+
+- **GitHub Code Scanning**: Upload results directly to GitHub Advanced Security
+- **IDE Integration**: View findings in VS Code SARIF Viewer and other IDEs
+- **CI/CD Pipelines**: Standard format supported by most security pipelines
+- **Cross-Tool Interoperability**: Compatible with any SARIF-consuming tool
+
+**SARIF Output Features:**
+- Complete rule definitions with CWE references
+- Severity mapping (high→error, medium→warning, low→note)
+- Location information with URIs
+- Markdown-formatted remediation guidance
+- Full compliance with SARIF 2.1.0 specification
+
+**Example Usage:**
+
+```bash
+# Save scan results to file
+wast scan https://example.com --output sarif > results.sarif
+
+# Direct upload to GitHub Code Scanning (requires gh CLI)
+wast scan https://example.com --output sarif | gh code-scanning upload
+
+# View in VS Code with SARIF Viewer extension
+wast scan https://example.com --output sarif > scan.sarif && code scan.sarif
+```
+
+**Rule IDs and CWE Mappings:**
+
+| Vulnerability Type | Rule ID | CWE Reference |
+|-------------------|---------|---------------|
+| Cross-Site Scripting (XSS) | WAST-XSS-001 | CWE-79 |
+| SQL Injection | WAST-SQLI-001 | CWE-89 |
+| Cross-Site Request Forgery (CSRF) | WAST-CSRF-001 | CWE-352 |
+| Missing HSTS Header | WAST-HDR-001 | CWE-693 |
+| Missing CSP Header | WAST-HDR-002 | CWE-693 |
+| Missing X-Frame-Options | WAST-HDR-003 | CWE-693 |
+| Missing X-Content-Type-Options | WAST-HDR-004 | CWE-693 |
+| Insecure Cookie | WAST-COOKIE-001 | CWE-614 |
+| Insecure CORS Policy | WAST-CORS-001 | CWE-942 |
 
 ### Verbosity Control
 
@@ -170,10 +217,11 @@ make deps
 
 WAST is designed with first-class support for AI agent integration. Key features:
 
-1. **Structured Output**: All commands support `--output json` and `--output yaml` for machine-readable output
-2. **Consistent Schema**: Output follows a consistent structure across all commands
-3. **Exit Codes**: Meaningful exit codes for success/failure detection
-4. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
+1. **Structured Output**: All commands support `--output json`, `--output yaml`, and `--output sarif` for machine-readable output
+2. **SARIF Compliance**: Full SARIF 2.1.0 support for seamless integration with security tools and platforms
+3. **Consistent Schema**: Output follows a consistent structure across all commands
+4. **Exit Codes**: Meaningful exit codes for success/failure detection
+5. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
 
 ### Example AI Agent Usage
 
