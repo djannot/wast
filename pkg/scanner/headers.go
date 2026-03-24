@@ -55,6 +55,7 @@ type HeaderScanResult struct {
 	Target  string          `json:"target" yaml:"target"`
 	Headers []HeaderFinding `json:"headers" yaml:"headers"`
 	Cookies []CookieFinding `json:"cookies" yaml:"cookies"`
+	CORS    []CORSFinding   `json:"cors" yaml:"cors"`
 	Summary ScanSummary     `json:"summary" yaml:"summary"`
 	Errors  []string        `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
@@ -80,12 +81,25 @@ type CookieFinding struct {
 	Remediation string   `json:"remediation,omitempty" yaml:"remediation,omitempty"`
 }
 
+// CORSFinding represents a finding related to CORS policy configuration.
+type CORSFinding struct {
+	Header           string   `json:"header" yaml:"header"`
+	Value            string   `json:"value,omitempty" yaml:"value,omitempty"`
+	Present          bool     `json:"present" yaml:"present"`
+	Issues           []string `json:"issues,omitempty" yaml:"issues,omitempty"`
+	Severity         string   `json:"severity" yaml:"severity"`
+	Description      string   `json:"description" yaml:"description"`
+	Remediation      string   `json:"remediation,omitempty" yaml:"remediation,omitempty"`
+	OriginReflection bool     `json:"origin_reflection,omitempty" yaml:"origin_reflection,omitempty"`
+}
+
 // ScanSummary provides an overview of the scan results.
 type ScanSummary struct {
 	TotalHeaders        int `json:"total_headers" yaml:"total_headers"`
 	MissingHeaders      int `json:"missing_headers" yaml:"missing_headers"`
 	TotalCookies        int `json:"total_cookies" yaml:"total_cookies"`
 	InsecureCookies     int `json:"insecure_cookies" yaml:"insecure_cookies"`
+	CORSIssues          int `json:"cors_issues" yaml:"cors_issues"`
 	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
 	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
 	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
@@ -105,6 +119,7 @@ func (r *HeaderScanResult) String() string {
 	sb.WriteString(fmt.Sprintf("  Missing Headers: %d\n", r.Summary.MissingHeaders))
 	sb.WriteString(fmt.Sprintf("  Cookies Found: %d\n", r.Summary.TotalCookies))
 	sb.WriteString(fmt.Sprintf("  Insecure Cookies: %d\n", r.Summary.InsecureCookies))
+	sb.WriteString(fmt.Sprintf("  CORS Issues: %d\n", r.Summary.CORSIssues))
 	sb.WriteString(fmt.Sprintf("  High Severity: %d\n", r.Summary.HighSeverityCount))
 	sb.WriteString(fmt.Sprintf("  Medium Severity: %d\n", r.Summary.MediumSeverityCount))
 	sb.WriteString(fmt.Sprintf("  Low Severity: %d\n", r.Summary.LowSeverityCount))
@@ -148,6 +163,31 @@ func (r *HeaderScanResult) String() string {
 		}
 	}
 
+	// CORS findings
+	if len(r.CORS) > 0 {
+		sb.WriteString("\nCORS Policy:\n")
+		for _, c := range r.CORS {
+			status := "PRESENT"
+			if !c.Present {
+				status = "NOT SET"
+			}
+			sb.WriteString(fmt.Sprintf("  [%s] %s - %s\n", strings.ToUpper(c.Severity), c.Header, status))
+			if c.Value != "" {
+				sb.WriteString(fmt.Sprintf("    Value: %s\n", c.Value))
+			}
+			sb.WriteString(fmt.Sprintf("    %s\n", c.Description))
+			if len(c.Issues) > 0 {
+				sb.WriteString("    Issues:\n")
+				for _, issue := range c.Issues {
+					sb.WriteString(fmt.Sprintf("      - %s\n", issue))
+				}
+			}
+			if c.Remediation != "" {
+				sb.WriteString(fmt.Sprintf("    Remediation: %s\n", c.Remediation))
+			}
+		}
+	}
+
 	// Errors
 	if len(r.Errors) > 0 {
 		sb.WriteString("\nErrors:\n")
@@ -161,7 +201,7 @@ func (r *HeaderScanResult) String() string {
 
 // HasResults returns true if the scan produced any meaningful results.
 func (r *HeaderScanResult) HasResults() bool {
-	return len(r.Headers) > 0 || len(r.Cookies) > 0
+	return len(r.Headers) > 0 || len(r.Cookies) > 0 || len(r.CORS) > 0
 }
 
 // securityHeader defines the metadata for a security header check.
@@ -282,10 +322,11 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 		Target:  targetURL,
 		Headers: make([]HeaderFinding, 0, len(securityHeaders)),
 		Cookies: make([]CookieFinding, 0),
+		CORS:    make([]CORSFinding, 0),
 		Errors:  make([]string, 0),
 	}
 
-	// Create and send request
+	// Create and send initial request (without Origin header)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to create request: %s", err.Error()))
@@ -312,6 +353,9 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 
 	// Analyze cookies
 	result.Cookies = s.analyzeCookies(resp.Cookies())
+
+	// Analyze CORS policy (using response headers and a second request with Origin)
+	result.CORS = s.analyzeCORS(ctx, targetURL, resp.Header)
 
 	// Calculate summary
 	result.Summary = s.calculateSummary(result)
@@ -408,6 +452,233 @@ func sameSiteToString(ss http.SameSite) string {
 	}
 }
 
+// corsHeader defines the metadata for a CORS header check.
+type corsHeader struct {
+	Name        string
+	Description string
+}
+
+// corsHeaders is the list of CORS headers to check.
+var corsHeaders = []corsHeader{
+	{
+		Name:        "Access-Control-Allow-Origin",
+		Description: "Specifies which origins can access the resource",
+	},
+	{
+		Name:        "Access-Control-Allow-Credentials",
+		Description: "Indicates whether credentials can be included in requests",
+	},
+	{
+		Name:        "Access-Control-Allow-Methods",
+		Description: "Specifies the HTTP methods allowed for cross-origin requests",
+	},
+	{
+		Name:        "Access-Control-Allow-Headers",
+		Description: "Specifies the headers allowed in cross-origin requests",
+	},
+	{
+		Name:        "Access-Control-Expose-Headers",
+		Description: "Specifies which response headers are exposed to the client",
+	},
+}
+
+// analyzeCORS checks the CORS policy configuration.
+func (s *HTTPHeadersScanner) analyzeCORS(ctx context.Context, targetURL string, headers http.Header) []CORSFinding {
+	findings := make([]CORSFinding, 0)
+
+	// Extract CORS headers from the response
+	acao := headers.Get("Access-Control-Allow-Origin")
+	acac := headers.Get("Access-Control-Allow-Credentials")
+	acam := headers.Get("Access-Control-Allow-Methods")
+	acah := headers.Get("Access-Control-Allow-Headers")
+	aceh := headers.Get("Access-Control-Expose-Headers")
+
+	// Check for origin reflection by sending a request with an Origin header
+	originReflection := s.checkOriginReflection(ctx, targetURL)
+
+	// Analyze Access-Control-Allow-Origin
+	if acao != "" {
+		finding := CORSFinding{
+			Header:      "Access-Control-Allow-Origin",
+			Value:       acao,
+			Present:     true,
+			Description: "Specifies which origins can access the resource",
+			Issues:      make([]string, 0),
+		}
+
+		// Check for wildcard with credentials (HIGH severity)
+		if acao == "*" && strings.EqualFold(acac, "true") {
+			finding.Issues = append(finding.Issues, "Wildcard (*) origin with credentials is invalid and may cause browser errors")
+			finding.Severity = SeverityHigh
+			finding.Remediation = "Do not use wildcard (*) with Access-Control-Allow-Credentials: true. Specify exact origins instead."
+		} else if acao == "*" {
+			// Wildcard alone (MEDIUM severity)
+			finding.Issues = append(finding.Issues, "Wildcard (*) allows any origin to access resources")
+			finding.Severity = SeverityMedium
+			finding.Remediation = "Consider restricting to specific trusted origins instead of using wildcard (*)"
+		} else {
+			finding.Severity = SeverityInfo
+			finding.Description = fmt.Sprintf("CORS allows origin: %s", acao)
+		}
+
+		findings = append(findings, finding)
+	}
+
+	// Analyze Access-Control-Allow-Credentials
+	if acac != "" {
+		finding := CORSFinding{
+			Header:      "Access-Control-Allow-Credentials",
+			Value:       acac,
+			Present:     true,
+			Description: "Indicates whether credentials can be included in requests",
+			Issues:      make([]string, 0),
+		}
+
+		if strings.EqualFold(acac, "true") {
+			if acao == "*" {
+				// Already handled above as HIGH severity
+				finding.Issues = append(finding.Issues, "Credentials allowed with overly permissive CORS policy")
+				finding.Severity = SeverityHigh
+				finding.Remediation = "Review the CORS configuration to ensure credentials are only allowed for trusted origins"
+			} else if originReflection {
+				finding.Issues = append(finding.Issues, "Credentials allowed with potential origin reflection vulnerability")
+				finding.Severity = SeverityHigh
+				finding.Remediation = "Validate the Origin header against a whitelist of trusted domains"
+			} else {
+				finding.Severity = SeverityInfo
+				finding.Description = "Credentials are allowed for cross-origin requests"
+			}
+		} else {
+			finding.Severity = SeverityInfo
+		}
+
+		findings = append(findings, finding)
+	}
+
+	// Check for origin reflection
+	if originReflection {
+		finding := CORSFinding{
+			Header:           "Access-Control-Allow-Origin",
+			Present:          true,
+			OriginReflection: true,
+			Description:      "Server reflects the Origin header without validation",
+			Issues:           []string{"Origin reflection detected - server may accept any origin"},
+			Severity:         SeverityMedium,
+			Remediation:      "Validate the Origin header against a whitelist of trusted domains instead of reflecting it",
+		}
+		// Check if credentials are also allowed
+		if strings.EqualFold(acac, "true") {
+			finding.Severity = SeverityHigh
+			finding.Issues = append(finding.Issues, "Origin reflection combined with credentials allows any origin to make authenticated requests")
+		}
+		findings = append(findings, finding)
+	}
+
+	// Analyze Access-Control-Allow-Methods
+	if acam != "" {
+		finding := CORSFinding{
+			Header:      "Access-Control-Allow-Methods",
+			Value:       acam,
+			Present:     true,
+			Description: "Specifies the HTTP methods allowed for cross-origin requests",
+			Issues:      make([]string, 0),
+		}
+
+		methods := strings.Split(acam, ",")
+		dangerousMethods := []string{}
+		for _, m := range methods {
+			m = strings.TrimSpace(strings.ToUpper(m))
+			// Check for overly permissive methods
+			if m == "*" || m == "PUT" || m == "DELETE" || m == "PATCH" {
+				dangerousMethods = append(dangerousMethods, m)
+			}
+		}
+
+		if len(dangerousMethods) > 0 {
+			finding.Issues = append(finding.Issues, fmt.Sprintf("Potentially dangerous methods allowed: %s", strings.Join(dangerousMethods, ", ")))
+			finding.Severity = SeverityLow
+			finding.Remediation = "Only allow the HTTP methods that are actually needed for your API"
+		} else {
+			finding.Severity = SeverityInfo
+		}
+
+		findings = append(findings, finding)
+	}
+
+	// Analyze Access-Control-Allow-Headers
+	if acah != "" {
+		finding := CORSFinding{
+			Header:      "Access-Control-Allow-Headers",
+			Value:       acah,
+			Present:     true,
+			Description: "Specifies the headers allowed in cross-origin requests",
+			Issues:      make([]string, 0),
+		}
+
+		if acah == "*" {
+			finding.Issues = append(finding.Issues, "Wildcard (*) allows any header in cross-origin requests")
+			finding.Severity = SeverityLow
+			finding.Remediation = "Specify only the headers that are actually needed"
+		} else {
+			finding.Severity = SeverityInfo
+		}
+
+		findings = append(findings, finding)
+	}
+
+	// Analyze Access-Control-Expose-Headers
+	if aceh != "" {
+		finding := CORSFinding{
+			Header:      "Access-Control-Expose-Headers",
+			Value:       aceh,
+			Present:     true,
+			Description: "Specifies which response headers are exposed to the client",
+			Issues:      make([]string, 0),
+		}
+
+		if aceh == "*" {
+			finding.Issues = append(finding.Issues, "Wildcard (*) exposes all headers to cross-origin requests")
+			finding.Severity = SeverityLow
+			finding.Remediation = "Specify only the headers that need to be exposed"
+		} else {
+			finding.Severity = SeverityInfo
+		}
+
+		findings = append(findings, finding)
+	}
+
+	return findings
+}
+
+// checkOriginReflection sends a request with a test Origin header to detect origin reflection.
+func (s *HTTPHeadersScanner) checkOriginReflection(ctx context.Context, targetURL string) bool {
+	// Create a request with a test Origin header
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return false
+	}
+
+	// Use a clearly fake origin to test reflection
+	testOrigin := "https://malicious-test-origin.example.com"
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Origin", testOrigin)
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Check if the response reflects our test origin
+	acao := resp.Header.Get("Access-Control-Allow-Origin")
+	return acao == testOrigin
+}
+
 // calculateSummary calculates the summary statistics for the scan.
 func (s *HTTPHeadersScanner) calculateSummary(result *HeaderScanResult) ScanSummary {
 	summary := ScanSummary{
@@ -427,6 +698,14 @@ func (s *HTTPHeadersScanner) calculateSummary(result *HeaderScanResult) ScanSumm
 	for _, c := range result.Cookies {
 		if len(c.Issues) > 0 {
 			summary.InsecureCookies++
+		}
+		s.countSeverity(&summary, c.Severity)
+	}
+
+	// Count CORS statistics
+	for _, c := range result.CORS {
+		if len(c.Issues) > 0 {
+			summary.CORSIssues++
 		}
 		s.countSeverity(&summary, c.Severity)
 	}
