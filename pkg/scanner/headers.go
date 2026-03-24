@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/djannot/wast/pkg/auth"
 )
 
 // HTTPClient defines the interface for HTTP operations, allowing for mock implementations in tests.
@@ -218,9 +220,10 @@ var securityHeaders = []securityHeader{
 
 // HTTPHeadersScanner performs passive security analysis of HTTP response headers.
 type HTTPHeadersScanner struct {
-	client    HTTPClient
-	userAgent string
-	timeout   time.Duration
+	client     HTTPClient
+	userAgent  string
+	timeout    time.Duration
+	authConfig *auth.AuthConfig
 }
 
 // Option is a function that configures an HTTPHeadersScanner.
@@ -244,6 +247,13 @@ func WithUserAgent(ua string) Option {
 func WithTimeout(d time.Duration) Option {
 	return func(s *HTTPHeadersScanner) {
 		s.timeout = d
+	}
+}
+
+// WithAuth sets the authentication configuration for the scanner.
+func WithAuth(config *auth.AuthConfig) Option {
+	return func(s *HTTPHeadersScanner) {
+		s.authConfig = config
 	}
 }
 
@@ -284,6 +294,11 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 
 	req.Header.Set("User-Agent", s.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/spf13/cobra"
@@ -18,7 +19,7 @@ type ScanResult struct {
 }
 
 // NewScanCmd creates and returns the scan command.
-func NewScanCmd(getFormatter func() *output.Formatter) *cobra.Command {
+func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var timeout int
 
 	cmd := &cobra.Command{
@@ -54,6 +55,7 @@ Examples:
   wast scan https://example.com --timeout 60  # Custom timeout`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
+			authConfig := getAuthConfig()
 
 			target := ""
 			if len(args) > 0 {
@@ -82,6 +84,11 @@ Examples:
 			// Create scanner with timeout option
 			opts := []scanner.Option{
 				scanner.WithTimeout(time.Duration(timeout) * time.Second),
+			}
+
+			// Add authentication if configured
+			if !authConfig.IsEmpty() {
+				opts = append(opts, scanner.WithAuth(authConfig))
 			}
 
 			headerScanner := scanner.NewHTTPHeadersScanner(opts...)

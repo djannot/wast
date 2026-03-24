@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -18,9 +19,14 @@ func testFormatter(buf *bytes.Buffer) func() *output.Formatter {
 	}
 }
 
+// testAuthConfig returns an empty auth config for testing
+func testAuthConfig() *auth.AuthConfig {
+	return &auth.AuthConfig{}
+}
+
 func TestReconCmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewReconCmd(testFormatter(&buf))
+	cmd := NewReconCmd(testFormatter(&buf), testAuthConfig)
 
 	// Test command exists and has correct use
 	if cmd.Use != "recon [target]" {
@@ -49,7 +55,7 @@ func TestReconCmd(t *testing.T) {
 
 func TestCrawlCmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewCrawlCmd(testFormatter(&buf))
+	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig)
 
 	if cmd.Use != "crawl [target]" {
 		t.Errorf("Expected Use 'crawl [target]', got %s", cmd.Use)
@@ -75,7 +81,7 @@ func TestCrawlCmd(t *testing.T) {
 }
 
 func TestInterceptCmd(t *testing.T) {
-	cmd := NewInterceptCmd(testFormatter(&bytes.Buffer{}))
+	cmd := NewInterceptCmd(testFormatter(&bytes.Buffer{}), testAuthConfig)
 
 	// Test command structure (not execution since it's a blocking server)
 	if cmd.Use != "intercept" {
@@ -108,7 +114,7 @@ func TestInterceptCmd(t *testing.T) {
 
 func TestScanCmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewScanCmd(testFormatter(&buf))
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig)
 
 	if cmd.Use != "scan [target]" {
 		t.Errorf("Expected Use 'scan [target]', got %s", cmd.Use)
@@ -135,7 +141,7 @@ func TestScanCmd(t *testing.T) {
 
 func TestAPICmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewAPICmd(testFormatter(&buf))
+	cmd := NewAPICmd(testFormatter(&buf), testAuthConfig)
 
 	if cmd.Use != "api [target]" {
 		t.Errorf("Expected Use 'api [target]', got %s", cmd.Use)
@@ -162,7 +168,7 @@ func TestAPICmd(t *testing.T) {
 
 func TestReconResultData(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewReconCmd(testFormatter(&buf))
+	cmd := NewReconCmd(testFormatter(&buf), testAuthConfig)
 
 	cmd.SetArgs([]string{"example.com"})
 	err := cmd.Execute()
@@ -197,7 +203,7 @@ func TestReconResultData(t *testing.T) {
 
 func TestReconNoTarget(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewReconCmd(testFormatter(&buf))
+	cmd := NewReconCmd(testFormatter(&buf), testAuthConfig)
 
 	// Execute without arguments
 	err := cmd.Execute()
@@ -232,22 +238,22 @@ func TestReconNoTarget(t *testing.T) {
 func TestCommandsWithNoArgs(t *testing.T) {
 	tests := []struct {
 		name    string
-		cmdFunc func(func() *output.Formatter) *cobra.Command
+		cmdFunc func(func() *output.Formatter, func() *auth.AuthConfig) *cobra.Command
 	}{
-		{"recon", func(f func() *output.Formatter) *cobra.Command {
-			cmd := NewReconCmd(f)
+		{"recon", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
+			cmd := NewReconCmd(f, a)
 			return cmd
 		}},
-		{"crawl", func(f func() *output.Formatter) *cobra.Command {
-			cmd := NewCrawlCmd(f)
+		{"crawl", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
+			cmd := NewCrawlCmd(f, a)
 			return cmd
 		}},
-		{"scan", func(f func() *output.Formatter) *cobra.Command {
-			cmd := NewScanCmd(f)
+		{"scan", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
+			cmd := NewScanCmd(f, a)
 			return cmd
 		}},
-		{"api", func(f func() *output.Formatter) *cobra.Command {
-			cmd := NewAPICmd(f)
+		{"api", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
+			cmd := NewAPICmd(f, a)
 			return cmd
 		}},
 	}
@@ -255,7 +261,7 @@ func TestCommandsWithNoArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			cmd := tt.cmdFunc(testFormatter(&buf))
+			cmd := tt.cmdFunc(testFormatter(&buf), testAuthConfig)
 
 			// Execute without arguments
 			err := cmd.Execute()
