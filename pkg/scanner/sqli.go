@@ -1,0 +1,654 @@
+// Package scanner provides security scanning functionality for web applications.
+package scanner
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/ratelimit"
+)
+
+// SQLiScanner performs active SQL injection vulnerability detection.
+type SQLiScanner struct {
+	client      HTTPClient
+	userAgent   string
+	timeout     time.Duration
+	authConfig  *auth.AuthConfig
+	rateLimiter ratelimit.Limiter
+}
+
+// SQLiScanResult represents the result of a SQL injection vulnerability scan.
+type SQLiScanResult struct {
+	Target   string        `json:"target" yaml:"target"`
+	Findings []SQLiFinding `json:"findings" yaml:"findings"`
+	Summary  SQLiSummary   `json:"summary" yaml:"summary"`
+	Errors   []string      `json:"errors,omitempty" yaml:"errors,omitempty"`
+}
+
+// SQLiFinding represents a single SQL injection vulnerability finding.
+type SQLiFinding struct {
+	URL         string `json:"url" yaml:"url"`
+	Parameter   string `json:"parameter" yaml:"parameter"`
+	Payload     string `json:"payload" yaml:"payload"`
+	Evidence    string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Severity    string `json:"severity" yaml:"severity"`
+	Type        string `json:"type" yaml:"type"` // "error-based", "boolean-based", "time-based"
+	Description string `json:"description" yaml:"description"`
+	Remediation string `json:"remediation" yaml:"remediation"`
+}
+
+// SQLiSummary provides an overview of the SQL injection scan results.
+type SQLiSummary struct {
+	TotalTests          int `json:"total_tests" yaml:"total_tests"`
+	VulnerabilitiesFound int `json:"vulnerabilities_found" yaml:"vulnerabilities_found"`
+	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
+	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
+	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
+}
+
+// sqliPayload represents a test payload for SQL injection detection.
+type sqliPayload struct {
+	Payload     string
+	Type        string // "error-based", "boolean-based", "time-based"
+	Severity    string
+	Description string
+	ErrorPattern *regexp.Regexp // Pattern to match in response for error-based detection
+	CompareBaseline bool // Whether to compare with baseline response for boolean-based
+}
+
+// Common SQL error patterns from various database systems.
+var sqlErrorPatterns = []*regexp.Regexp{
+	// MySQL
+	regexp.MustCompile(`(?i)SQL syntax.*?MySQL`),
+	regexp.MustCompile(`(?i)Warning.*?\Wmysqli?_`),
+	regexp.MustCompile(`(?i)MySQLSyntaxErrorException`),
+	regexp.MustCompile(`(?i)valid MySQL result`),
+	regexp.MustCompile(`(?i)check the manual that corresponds to your (MySQL|MariaDB) server version`),
+
+	// PostgreSQL
+	regexp.MustCompile(`(?i)PostgreSQL.*?ERROR`),
+	regexp.MustCompile(`(?i)Warning.*?\Wpg_`),
+	regexp.MustCompile(`(?i)valid PostgreSQL result`),
+	regexp.MustCompile(`(?i)Npgsql\.`),
+	regexp.MustCompile(`(?i)PG::SyntaxError`),
+
+	// Microsoft SQL Server
+	regexp.MustCompile(`(?i)Driver.*? SQL[\-\_\ ]*Server`),
+	regexp.MustCompile(`(?i)OLE DB.*? SQL Server`),
+	regexp.MustCompile(`(?i)\[SQL Server\]`),
+	regexp.MustCompile(`(?i)\[Microsoft\]\[ODBC SQL Server Driver\]`),
+	regexp.MustCompile(`(?i)Unclosed quotation mark after the character string`),
+	regexp.MustCompile(`(?i)Microsoft SQL Native Client error`),
+
+	// Oracle
+	regexp.MustCompile(`(?i)\bORA-\d{5}`),
+	regexp.MustCompile(`(?i)Oracle error`),
+	regexp.MustCompile(`(?i)Oracle.*?Driver`),
+	regexp.MustCompile(`(?i)Warning.*?\W(oci|ora)_`),
+
+	// SQLite
+	regexp.MustCompile(`(?i)SQLite/JDBCDriver`),
+	regexp.MustCompile(`(?i)SQLite\.Exception`),
+	regexp.MustCompile(`(?i)System\.Data\.SQLite\.SQLiteException`),
+	regexp.MustCompile(`(?i)Warning.*?\W(sqlite_|SQLite3::)`),
+	regexp.MustCompile(`(?i)SQLite3::SQLException`),
+
+	// Generic SQL errors
+	regexp.MustCompile(`(?i)syntax error.*?SQL`),
+	regexp.MustCompile(`(?i)unclosed quotation mark`),
+	regexp.MustCompile(`(?i)quoted string not properly terminated`),
+	regexp.MustCompile(`(?i)SQL command not properly ended`),
+	regexp.MustCompile(`(?i)SQLSTATE\[\w+\]`),
+	regexp.MustCompile(`(?i)Incorrect syntax near`),
+}
+
+// sqliPayloads is the list of safe detection payloads to test for SQL injection.
+var sqliPayloads = []sqliPayload{
+	// Error-based detection - single quote
+	{
+		Payload:     "'",
+		Type:        "error-based",
+		Severity:    SeverityHigh,
+		Description: "Single quote injection triggers database error - indicates SQL injection vulnerability",
+		ErrorPattern: nil, // Will check against all patterns
+	},
+	// Error-based detection - double quote
+	{
+		Payload:     "\"",
+		Type:        "error-based",
+		Severity:    SeverityHigh,
+		Description: "Double quote injection triggers database error - indicates SQL injection vulnerability",
+		ErrorPattern: nil,
+	},
+	// Error-based detection - SQL comment
+	{
+		Payload:     "' OR '1'='1' --",
+		Type:        "error-based",
+		Severity:    SeverityHigh,
+		Description: "SQL comment injection detected - allows bypassing authentication and query logic",
+		ErrorPattern: nil,
+	},
+	// Boolean-based blind - always true
+	{
+		Payload:     "' OR '1'='1",
+		Type:        "boolean-based",
+		Severity:    SeverityHigh,
+		Description: "Boolean-based SQL injection detected - allows data extraction through logic manipulation",
+		CompareBaseline: true,
+	},
+	// Boolean-based blind - always false
+	{
+		Payload:     "' OR '1'='2",
+		Type:        "boolean-based",
+		Severity:    SeverityHigh,
+		Description: "Boolean-based SQL injection detected - response differs from baseline",
+		CompareBaseline: true,
+	},
+	// Boolean-based - AND true
+	{
+		Payload:     "' AND '1'='1",
+		Type:        "boolean-based",
+		Severity:    SeverityHigh,
+		Description: "Boolean-based SQL injection with AND condition detected",
+		CompareBaseline: true,
+	},
+	// Union-based detection marker
+	{
+		Payload:     "' UNION SELECT NULL--",
+		Type:        "error-based",
+		Severity:    SeverityHigh,
+		Description: "UNION-based SQL injection marker detected - could allow data extraction",
+		ErrorPattern: nil,
+	},
+	// Numeric injection test
+	{
+		Payload:     "1' OR '1'='1",
+		Type:        "boolean-based",
+		Severity:    SeverityHigh,
+		Description: "Numeric field SQL injection detected",
+		CompareBaseline: true,
+	},
+}
+
+// SQLiOption is a function that configures a SQLiScanner.
+type SQLiOption func(*SQLiScanner)
+
+// WithSQLiHTTPClient sets a custom HTTP client for the SQL injection scanner.
+func WithSQLiHTTPClient(c HTTPClient) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.client = c
+	}
+}
+
+// WithSQLiUserAgent sets the user agent string for the SQL injection scanner.
+func WithSQLiUserAgent(ua string) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.userAgent = ua
+	}
+}
+
+// WithSQLiTimeout sets the timeout for HTTP requests.
+func WithSQLiTimeout(d time.Duration) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.timeout = d
+	}
+}
+
+// WithSQLiAuth sets the authentication configuration for the SQL injection scanner.
+func WithSQLiAuth(config *auth.AuthConfig) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.authConfig = config
+	}
+}
+
+// WithSQLiRateLimiter sets a rate limiter for the SQL injection scanner.
+func WithSQLiRateLimiter(limiter ratelimit.Limiter) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.rateLimiter = limiter
+	}
+}
+
+// WithSQLiRateLimitConfig sets rate limiting from a configuration.
+func WithSQLiRateLimitConfig(cfg ratelimit.Config) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
+	}
+}
+
+// NewSQLiScanner creates a new SQLiScanner with the given options.
+func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
+	s := &SQLiScanner{
+		userAgent: "WAST/1.0 (Web Application Security Testing)",
+		timeout:   30 * time.Second,
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Create default HTTP client if not set
+	if s.client == nil {
+		s.client = NewDefaultHTTPClient(s.timeout)
+	}
+
+	return s
+}
+
+// Scan performs a SQL injection vulnerability scan on the given target URL.
+func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResult {
+	result := &SQLiScanResult{
+		Target:   targetURL,
+		Findings: make([]SQLiFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Extract query parameters to test
+	params := parsedURL.Query()
+
+	// If no query parameters exist, test with common parameter names
+	if len(params) == 0 {
+		params.Set("id", "1")
+		params.Set("user", "1")
+		params.Set("page", "1")
+		params.Set("product", "1")
+	}
+
+	// Get baseline responses for boolean-based detection
+	baselineResponses := make(map[string]*baselineResponse)
+	for paramName := range params {
+		baseline := s.getBaseline(ctx, parsedURL, paramName)
+		if baseline != nil {
+			baselineResponses[paramName] = baseline
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range sqliPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			var finding *SQLiFinding
+			if payload.CompareBaseline {
+				// Boolean-based detection
+				baseline := baselineResponses[paramName]
+				finding = s.testBooleanBased(ctx, parsedURL, paramName, payload, baseline)
+			} else {
+				// Error-based detection
+				finding = s.testErrorBased(ctx, parsedURL, paramName, payload)
+			}
+
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
+// baselineResponse stores information about a baseline request for comparison.
+type baselineResponse struct {
+	StatusCode  int
+	BodyLength  int
+	BodyHash    string
+	ContainsKey string
+}
+
+// getBaseline makes a request with the original parameter value to establish a baseline.
+func (s *SQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, paramName string) *baselineResponse {
+	// Create a copy of the URL with the original parameter value
+	testURL := *baseURL
+	q := testURL.Query()
+
+	// Use original value if it exists, otherwise use a safe default
+	originalValue := q.Get(paramName)
+	if originalValue == "" {
+		originalValue = "1"
+		q.Set(paramName, originalValue)
+	}
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	return &baselineResponse{
+		StatusCode:  resp.StatusCode,
+		BodyLength:  len(body),
+		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
+		ContainsKey: string(body),
+	}
+}
+
+// testErrorBased tests a single parameter with an error-based SQL injection payload.
+func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload) *SQLiFinding {
+	// Create a copy of the URL with the test payload
+	testURL := *baseURL
+	q := testURL.Query()
+	q.Set(paramName, payload.Payload)
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check for SQL error patterns in the response
+	for _, pattern := range sqlErrorPatterns {
+		if pattern.MatchString(bodyStr) {
+			// SQL error detected!
+			match := pattern.FindString(bodyStr)
+			finding := &SQLiFinding{
+				URL:         testURL.String(),
+				Parameter:   paramName,
+				Payload:     payload.Payload,
+				Evidence:    s.extractEvidence(bodyStr, match),
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+			}
+			return finding
+		}
+	}
+
+	return nil
+}
+
+// testBooleanBased tests a single parameter with a boolean-based SQL injection payload.
+func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse) *SQLiFinding {
+	if baseline == nil {
+		return nil
+	}
+
+	// Create a copy of the URL with the test payload
+	testURL := *baseURL
+	q := testURL.Query()
+	q.Set(paramName, payload.Payload)
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Compare with baseline
+	// Check for significant differences in response
+	bodyLength := len(body)
+	statusCode := resp.StatusCode
+
+	// Detect boolean-based SQLi by comparing response characteristics
+	significantDifference := false
+	evidenceMsg := ""
+
+	// Check for status code change
+	if statusCode != baseline.StatusCode {
+		significantDifference = true
+		evidenceMsg = fmt.Sprintf("Status code changed from %d to %d", baseline.StatusCode, statusCode)
+	}
+
+	// Check for significant body length change (more than 10% difference)
+	lengthDiff := abs(bodyLength - baseline.BodyLength)
+	if baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/10 {
+		significantDifference = true
+		if evidenceMsg != "" {
+			evidenceMsg += "; "
+		}
+		evidenceMsg += fmt.Sprintf("Response length changed from %d to %d bytes", baseline.BodyLength, bodyLength)
+	}
+
+	// Also check for SQL errors (which would indicate vulnerability)
+	for _, pattern := range sqlErrorPatterns {
+		if pattern.MatchString(bodyStr) {
+			significantDifference = true
+			match := pattern.FindString(bodyStr)
+			evidenceMsg = s.extractEvidence(bodyStr, match)
+			break
+		}
+	}
+
+	if significantDifference {
+		finding := &SQLiFinding{
+			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidenceMsg,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+		}
+		return finding
+	}
+
+	return nil
+}
+
+// extractEvidence extracts a snippet of the response containing the SQL error.
+func (s *SQLiScanner) extractEvidence(body, errorMatch string) string {
+	if errorMatch == "" {
+		return "SQL error detected in response"
+	}
+
+	idx := strings.Index(body, errorMatch)
+	if idx == -1 {
+		return errorMatch
+	}
+
+	// Extract context around the error (up to 200 characters)
+	start := idx - 30
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(errorMatch) + 30
+	if end > len(body) {
+		end = len(body)
+	}
+
+	snippet := body[start:end]
+	// Clean up the snippet
+	snippet = strings.ReplaceAll(snippet, "\n", " ")
+	snippet = strings.ReplaceAll(snippet, "\r", " ")
+	snippet = strings.ReplaceAll(snippet, "\t", " ")
+	snippet = strings.TrimSpace(snippet)
+
+	return fmt.Sprintf("...%s...", snippet)
+}
+
+// getRemediation returns remediation guidance for SQL injection vulnerabilities.
+func (s *SQLiScanner) getRemediation() string {
+	return "Use parameterized queries (prepared statements) for all database operations. " +
+		"Never concatenate user input directly into SQL queries. " +
+		"Implement input validation and sanitization on the server side. " +
+		"Use an ORM (Object-Relational Mapping) framework that handles parameterization automatically. " +
+		"Apply the principle of least privilege for database accounts. " +
+		"Enable error handling that doesn't expose database details to users."
+}
+
+// calculateSummary calculates the summary statistics for the scan.
+func (s *SQLiScanner) calculateSummary(result *SQLiScanResult) {
+	result.Summary.VulnerabilitiesFound = len(result.Findings)
+
+	for _, finding := range result.Findings {
+		switch finding.Severity {
+		case SeverityHigh:
+			result.Summary.HighSeverityCount++
+		case SeverityMedium:
+			result.Summary.MediumSeverityCount++
+		case SeverityLow:
+			result.Summary.LowSeverityCount++
+		}
+	}
+}
+
+// String returns a human-readable representation of the scan result.
+func (r *SQLiScanResult) String() string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("SQL Injection Vulnerability Scan for: %s\n", r.Target))
+	sb.WriteString(strings.Repeat("=", 60) + "\n")
+
+	// Summary
+	sb.WriteString("\nSummary:\n")
+	sb.WriteString(fmt.Sprintf("  Total Tests: %d\n", r.Summary.TotalTests))
+	sb.WriteString(fmt.Sprintf("  Vulnerabilities Found: %d\n", r.Summary.VulnerabilitiesFound))
+	sb.WriteString(fmt.Sprintf("  High Severity: %d\n", r.Summary.HighSeverityCount))
+	sb.WriteString(fmt.Sprintf("  Medium Severity: %d\n", r.Summary.MediumSeverityCount))
+	sb.WriteString(fmt.Sprintf("  Low Severity: %d\n", r.Summary.LowSeverityCount))
+
+	// Findings
+	if len(r.Findings) > 0 {
+		sb.WriteString("\nVulnerabilities:\n")
+		for i, f := range r.Findings {
+			sb.WriteString(fmt.Sprintf("\n  %d. [%s] %s SQL Injection\n", i+1, strings.ToUpper(f.Severity), strings.Title(f.Type)))
+			sb.WriteString(fmt.Sprintf("     Parameter: %s\n", f.Parameter))
+			sb.WriteString(fmt.Sprintf("     Payload: %s\n", f.Payload))
+			sb.WriteString(fmt.Sprintf("     Description: %s\n", f.Description))
+			if f.Evidence != "" {
+				sb.WriteString(fmt.Sprintf("     Evidence: %s\n", f.Evidence))
+			}
+			sb.WriteString(fmt.Sprintf("     Remediation: %s\n", f.Remediation))
+		}
+	} else {
+		sb.WriteString("\nNo SQL injection vulnerabilities detected.\n")
+	}
+
+	// Errors
+	if len(r.Errors) > 0 {
+		sb.WriteString("\nErrors:\n")
+		for _, e := range r.Errors {
+			sb.WriteString(fmt.Sprintf("  - %s\n", e))
+		}
+	}
+
+	return sb.String()
+}
+
+// HasResults returns true if the scan produced any meaningful results.
+func (r *SQLiScanResult) HasResults() bool {
+	return len(r.Findings) > 0 || r.Summary.TotalTests > 0
+}
+
+// abs returns the absolute value of an integer.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
