@@ -75,6 +75,13 @@ type AuthSchemeInfo struct {
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
+// RateLimitInfo contains information about rate limiting detected during API testing.
+type RateLimitInfo struct {
+	RateLimitDetected bool              `json:"rate_limit_detected" yaml:"rate_limit_detected"`
+	RetryAfter        string            `json:"retry_after,omitempty" yaml:"retry_after,omitempty"`
+	RateLimitHeaders  map[string]string `json:"rate_limit_headers,omitempty" yaml:"rate_limit_headers,omitempty"`
+}
+
 // String returns a human-readable representation of the API specification.
 func (s *APISpec) String() string {
 	var sb strings.Builder
