@@ -609,3 +609,153 @@ func TestXSSScanner_WithCustomOptions(t *testing.T) {
 		t.Error("Auth config not set correctly")
 	}
 }
+
+// Test for false positive: HTML-encoded payload should not be reported
+func TestXSSScanner_Scan_HTMLEncodedPayload_FalsePositive(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return HTML-encoded script tag (safe)
+	encodedPayload := "&lt;script&gt;alert('XSS')&lt;/script&gt;"
+	mock.responses["https://example.com/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Results for: %s</body></html>", encodedPayload))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT report vulnerability because payload is HTML-encoded
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Should not report vulnerability for HTML-encoded payload, but found %d", result.Summary.VulnerabilitiesFound)
+	}
+
+	if len(result.Findings) > 0 {
+		t.Errorf("Expected no findings for HTML-encoded payload, got %d findings", len(result.Findings))
+	}
+}
+
+// Test for confirmation: executable context should be high confidence
+func TestXSSScanner_Scan_ExecutableContext_HighConfidence(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to reflect unencoded script tag in executable context
+	testPayload := "<script>alert('XSS')</script>"
+	mock.responses["https://example.com/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Results: %s</body></html>", testPayload))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability")
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding")
+	}
+
+	finding := result.Findings[0]
+	if finding.Confidence != "high" {
+		t.Errorf("Expected confidence 'high' for executable script tag, got %s", finding.Confidence)
+	}
+}
+
+// Test for event handler in attribute - should be high confidence
+func TestXSSScanner_Scan_EventHandlerAttribute_HighConfidence(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to reflect event handler in HTML attribute
+	testPayload := "<img src=x onerror=alert('XSS')>"
+	mock.responses["https://example.com/page?input=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body><div>%s</div></body></html>", testPayload))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/page?input=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability")
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding")
+	}
+
+	finding := result.Findings[0]
+	if finding.Confidence != "high" {
+		t.Errorf("Expected confidence 'high' for event handler, got %s", finding.Confidence)
+	}
+}
+
+// Test context analysis function
+func TestXSSScanner_AnalyzeContext(t *testing.T) {
+	scanner := NewXSSScanner()
+
+	tests := []struct {
+		name                string
+		body                string
+		payload             string
+		expectedExecutable  bool
+		expectedConfidence  string
+	}{
+		{
+			name:                "HTML encoded - not executable",
+			body:                "<html><body>&lt;script&gt;alert('XSS')&lt;/script&gt;</body></html>",
+			payload:             "<script>alert('XSS')</script>",
+			expectedExecutable:  false,
+			expectedConfidence:  "low",
+		},
+		{
+			name:                "Unencoded script tag - executable",
+			body:                "<html><body><script>alert('XSS')</script></body></html>",
+			payload:             "<script>alert('XSS')</script>",
+			expectedExecutable:  true,
+			expectedConfidence:  "high",
+		},
+		{
+			name:                "Event handler - executable",
+			body:                "<html><body><img src=x onerror=alert('XSS')></body></html>",
+			payload:             "<img src=x onerror=alert('XSS')>",
+			expectedExecutable:  true,
+			expectedConfidence:  "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, executable, confidence := scanner.analyzeContext(tt.body, tt.payload)
+
+			if executable != tt.expectedExecutable {
+				t.Errorf("Expected executable=%v, got %v", tt.expectedExecutable, executable)
+			}
+
+			if confidence != tt.expectedConfidence {
+				t.Errorf("Expected confidence=%s, got %s", tt.expectedConfidence, confidence)
+			}
+		})
+	}
+}

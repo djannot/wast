@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ type XSSFinding struct {
 	Type        string `json:"type" yaml:"type"` // "reflected", "stored", "dom"
 	Description string `json:"description" yaml:"description"`
 	Remediation string `json:"remediation" yaml:"remediation"`
+	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
 }
 
 // XSSSummary provides an overview of the XSS scan results.
@@ -233,6 +235,94 @@ func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult 
 	return result
 }
 
+// XSSContext represents where a payload appears in the HTML/JavaScript context.
+type XSSContext int
+
+const (
+	ContextUnknown XSSContext = iota
+	ContextHTMLBody
+	ContextHTMLAttribute
+	ContextJavaScript
+	ContextURL
+)
+
+// analyzeContext determines where the payload appears and if it's executable.
+// Returns the context type and whether the payload is in an executable form.
+func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, string) {
+	// Check if payload is HTML-encoded (would neutralize XSS)
+	htmlEncodedPayload := strings.ReplaceAll(payload, "<", "&lt;")
+	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, ">", "&gt;")
+	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "\"", "&quot;")
+	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "'", "&#39;")
+
+	if strings.Contains(body, htmlEncodedPayload) {
+		return ContextHTMLBody, false, "low" // Payload is HTML-encoded, not executable
+	}
+
+	// Find the index where payload appears
+	idx := strings.Index(body, payload)
+	if idx == -1 {
+		// Try to find evidence instead
+		return ContextUnknown, false, "low"
+	}
+
+	// Extract context around the payload (200 chars before and after)
+	start := idx - 200
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(payload) + 200
+	if end > len(body) {
+		end = len(body)
+	}
+	context := body[start:end]
+
+	// Check if payload is inside script tags (high confidence)
+	scriptTagPattern := regexp.MustCompile(`(?i)<script[^>]*>[\s\S]*?</script>`)
+	if scriptTagPattern.MatchString(context) {
+		// Check if payload is actually inside the script tags
+		beforePayload := body[start:idx]
+		if strings.Contains(beforePayload, "<script") && !strings.Contains(beforePayload, "</script>") {
+			return ContextJavaScript, true, "high"
+		}
+	}
+
+	// Check if payload appears in event handlers (high confidence)
+	eventHandlerPattern := regexp.MustCompile(`(?i)\bon\w+\s*=\s*["\']?[^"\'>\s]*` + regexp.QuoteMeta(payload))
+	if eventHandlerPattern.MatchString(context) {
+		return ContextHTMLAttribute, true, "high"
+	}
+
+	// Check if payload contains event handlers that are not quoted or escaped
+	if strings.Contains(payload, "onerror") || strings.Contains(payload, "onload") || strings.Contains(payload, "onclick") {
+		// Check if it's properly rendered as an attribute
+		attrPattern := regexp.MustCompile(`(?i)<\w+[^>]*` + regexp.QuoteMeta(payload))
+		if attrPattern.MatchString(context) {
+			return ContextHTMLAttribute, true, "high"
+		}
+	}
+
+	// Check if payload is inside an HTML attribute value but not event handler
+	attrValuePattern := regexp.MustCompile(`(?i)(\w+)\s*=\s*["\'][^"\']*` + regexp.QuoteMeta(payload))
+	if attrValuePattern.MatchString(context) {
+		return ContextHTMLAttribute, true, "medium"
+	}
+
+	// Check if script/img/svg tags are properly formed
+	if strings.Contains(payload, "<script") || strings.Contains(payload, "<img") || strings.Contains(payload, "<svg") {
+		tagPattern := regexp.MustCompile(`<(script|img|svg|iframe)[^>]*>`)
+		if tagPattern.MatchString(payload) {
+			// Check if the tag is actually rendered (not inside a string or comment)
+			if !strings.Contains(context, "<!--") && !strings.Contains(context, "*/") {
+				return ContextHTMLBody, true, "high"
+			}
+		}
+	}
+
+	// Default: payload is reflected but context is unclear
+	return ContextHTMLBody, false, "low"
+}
+
 // testParameter tests a single parameter with a specific payload.
 func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload xssPayload) *XSSFinding {
 	// Create a copy of the URL with the test payload
@@ -282,6 +372,33 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 
 	// Check if the payload or evidence is reflected in the response
 	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+		// Payload is reflected - now verify if it's actually executable
+		contextType, isExecutable, confidence := s.analyzeContext(bodyStr, payload.Payload)
+
+		// If payload is HTML-encoded or in a safe context, it's likely a false positive
+		if !isExecutable && contextType != ContextUnknown {
+			// Don't report low-confidence findings that are clearly encoded
+			if confidence == "low" {
+				return nil
+			}
+		}
+
+		// For executable contexts, increase confidence
+		if isExecutable {
+			if contextType == ContextJavaScript || contextType == ContextHTMLAttribute {
+				confidence = "high"
+			} else if contextType == ContextHTMLBody {
+				// Check if it's actually a complete executable tag
+				if strings.Contains(payload.Payload, "<script") ||
+				   strings.Contains(payload.Payload, "onerror") ||
+				   strings.Contains(payload.Payload, "onload") {
+					confidence = "high"
+				} else {
+					confidence = "medium"
+				}
+			}
+		}
+
 		// Vulnerability found!
 		finding := &XSSFinding{
 			URL:         testURL.String(),
@@ -292,6 +409,7 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 			Type:        payload.Type,
 			Description: payload.Description,
 			Remediation: s.getRemediation(payload.Type),
+			Confidence:  confidence,
 		}
 		return finding
 	}
