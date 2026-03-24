@@ -681,3 +681,314 @@ func (c *slowMockClient) Do(req *http.Request) (*http.Response, error) {
 		Header:     make(http.Header),
 	}, nil
 }
+
+func TestTester_RateLimitDetection_429Response(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// Set up a 429 response with rate limit headers
+	// Use Header.Set() to ensure proper canonicalization
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Retry-After", "30")
+	headers.Set("X-RateLimit-Limit", "100")
+	headers.Set("X-RateLimit-Remaining", "0")
+	headers.Set("X-RateLimit-Reset", "1625140800")
+	mockClient.AddResponse("https://api.example.com/rate-limited", 429, `{"error":"too many requests"}`, headers)
+
+	spec := &APISpec{
+		Title:   "Test API",
+		Version: "1.0.0",
+		Servers: []ServerInfo{{URL: "https://api.example.com"}},
+		Endpoints: []EndpointInfo{
+			{Path: "/rate-limited", Method: "GET"},
+		},
+	}
+
+	tester := NewTester(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := tester.TestAll(ctx, spec)
+
+	// Check that we got one endpoint result
+	if len(result.Endpoints) != 1 {
+		t.Fatalf("Expected 1 endpoint, got %d", len(result.Endpoints))
+	}
+
+	ep := result.Endpoints[0]
+
+	// Check status code
+	if ep.StatusCode != 429 {
+		t.Errorf("Expected status code 429, got %d", ep.StatusCode)
+	}
+
+	// Check RateLimitInfo is populated
+	if ep.RateLimitInfo == nil {
+		t.Fatal("Expected RateLimitInfo to be populated")
+	}
+
+	if !ep.RateLimitInfo.RateLimitDetected {
+		t.Error("Expected RateLimitDetected to be true")
+	}
+
+	if ep.RateLimitInfo.RetryAfter != "30" {
+		t.Errorf("Expected RetryAfter to be '30', got '%s'", ep.RateLimitInfo.RetryAfter)
+	}
+
+	// Check rate limit headers
+	expectedHeaders := map[string]string{
+		"Retry-After":          "30",
+		"X-RateLimit-Limit":    "100",
+		"X-RateLimit-Remaining": "0",
+		"X-RateLimit-Reset":    "1625140800",
+	}
+
+	for name, expected := range expectedHeaders {
+		if ep.RateLimitInfo.RateLimitHeaders[name] != expected {
+			t.Errorf("Expected RateLimitHeaders[%s] to be '%s', got '%s'", name, expected, ep.RateLimitInfo.RateLimitHeaders[name])
+		}
+	}
+
+	// Check summary
+	if result.Summary.RateLimitedCount != 1 {
+		t.Errorf("Expected RateLimitedCount to be 1, got %d", result.Summary.RateLimitedCount)
+	}
+	if result.Summary.ClientErrorCount != 1 {
+		t.Errorf("Expected ClientErrorCount to be 1, got %d", result.Summary.ClientErrorCount)
+	}
+}
+
+func TestTester_RateLimitDetection_NoRateLimit(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	headers := http.Header{
+		"Content-Type": []string{"application/json"},
+	}
+	mockClient.AddResponse("https://api.example.com/normal", 200, `{"status":"ok"}`, headers)
+
+	spec := &APISpec{
+		Title:   "Test API",
+		Version: "1.0.0",
+		Servers: []ServerInfo{{URL: "https://api.example.com"}},
+		Endpoints: []EndpointInfo{
+			{Path: "/normal", Method: "GET"},
+		},
+	}
+
+	tester := NewTester(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := tester.TestAll(ctx, spec)
+
+	ep := result.Endpoints[0]
+
+	// Check that RateLimitInfo is nil when no rate limiting
+	if ep.RateLimitInfo != nil {
+		t.Error("Expected RateLimitInfo to be nil for normal response")
+	}
+
+	// Check summary
+	if result.Summary.RateLimitedCount != 0 {
+		t.Errorf("Expected RateLimitedCount to be 0, got %d", result.Summary.RateLimitedCount)
+	}
+}
+
+func TestTester_RateLimitDetection_WithRateLimitHeadersButNot429(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// Response with rate limit headers but not 429
+	// Use Header.Set() to ensure proper canonicalization
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("X-RateLimit-Limit", "100")
+	headers.Set("X-RateLimit-Remaining", "50")
+	headers.Set("X-RateLimit-Reset", "1625140800")
+	mockClient.AddResponse("https://api.example.com/with-headers", 200, `{"status":"ok"}`, headers)
+
+	spec := &APISpec{
+		Title:   "Test API",
+		Version: "1.0.0",
+		Servers: []ServerInfo{{URL: "https://api.example.com"}},
+		Endpoints: []EndpointInfo{
+			{Path: "/with-headers", Method: "GET"},
+		},
+	}
+
+	tester := NewTester(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := tester.TestAll(ctx, spec)
+
+	ep := result.Endpoints[0]
+
+	// Check that RateLimitInfo is populated with headers
+	if ep.RateLimitInfo == nil {
+		t.Fatal("Expected RateLimitInfo to be populated when rate limit headers present")
+	}
+
+	// But RateLimitDetected should be false since status is not 429
+	if ep.RateLimitInfo.RateLimitDetected {
+		t.Error("Expected RateLimitDetected to be false for non-429 response")
+	}
+
+	// Headers should still be captured
+	if ep.RateLimitInfo.RateLimitHeaders["X-RateLimit-Limit"] != "100" {
+		t.Errorf("Expected X-RateLimit-Limit to be '100', got '%s'", ep.RateLimitInfo.RateLimitHeaders["X-RateLimit-Limit"])
+	}
+
+	// Summary should not count this as rate limited
+	if result.Summary.RateLimitedCount != 0 {
+		t.Errorf("Expected RateLimitedCount to be 0, got %d", result.Summary.RateLimitedCount)
+	}
+}
+
+func TestTester_WithRespectRateLimits(t *testing.T) {
+	tester := NewTester(WithRespectRateLimits(true))
+	if !tester.respectRateLimits {
+		t.Error("Expected respectRateLimits to be true")
+	}
+
+	tester2 := NewTester(WithRespectRateLimits(false))
+	if tester2.respectRateLimits {
+		t.Error("Expected respectRateLimits to be false")
+	}
+}
+
+func TestTester_parseRetryAfter(t *testing.T) {
+	tester := NewTester()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected time.Duration
+	}{
+		{"empty", "", time.Second},
+		{"seconds", "30", 30 * time.Second},
+		{"zero", "0", 0},
+		{"invalid", "invalid", time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tester.parseRetryAfter(tt.input)
+			if result != tt.expected {
+				t.Errorf("parseRetryAfter(%q) = %v, expected %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTester_extractRateLimitHeaders(t *testing.T) {
+	tester := NewTester()
+
+	// Use Header.Set() to ensure proper canonicalization
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Retry-After", "60")
+	headers.Set("X-RateLimit-Limit", "1000")
+	headers.Set("X-RateLimit-Remaining", "999")
+	headers.Set("X-RateLimit-Reset", "1625140800")
+	headers.Set("RateLimit-Limit", "500")
+	headers.Set("RateLimit-Remaining", "499")
+	headers.Set("RateLimit-Reset", "1625140900")
+	headers.Set("X-Custom-Header", "ignored")
+
+	result := tester.extractRateLimitHeaders(headers)
+
+	expectedHeaders := map[string]string{
+		"Retry-After":          "60",
+		"X-RateLimit-Limit":    "1000",
+		"X-RateLimit-Remaining": "999",
+		"X-RateLimit-Reset":    "1625140800",
+		"RateLimit-Limit":      "500",
+		"RateLimit-Remaining":  "499",
+		"RateLimit-Reset":      "1625140900",
+	}
+
+	for name, expected := range expectedHeaders {
+		if result[name] != expected {
+			t.Errorf("Expected header %s=%s, got %s", name, expected, result[name])
+		}
+	}
+
+	// Check that non-rate-limit header was NOT included
+	if _, exists := result["Content-Type"]; exists {
+		t.Error("Content-Type should not be included in rate limit headers")
+	}
+
+	if _, exists := result["X-Custom-Header"]; exists {
+		t.Error("X-Custom-Header should not be included in rate limit headers")
+	}
+}
+
+func TestTester_detectRateLimit(t *testing.T) {
+	tester := NewTester()
+
+	t.Run("429 with headers", func(t *testing.T) {
+		headers := make(http.Header)
+		headers.Set("Retry-After", "30")
+		headers.Set("X-RateLimit-Limit", "100")
+
+		result := tester.detectRateLimit(429, headers)
+
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+		if !result.RateLimitDetected {
+			t.Error("Expected RateLimitDetected to be true")
+		}
+		if result.RetryAfter != "30" {
+			t.Errorf("Expected RetryAfter to be '30', got '%s'", result.RetryAfter)
+		}
+	})
+
+	t.Run("200 with no headers", func(t *testing.T) {
+		headers := http.Header{}
+
+		result := tester.detectRateLimit(200, headers)
+
+		if result != nil {
+			t.Error("Expected nil result for 200 with no rate limit headers")
+		}
+	})
+
+	t.Run("200 with rate limit headers", func(t *testing.T) {
+		headers := make(http.Header)
+		headers.Set("X-RateLimit-Remaining", "50")
+
+		result := tester.detectRateLimit(200, headers)
+
+		if result == nil {
+			t.Fatal("Expected non-nil result when headers present")
+		}
+		if result.RateLimitDetected {
+			t.Error("Expected RateLimitDetected to be false for 200 status")
+		}
+	})
+}
+
+func TestTestResult_String_WithRateLimited(t *testing.T) {
+	result := &TestResult{
+		BaseURL: "https://api.example.com",
+		Endpoints: []EndpointTestResult{
+			{
+				Endpoint:     EndpointInfo{Path: "/rate-limited", Method: "GET"},
+				StatusCode:   429,
+				ResponseTime: 10,
+				Tested:       true,
+				RateLimitInfo: &RateLimitInfo{
+					RateLimitDetected: true,
+					RetryAfter:        "30",
+				},
+			},
+		},
+		Summary: TestSummary{
+			TotalEndpoints:   1,
+			TestedEndpoints:  1,
+			ClientErrorCount: 1,
+			RateLimitedCount: 1,
+		},
+	}
+
+	str := result.String()
+
+	if !strings.Contains(str, "Rate Limited (429): 1") {
+		t.Error("String should contain rate limited count")
+	}
+}

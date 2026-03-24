@@ -24,6 +24,7 @@ func NewAPICmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth
 	var baseURL string
 	var dryRun bool
 	var timeout int
+	var respectRateLimits bool
 
 	cmd := &cobra.Command{
 		Use:   "api [target]",
@@ -69,7 +70,7 @@ Examples:
 
 			// If --spec is provided, parse the specification and optionally test endpoints
 			if specPath != "" {
-				runAPITesting(formatter, authConfig, specPath, baseURL, dryRun, timeout)
+				runAPITesting(formatter, authConfig, specPath, baseURL, dryRun, timeout, respectRateLimits)
 				return
 			}
 
@@ -108,12 +109,13 @@ Examples:
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Override the base URL from the specification")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List endpoints without making requests")
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "HTTP request timeout in seconds")
+	cmd.Flags().BoolVar(&respectRateLimits, "respect-rate-limits", false, "Pause when rate limited (HTTP 429) based on Retry-After header")
 
 	return cmd
 }
 
 // runAPITesting parses an API specification and tests the endpoints.
-func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, specPath, baseURL string, dryRun bool, timeout int) {
+func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, specPath, baseURL string, dryRun bool, timeout int, respectRateLimits bool) {
 	// Parse the specification
 	spec, err := api.ParseSpec(specPath)
 	if err != nil {
@@ -128,6 +130,7 @@ func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, spe
 	opts := []api.TesterOption{
 		api.WithTimeout(time.Duration(timeout) * time.Second),
 		api.WithDryRun(dryRun),
+		api.WithRespectRateLimits(respectRateLimits),
 	}
 
 	// Add base URL override if provided
