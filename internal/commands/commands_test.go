@@ -158,7 +158,7 @@ func TestReconResultData(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewReconCmd(testFormatter(&buf))
 
-	cmd.SetArgs([]string{"test-target.com"})
+	cmd.SetArgs([]string{"example.com"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -175,12 +175,51 @@ func TestReconResultData(t *testing.T) {
 		t.Fatalf("Expected data to be a map, got %T", result.Data)
 	}
 
-	if target, ok := data["target"].(string); !ok || target != "test-target.com" {
-		t.Errorf("Expected target 'test-target.com', got %v", data["target"])
+	if target, ok := data["target"].(string); !ok || target != "example.com" {
+		t.Errorf("Expected target 'example.com', got %v", data["target"])
 	}
 
-	if status, ok := data["status"].(string); !ok || status != "placeholder - not yet implemented" {
-		t.Errorf("Unexpected status: %v", data["status"])
+	// Check that DNS data is present
+	if dns, ok := data["dns"].(map[string]interface{}); !ok {
+		t.Errorf("Expected dns data to be present")
+	} else {
+		if domain, ok := dns["domain"].(string); !ok || domain != "example.com" {
+			t.Errorf("Expected dns domain 'example.com', got %v", dns["domain"])
+		}
+	}
+}
+
+func TestReconNoTarget(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewReconCmd(testFormatter(&buf))
+
+	// Execute without arguments
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Check that data contains available methods when no target is provided
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	if methods, ok := data["methods"].([]interface{}); !ok || len(methods) == 0 {
+		t.Errorf("Expected methods list when no target provided")
+	}
+
+	if status, ok := data["status"].(string); !ok || status == "" {
+		t.Errorf("Expected status message when no target provided")
 	}
 }
 
