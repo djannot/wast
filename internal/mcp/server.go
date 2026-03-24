@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
-	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
 )
 
@@ -221,7 +220,13 @@ func (s *Server) sendResponse(id interface{}, result interface{}) {
 		Result:  result,
 	}
 
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		// Fallback response for marshal errors
+		fallback := fmt.Sprintf(`{"jsonrpc":"2.0","id":%v,"error":{"code":-32603,"message":"Internal error: failed to marshal response"}}`, id)
+		fmt.Fprintln(s.writer, fallback)
+		return
+	}
 	fmt.Fprintln(s.writer, string(data))
 }
 
@@ -237,7 +242,13 @@ func (s *Server) sendError(id interface{}, code int, message string, data interf
 		},
 	}
 
-	responseData, _ := json.Marshal(resp)
+	responseData, err := json.Marshal(resp)
+	if err != nil {
+		// Fallback response for marshal errors
+		fallback := fmt.Sprintf(`{"jsonrpc":"2.0","id":%v,"error":{"code":-32603,"message":"Internal error: failed to marshal error response"}}`, id)
+		fmt.Fprintln(s.writer, fallback)
+		return
+	}
 	fmt.Fprintln(s.writer, string(responseData))
 }
 
@@ -300,11 +311,8 @@ func (t *ReconTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		}
 	}
 
-	// Create formatter for JSON output
-	formatter := output.NewFormatter("json", false, false)
-
 	// Execute recon command logic
-	result := executeRecon(args.Target, timeout, args.IncludeSubdomains, formatter)
+	result := executeRecon(ctx, args.Target, timeout, args.IncludeSubdomains)
 
 	return result, nil
 }
@@ -362,15 +370,12 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		args.Timeout = 30
 	}
 
-	// Create formatter for JSON output
-	formatter := output.NewFormatter("json", false, false)
-
 	// Create empty auth and rate limit configs
 	authConfig := &auth.AuthConfig{}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, authConfig, rateLimitConfig, formatter)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, authConfig, rateLimitConfig)
 
 	return result, nil
 }
@@ -444,15 +449,12 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		}
 	}
 
-	// Create formatter for JSON output
-	formatter := output.NewFormatter("json", false, false)
-
 	// Create empty auth and rate limit configs
 	authConfig := &auth.AuthConfig{}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute crawl command logic
-	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, authConfig, rateLimitConfig, formatter)
+	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, authConfig, rateLimitConfig)
 
 	return result, nil
 }
@@ -514,15 +516,12 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		args.Timeout = 30
 	}
 
-	// Create formatter for JSON output
-	formatter := output.NewFormatter("json", false, false)
-
 	// Create empty auth and rate limit configs
 	authConfig := &auth.AuthConfig{}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute API command logic
-	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig, formatter)
+	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig)
 
 	return result, nil
 }

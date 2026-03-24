@@ -8,7 +8,6 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/dns"
-	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/djannot/wast/pkg/tls"
@@ -35,14 +34,14 @@ type CompleteScanResult struct {
 }
 
 // executeRecon performs reconnaissance on a target domain.
-func executeRecon(target string, timeout time.Duration, includeSubdomains bool, formatter *output.Formatter) interface{} {
+func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool) interface{} {
 	// Perform DNS enumeration
 	enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 	dnsResult := enumerator.Enumerate(target)
 
 	// Perform subdomain discovery if enabled
 	if includeSubdomains {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		discoverer := dns.NewSubdomainDiscoverer(dns.WithSubdomainTimeout(timeout))
@@ -65,7 +64,7 @@ func executeRecon(target string, timeout time.Duration, includeSubdomains bool, 
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, formatter *output.Formatter) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
 	// Create scanner options
 	headerOpts := []scanner.Option{
 		scanner.WithTimeout(time.Duration(timeout) * time.Second),
@@ -145,7 +144,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 }
 
 // executeCrawl performs web crawling on a target URL.
-func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, formatter *output.Formatter) interface{} {
+func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
 	// Create crawler with configured options
 	opts := []crawler.Option{
 		crawler.WithMaxDepth(depth),
@@ -177,7 +176,7 @@ func executeCrawl(ctx context.Context, target string, depth int, timeout time.Du
 }
 
 // executeAPI performs API discovery and testing.
-func executeAPI(ctx context.Context, target string, specFile string, dryRun bool, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, formatter *output.Formatter) interface{} {
+func executeAPI(ctx context.Context, target string, specFile string, dryRun bool, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
 	// If --spec is provided, parse the specification and optionally test endpoints
 	if specFile != "" {
 		// Parse the specification

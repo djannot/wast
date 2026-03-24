@@ -39,12 +39,6 @@ Examples:
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 
-			// If not in MCP mode, show error
-			if !mcpMode {
-				formatter.Error("serve command requires --mcp flag")
-				os.Exit(1)
-			}
-
 			// Create and start MCP server
 			server := mcp.NewServer()
 
