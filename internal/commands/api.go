@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"github.com/djannot/wast/pkg/api"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -15,6 +16,8 @@ type APIResult struct {
 
 // NewAPICmd creates and returns the api command.
 func NewAPICmd(getFormatter func() *output.Formatter) *cobra.Command {
+	var specPath string
+
 	cmd := &cobra.Command{
 		Use:   "api [target]",
 		Short: "API security testing",
@@ -46,11 +49,19 @@ API-Specific Checks:
 
 Examples:
   wast api https://api.example.com                # Test API
-  wast api --spec openapi.yaml                    # Test from spec
+  wast api --spec openapi.yaml                    # Parse OpenAPI spec
+  wast api --spec swagger.yaml --output json      # Parse Swagger spec with JSON output
+  wast api --spec https://api.example.com/openapi.json  # Parse remote spec
   wast api https://example.com/graphql --graphql  # GraphQL testing
   wast api https://api.example.com --output json  # JSON output`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
+
+			// If --spec is provided, parse the specification
+			if specPath != "" {
+				runSpecParsing(formatter, specPath)
+				return
+			}
 
 			target := ""
 			if len(args) > 0 {
@@ -82,5 +93,22 @@ Examples:
 		},
 	}
 
+	// Add the --spec flag for OpenAPI/Swagger specification parsing
+	cmd.Flags().StringVar(&specPath, "spec", "", "Path or URL to OpenAPI/Swagger specification")
+
 	return cmd
+}
+
+// runSpecParsing parses an API specification and outputs the result.
+func runSpecParsing(formatter *output.Formatter, specPath string) {
+	spec, err := api.ParseSpec(specPath)
+	if err != nil {
+		formatter.Failure("api", "Failed to parse API specification", map[string]interface{}{
+			"spec_path": specPath,
+			"error":     err.Error(),
+		})
+		return
+	}
+
+	formatter.Success("api", "API specification parsed successfully", spec)
 }
