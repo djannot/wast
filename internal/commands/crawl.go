@@ -1,19 +1,24 @@
+// Package commands provides CLI command implementations for WAST.
 package commands
 
 import (
+	"context"
+	"time"
+
+	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
 
-// CrawlResult represents the result of a crawling operation.
-type CrawlResult struct {
-	Target   string   `json:"target,omitempty" yaml:"target,omitempty"`
-	Features []string `json:"features" yaml:"features"`
-	Status   string   `json:"status" yaml:"status"`
-}
-
 // NewCrawlCmd creates and returns the crawl command.
 func NewCrawlCmd(getFormatter func() *output.Formatter) *cobra.Command {
+	var (
+		depth     int
+		timeout   time.Duration
+		userAgent string
+		noRobots  bool
+	)
+
 	cmd := &cobra.Command{
 		Use:   "crawl [target]",
 		Short: "Web crawling and content discovery",
@@ -36,31 +41,69 @@ Examples:
   wast crawl https://example.com              # Basic crawl
   wast crawl https://example.com --output json # JSON output
   wast crawl https://example.com --depth 5     # Crawl depth limit
-  wast crawl https://example.com --no-robots   # Ignore robots.txt`,
+  wast crawl https://example.com --no-robots   # Ignore robots.txt
+  wast crawl https://example.com --timeout 60s # Custom timeout
+  wast crawl https://example.com --user-agent "MyBot/1.0" # Custom user agent`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 
-			target := ""
-			if len(args) > 0 {
-				target = args[0]
+			// Check if target is provided
+			if len(args) == 0 {
+				// Show available features when no target is provided
+				result := struct {
+					Features []string `json:"features" yaml:"features"`
+					Status   string   `json:"status" yaml:"status"`
+				}{
+					Features: []string{
+						"url_discovery",
+						"static_resource_mapping",
+						"api_endpoint_detection",
+						"form_analysis",
+						"robots_txt_parsing",
+						"internal_external_link_classification",
+					},
+					Status: "No target provided. Specify a URL to crawl.",
+				}
+				formatter.Success("crawl", "Crawl command - available features", result)
+				return
 			}
 
-			result := CrawlResult{
-				Target: target,
-				Features: []string{
-					"url_discovery",
-					"static_resource_mapping",
-					"api_endpoint_detection",
-					"form_analysis",
-					"directory_enumeration",
-					"sitemap_parsing",
-				},
-				Status: "placeholder - not yet implemented",
+			target := args[0]
+
+			// Create crawler with configured options
+			c := crawler.NewCrawler(
+				crawler.WithMaxDepth(depth),
+				crawler.WithTimeout(timeout),
+				crawler.WithUserAgent(userAgent),
+				crawler.WithRespectRobots(!noRobots),
+			)
+
+			// Create context with timeout
+			ctx, cancel := context.WithTimeout(context.Background(), timeout*time.Duration(depth+1))
+			defer cancel()
+
+			// Perform the crawl
+			result := c.Crawl(ctx, target)
+
+			// Determine message based on results
+			message := "Web crawl completed successfully"
+			if !result.HasResults() {
+				if len(result.Errors) > 0 {
+					message = "Web crawl completed with errors"
+				} else {
+					message = "Web crawl completed - no content discovered"
+				}
 			}
 
-			formatter.Success("crawl", "Crawl command (placeholder)", result)
+			formatter.Success("crawl", message, result)
 		},
 	}
+
+	// Add flags
+	cmd.Flags().IntVar(&depth, "depth", 3, "Maximum crawl depth (0 for unlimited)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for HTTP requests")
+	cmd.Flags().StringVar(&userAgent, "user-agent", "WAST/1.0 (Web Application Security Testing)", "User agent string for requests")
+	cmd.Flags().BoolVar(&noRobots, "no-robots", false, "Ignore robots.txt rules")
 
 	return cmd
 }
