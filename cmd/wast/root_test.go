@@ -395,7 +395,7 @@ func TestGetRateLimitConfig(t *testing.T) {
 
 // TestSubcommandRegistration tests that all expected subcommands are registered
 func TestSubcommandRegistration(t *testing.T) {
-	expectedCmds := []string{"recon", "crawl", "intercept", "scan", "api"}
+	expectedCmds := []string{"recon", "crawl", "intercept", "scan", "api", "serve"}
 
 	for _, cmdName := range expectedCmds {
 		t.Run(cmdName, func(t *testing.T) {
@@ -497,6 +497,12 @@ func TestRootCommandFlags(t *testing.T) {
 			flagName:     "delay",
 			shorthand:    "",
 			defaultValue: "0",
+		},
+		{
+			name:         "mcp flag",
+			flagName:     "mcp",
+			shorthand:    "",
+			defaultValue: "false",
 		},
 	}
 

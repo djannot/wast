@@ -2,10 +2,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/djannot/wast/internal/commands"
+	"github.com/djannot/wast/internal/mcp"
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
@@ -24,6 +28,7 @@ var (
 	outputFormat string
 	quiet        bool
 	verbose      bool
+	mcpMode      bool
 	// Authentication flags
 	authHeader  string
 	authBearer  string
@@ -76,7 +81,38 @@ Examples:
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() error {
+	// Check for --mcp flag before executing cobra command
+	// This ensures MCP mode starts immediately without running other cobra logic
+	for _, arg := range os.Args[1:] {
+		if arg == "--mcp" {
+			runMCPServer()
+			return nil
+		}
+	}
 	return rootCmd.Execute()
+}
+
+// runMCPServer starts the MCP server and handles graceful shutdown.
+func runMCPServer() {
+	server := mcp.NewServer()
+
+	// Set up context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle interrupt signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	// Run MCP server
+	if err := server.Run(ctx); err != nil && err != context.Canceled {
+		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+		osExit(1)
+	}
 }
 
 func init() {
@@ -89,6 +125,10 @@ func init() {
 		"Suppress all output except errors")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
 		"Enable verbose output")
+
+	// MCP server mode flag
+	rootCmd.PersistentFlags().BoolVar(&mcpMode, "mcp", false,
+		"Run in MCP (Model Context Protocol) server mode for AI agent integration")
 
 	// Authentication flags
 	rootCmd.PersistentFlags().StringVar(&authHeader, "auth-header", "",
@@ -112,6 +152,7 @@ func init() {
 	rootCmd.AddCommand(commands.NewInterceptCmd(getFormatter, getAuthConfig))
 	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig, getRateLimitConfig))
 	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig, getRateLimitConfig))
+	rootCmd.AddCommand(commands.NewServeCmd(getFormatter))
 }
 
 // getFormatter returns a new formatter with the current global settings.
