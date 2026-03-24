@@ -46,16 +46,19 @@ type ProxyResult struct {
 	Statistics   ProxyStats             `json:"statistics" yaml:"statistics"`
 	Errors       []string               `json:"errors,omitempty" yaml:"errors,omitempty"`
 	SavedToFile  string                 `json:"saved_to_file,omitempty" yaml:"saved_to_file,omitempty"`
+	HTTPSEnabled bool                   `json:"https_enabled" yaml:"https_enabled"`
+	CACertPath   string                 `json:"ca_cert_path,omitempty" yaml:"ca_cert_path,omitempty"`
 }
 
 // ProxyStats contains statistics about the proxy session.
 type ProxyStats struct {
-	TotalRequests   int `json:"total_requests" yaml:"total_requests"`
-	TotalResponses  int `json:"total_responses" yaml:"total_responses"`
-	SuccessCount    int `json:"success_count" yaml:"success_count"`
-	ErrorCount      int `json:"error_count" yaml:"error_count"`
-	TotalBytesIn    int `json:"total_bytes_in" yaml:"total_bytes_in"`
-	TotalBytesOut   int `json:"total_bytes_out" yaml:"total_bytes_out"`
+	TotalRequests    int `json:"total_requests" yaml:"total_requests"`
+	TotalResponses   int `json:"total_responses" yaml:"total_responses"`
+	SuccessCount     int `json:"success_count" yaml:"success_count"`
+	ErrorCount       int `json:"error_count" yaml:"error_count"`
+	TotalBytesIn     int `json:"total_bytes_in" yaml:"total_bytes_in"`
+	TotalBytesOut    int `json:"total_bytes_out" yaml:"total_bytes_out"`
+	HTTPSConnections int `json:"https_connections" yaml:"https_connections"`
 }
 
 // String returns a human-readable representation of the proxy result.
@@ -79,6 +82,9 @@ func (r *ProxyResult) String() string {
 	sb.WriteString(fmt.Sprintf("  Error Count: %d\n", r.Statistics.ErrorCount))
 	sb.WriteString(fmt.Sprintf("  Bytes In: %d\n", r.Statistics.TotalBytesIn))
 	sb.WriteString(fmt.Sprintf("  Bytes Out: %d\n", r.Statistics.TotalBytesOut))
+	if r.HTTPSEnabled {
+		sb.WriteString(fmt.Sprintf("  HTTPS Connections: %d\n", r.Statistics.HTTPSConnections))
+	}
 
 	if len(r.Traffic) > 0 {
 		sb.WriteString("\nIntercepted Traffic:\n")
@@ -96,6 +102,11 @@ func (r *ProxyResult) String() string {
 
 	if r.SavedToFile != "" {
 		sb.WriteString(fmt.Sprintf("\nTraffic saved to: %s\n", r.SavedToFile))
+	}
+
+	if r.HTTPSEnabled && r.CACertPath != "" {
+		sb.WriteString(fmt.Sprintf("\nCA Certificate: %s\n", r.CACertPath))
+		sb.WriteString("(Install this certificate in your browser/system to intercept HTTPS traffic)\n")
 	}
 
 	if len(r.Errors) > 0 {
