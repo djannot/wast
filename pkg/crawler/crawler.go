@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"golang.org/x/net/html"
 )
 
@@ -53,6 +54,7 @@ type Crawler struct {
 	respectRobots bool
 	robotsData    *RobotsData
 	authConfig    *auth.AuthConfig
+	rateLimiter   ratelimit.Limiter
 }
 
 // Option is a function that configures a Crawler.
@@ -97,6 +99,20 @@ func WithRespectRobots(respect bool) Option {
 func WithAuth(config *auth.AuthConfig) Option {
 	return func(cr *Crawler) {
 		cr.authConfig = config
+	}
+}
+
+// WithRateLimiter sets a rate limiter for the crawler.
+func WithRateLimiter(limiter ratelimit.Limiter) Option {
+	return func(cr *Crawler) {
+		cr.rateLimiter = limiter
+	}
+}
+
+// WithRateLimitConfig sets rate limiting from a configuration.
+func WithRateLimitConfig(cfg ratelimit.Config) Option {
+	return func(cr *Crawler) {
+		cr.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
 	}
 }
 
@@ -299,6 +315,13 @@ func (c *Crawler) fetchRobots(ctx context.Context, baseURL *url.URL, result *Cra
 
 // fetchPage fetches the content of a URL.
 func (c *Crawler) fetchPage(ctx context.Context, targetURL string) (string, error) {
+	// Apply rate limiting before making the request
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx); err != nil {
+			return "", err
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return "", err
@@ -318,6 +341,11 @@ func (c *Crawler) fetchPage(ctx context.Context, targetURL string) (string, erro
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return "", &httpError{statusCode: resp.StatusCode}
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return "", &httpError{statusCode: resp.StatusCode}

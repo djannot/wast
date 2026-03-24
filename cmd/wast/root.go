@@ -8,6 +8,7 @@ import (
 	"github.com/djannot/wast/internal/commands"
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +29,9 @@ var (
 	authBearer  string
 	authBasic   string
 	authCookies []string
+	// Rate limiting flags
+	rateLimit float64
+	delayMs   int
 )
 
 // rootCmd represents the base command when called without any subcommands.
@@ -93,12 +97,18 @@ func init() {
 	rootCmd.PersistentFlags().StringArrayVar(&authCookies, "cookie", nil,
 		"Session cookie (format: name=value, can be used multiple times)")
 
+	// Rate limiting flags
+	rootCmd.PersistentFlags().Float64Var(&rateLimit, "rate-limit", 0,
+		"Maximum requests per second (0 for unlimited)")
+	rootCmd.PersistentFlags().IntVar(&delayMs, "delay", 0,
+		"Delay between requests in milliseconds (overrides --rate-limit if both are set)")
+
 	// Add subcommands
 	rootCmd.AddCommand(commands.NewReconCmd(getFormatter, getAuthConfig))
-	rootCmd.AddCommand(commands.NewCrawlCmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewCrawlCmd(getFormatter, getAuthConfig, getRateLimitConfig))
 	rootCmd.AddCommand(commands.NewInterceptCmd(getFormatter, getAuthConfig))
-	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig))
-	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig, getRateLimitConfig))
+	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig, getRateLimitConfig))
 }
 
 // getFormatter returns a new formatter with the current global settings.
@@ -113,5 +123,13 @@ func getAuthConfig() *auth.AuthConfig {
 		BearerToken: authBearer,
 		BasicAuth:   authBasic,
 		Cookies:     authCookies,
+	}
+}
+
+// getRateLimitConfig returns the current rate limiting configuration.
+func getRateLimitConfig() ratelimit.Config {
+	return ratelimit.Config{
+		RequestsPerSecond: rateLimit,
+		DelayMs:           delayMs,
 	}
 }

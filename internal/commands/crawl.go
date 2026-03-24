@@ -8,11 +8,12 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 )
 
 // NewCrawlCmd creates and returns the crawl command.
-func NewCrawlCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
+func NewCrawlCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var (
 		depth     int
 		timeout   time.Duration
@@ -38,16 +39,23 @@ The crawl command performs intelligent web crawling to discover:
 The crawler respects robots.txt by default but can be configured
 to ignore it for authorized security testing.
 
+Rate Limiting:
+  Use --rate-limit or --delay to throttle requests and avoid triggering
+  rate limits or DoS protection on target systems.
+
 Examples:
   wast crawl https://example.com              # Basic crawl
   wast crawl https://example.com --output json # JSON output
   wast crawl https://example.com --depth 5     # Crawl depth limit
   wast crawl https://example.com --no-robots   # Ignore robots.txt
   wast crawl https://example.com --timeout 60s # Custom timeout
-  wast crawl https://example.com --user-agent "MyBot/1.0" # Custom user agent`,
+  wast crawl https://example.com --user-agent "MyBot/1.0" # Custom user agent
+  wast crawl https://example.com --rate-limit 2 # 2 requests per second
+  wast crawl https://example.com --delay 500   # 500ms delay between requests`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
+			rateLimitConfig := getRateLimitConfig()
 
 			// Check if target is provided
 			if len(args) == 0 {
@@ -83,6 +91,11 @@ Examples:
 			// Add authentication if configured
 			if !authConfig.IsEmpty() {
 				opts = append(opts, crawler.WithAuth(authConfig))
+			}
+
+			// Add rate limiting if configured
+			if rateLimitConfig.IsEnabled() {
+				opts = append(opts, crawler.WithRateLimitConfig(rateLimitConfig))
 			}
 
 			c := crawler.NewCrawler(opts...)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/ratelimit"
 )
 
 // HTTPClient defines the interface for HTTP operations, allowing for mock implementations in tests.
@@ -260,10 +261,11 @@ var securityHeaders = []securityHeader{
 
 // HTTPHeadersScanner performs passive security analysis of HTTP response headers.
 type HTTPHeadersScanner struct {
-	client     HTTPClient
-	userAgent  string
-	timeout    time.Duration
-	authConfig *auth.AuthConfig
+	client      HTTPClient
+	userAgent   string
+	timeout     time.Duration
+	authConfig  *auth.AuthConfig
+	rateLimiter ratelimit.Limiter
 }
 
 // Option is a function that configures an HTTPHeadersScanner.
@@ -297,6 +299,20 @@ func WithAuth(config *auth.AuthConfig) Option {
 	}
 }
 
+// WithRateLimiter sets a rate limiter for the scanner.
+func WithRateLimiter(limiter ratelimit.Limiter) Option {
+	return func(s *HTTPHeadersScanner) {
+		s.rateLimiter = limiter
+	}
+}
+
+// WithRateLimitConfig sets rate limiting from a configuration.
+func WithRateLimitConfig(cfg ratelimit.Config) Option {
+	return func(s *HTTPHeadersScanner) {
+		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
+	}
+}
+
 // NewHTTPHeadersScanner creates a new HTTPHeadersScanner with the given options.
 func NewHTTPHeadersScanner(opts ...Option) *HTTPHeadersScanner {
 	s := &HTTPHeadersScanner{
@@ -326,6 +342,14 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 		Errors:  make([]string, 0),
 	}
 
+	// Apply rate limiting before making the request
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+			return result
+		}
+	}
+
 	// Create and send initial request (without Origin header)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -347,6 +371,12 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 		return result
 	}
 	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		result.Errors = append(result.Errors, "Rate limited by server (HTTP 429)")
+		return result
+	}
 
 	// Analyze security headers
 	result.Headers = s.analyzeHeaders(resp.Header)
@@ -652,6 +682,13 @@ func (s *HTTPHeadersScanner) analyzeCORS(ctx context.Context, targetURL string, 
 
 // checkOriginReflection sends a request with a test Origin header to detect origin reflection.
 func (s *HTTPHeadersScanner) checkOriginReflection(ctx context.Context, targetURL string) bool {
+	// Apply rate limiting before making the request
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			return false
+		}
+	}
+
 	// Create a request with a test Origin header
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -673,6 +710,11 @@ func (s *HTTPHeadersScanner) checkOriginReflection(ctx context.Context, targetUR
 		return false
 	}
 	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return false
+	}
 
 	// Check if the response reflects our test origin
 	acao := resp.Header.Get("Access-Control-Allow-Origin")

@@ -7,6 +7,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,11 @@ func testFormatter(buf *bytes.Buffer) func() *output.Formatter {
 // testAuthConfig returns an empty auth config for testing
 func testAuthConfig() *auth.AuthConfig {
 	return &auth.AuthConfig{}
+}
+
+// testRateLimitConfig returns an empty rate limit config for testing
+func testRateLimitConfig() ratelimit.Config {
+	return ratelimit.Config{}
 }
 
 func TestReconCmd(t *testing.T) {
@@ -55,7 +61,7 @@ func TestReconCmd(t *testing.T) {
 
 func TestCrawlCmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig)
+	cmd := NewCrawlCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	if cmd.Use != "crawl [target]" {
 		t.Errorf("Expected Use 'crawl [target]', got %s", cmd.Use)
@@ -114,7 +120,7 @@ func TestInterceptCmd(t *testing.T) {
 
 func TestScanCmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig)
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	if cmd.Use != "scan [target]" {
 		t.Errorf("Expected Use 'scan [target]', got %s", cmd.Use)
@@ -141,7 +147,7 @@ func TestScanCmd(t *testing.T) {
 
 func TestAPICmd(t *testing.T) {
 	var buf bytes.Buffer
-	cmd := NewAPICmd(testFormatter(&buf), testAuthConfig)
+	cmd := NewAPICmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	if cmd.Use != "api [target]" {
 		t.Errorf("Expected Use 'api [target]', got %s", cmd.Use)
@@ -238,22 +244,22 @@ func TestReconNoTarget(t *testing.T) {
 func TestCommandsWithNoArgs(t *testing.T) {
 	tests := []struct {
 		name    string
-		cmdFunc func(func() *output.Formatter, func() *auth.AuthConfig) *cobra.Command
+		cmdFunc func(func() *output.Formatter, func() *auth.AuthConfig, func() ratelimit.Config) *cobra.Command
 	}{
-		{"recon", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
+		{"recon", func(f func() *output.Formatter, a func() *auth.AuthConfig, r func() ratelimit.Config) *cobra.Command {
 			cmd := NewReconCmd(f, a)
 			return cmd
 		}},
-		{"crawl", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
-			cmd := NewCrawlCmd(f, a)
+		{"crawl", func(f func() *output.Formatter, a func() *auth.AuthConfig, r func() ratelimit.Config) *cobra.Command {
+			cmd := NewCrawlCmd(f, a, r)
 			return cmd
 		}},
-		{"scan", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
-			cmd := NewScanCmd(f, a)
+		{"scan", func(f func() *output.Formatter, a func() *auth.AuthConfig, r func() ratelimit.Config) *cobra.Command {
+			cmd := NewScanCmd(f, a, r)
 			return cmd
 		}},
-		{"api", func(f func() *output.Formatter, a func() *auth.AuthConfig) *cobra.Command {
-			cmd := NewAPICmd(f, a)
+		{"api", func(f func() *output.Formatter, a func() *auth.AuthConfig, r func() ratelimit.Config) *cobra.Command {
+			cmd := NewAPICmd(f, a, r)
 			return cmd
 		}},
 	}
@@ -261,7 +267,7 @@ func TestCommandsWithNoArgs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			cmd := tt.cmdFunc(testFormatter(&buf), testAuthConfig)
+			cmd := tt.cmdFunc(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 			// Execute without arguments
 			err := cmd.Execute()

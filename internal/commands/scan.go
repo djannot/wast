@@ -6,6 +6,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +20,7 @@ type ScanResult struct {
 }
 
 // NewScanCmd creates and returns the scan command.
-func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
+func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var timeout int
 
 	cmd := &cobra.Command{
@@ -49,13 +50,20 @@ Configuration Analysis:
 Output includes severity ratings, remediation guidance, and
 CWE/CVE references where applicable.
 
+Rate Limiting:
+  Use --rate-limit or --delay to throttle requests and avoid triggering
+  rate limits or DoS protection on target systems.
+
 Examples:
   wast scan https://example.com               # Security headers scan
   wast scan https://example.com --output json # JSON output for AI
-  wast scan https://example.com --timeout 60  # Custom timeout`,
+  wast scan https://example.com --timeout 60  # Custom timeout
+  wast scan https://example.com --rate-limit 1 # 1 request per second
+  wast scan https://example.com --delay 1000  # 1 second delay between requests`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
+			rateLimitConfig := getRateLimitConfig()
 
 			target := ""
 			if len(args) > 0 {
@@ -91,6 +99,11 @@ Examples:
 			// Add authentication if configured
 			if !authConfig.IsEmpty() {
 				opts = append(opts, scanner.WithAuth(authConfig))
+			}
+
+			// Add rate limiting if configured
+			if rateLimitConfig.IsEnabled() {
+				opts = append(opts, scanner.WithRateLimitConfig(rateLimitConfig))
 			}
 
 			headerScanner := scanner.NewHTTPHeadersScanner(opts...)
