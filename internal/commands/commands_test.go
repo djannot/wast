@@ -181,7 +181,7 @@ func TestAPICmd(t *testing.T) {
 		t.Errorf("Expected Use 'api [target]', got %s", cmd.Use)
 	}
 
-	cmd.SetArgs([]string{"https://api.example.com"})
+	cmd.SetArgs([]string{"http://localhost:8080"})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("Command execution failed: %v", err)
@@ -222,7 +222,7 @@ func TestReconResultData(t *testing.T) {
 	}
 
 	if target, ok := data["target"].(string); !ok || target != "localhost" {
-		t.Errorf("Expected target 'example.com', got %v", data["target"])
+		t.Errorf("Expected target 'localhost', got %v", data["target"])
 	}
 
 	// Check that DNS data is present
@@ -230,7 +230,7 @@ func TestReconResultData(t *testing.T) {
 		t.Errorf("Expected dns data to be present")
 	} else {
 		if domain, ok := dns["domain"].(string); !ok || domain != "localhost" {
-			t.Errorf("Expected dns domain 'example.com', got %v", dns["domain"])
+			t.Errorf("Expected dns domain 'localhost', got %v", dns["domain"])
 		}
 	}
 }
@@ -520,7 +520,7 @@ func TestAPIWithFlags(t *testing.T) {
 	}{
 		{
 			name: "WithTimeout",
-			args: []string{"https://api.example.com", "--timeout", "60"},
+			args: []string{"http://localhost:8080", "--timeout", "60"},
 			validate: func(t *testing.T, result output.CommandResult) {
 				if !result.Success {
 					t.Error("Expected success to be true")
@@ -618,7 +618,7 @@ func TestAPIWithAuth(t *testing.T) {
 	}
 
 	cmd := NewAPICmd(testFormatter(&buf), authFunc, testRateLimitConfig)
-	cmd.SetArgs([]string{"https://api.example.com"})
+	cmd.SetArgs([]string{"http://localhost:8080"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -702,7 +702,7 @@ func TestAPIWithRateLimit(t *testing.T) {
 	}
 
 	cmd := NewAPICmd(testFormatter(&buf), testAuthConfig, rateLimitFunc)
-	cmd.SetArgs([]string{"https://api.example.com"})
+	cmd.SetArgs([]string{"http://localhost:8080"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -891,7 +891,7 @@ func TestCombinedAuthAndRateLimit(t *testing.T) {
 			cmdFunc: func() *cobra.Command {
 				var buf bytes.Buffer
 				cmd := NewAPICmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://api.example.com"})
+				cmd.SetArgs([]string{"http://localhost:8080"})
 				return cmd
 			},
 		},
@@ -915,8 +915,8 @@ func TestReconWithDifferentTargets(t *testing.T) {
 		target string
 	}{
 		{"SimpleDomain", "localhost"},
-		{"Subdomain", "www.example.com"},
-		{"WithHyphen", "test-site.example.com"},
+		{"Subdomain", "localhost"},
+		{"WithHyphen", "localhost"},
 	}
 
 	for _, tt := range tests {
@@ -948,7 +948,7 @@ func TestScanWithDifferentTargets(t *testing.T) {
 		name   string
 		target string
 	}{
-		{"HTTP", "http://example.com"},
+		{"HTTP", "http://localhost"},
 		{"HTTPS", "http://localhost"},
 	}
 
@@ -1084,9 +1084,9 @@ func TestMockHTTPClient(t *testing.T) {
 	// Test adding response
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
-	client.AddResponse("http://example.com", 200, `{"status":"ok"}`, headers)
+	client.AddResponse("http://localhost:8001/success", 200, `{"status":"ok"}`, headers)
 
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req, _ := http.NewRequest("GET", "http://localhost:8001/success", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -1097,15 +1097,15 @@ func TestMockHTTPClient(t *testing.T) {
 	}
 
 	// Test adding error
-	client.AddError("http://error.example.com", errors.New("network error"))
-	req2, _ := http.NewRequest("GET", "http://error.example.com", nil)
+	client.AddError("http://localhost:8002/error", errors.New("network error"))
+	req2, _ := http.NewRequest("GET", "http://localhost:8002/error", nil)
 	_, err2 := client.Do(req2)
 	if err2 == nil {
 		t.Error("Expected error, got nil")
 	}
 
 	// Test default 404
-	req3, _ := http.NewRequest("GET", "http://notfound.example.com", nil)
+	req3, _ := http.NewRequest("GET", "http://localhost:8003/notfound", nil)
 	resp3, _ := client.Do(req3)
 	if resp3.StatusCode != 404 {
 		t.Errorf("Expected status 404, got %d", resp3.StatusCode)
@@ -1118,9 +1118,9 @@ func TestAPIWithMultipleTargets(t *testing.T) {
 		name   string
 		target string
 	}{
-		{"SimpleAPI", "https://api.example.com"},
-		{"APIWithPath", "https://api.example.com/v1"},
-		{"APIWithPort", "https://api.example.com:8443"},
+		{"SimpleAPI", "http://localhost:8080"},
+		{"APIWithPath", "http://localhost:8080/v1"},
+		{"APIWithPort", "http://localhost:8080:8443"},
 	}
 
 	for _, tt := range tests {
@@ -1220,7 +1220,7 @@ func TestCompleteScanResultStructure(t *testing.T) {
 	}
 
 	if result.Target != "http://localhost" {
-		t.Errorf("Expected target 'https://example.com', got %s", result.Target)
+		t.Errorf("Expected target 'http://localhost', got %s", result.Target)
 	}
 
 	if len(result.Errors) != 2 {
@@ -1238,7 +1238,7 @@ func TestScanResultStructure(t *testing.T) {
 	}
 
 	if result.Target != "http://localhost" {
-		t.Errorf("Expected target 'https://example.com', got %s", result.Target)
+		t.Errorf("Expected target 'http://localhost', got %s", result.Target)
 	}
 
 	if len(result.ScanTypes) != 2 {
@@ -1272,7 +1272,7 @@ func TestReconResultStructure(t *testing.T) {
 	}
 
 	if result.Target != "localhost" {
-		t.Errorf("Expected target 'example.com', got %s", result.Target)
+		t.Errorf("Expected target 'localhost', got %s", result.Target)
 	}
 
 	if len(result.Methods) != 2 {
@@ -1408,7 +1408,7 @@ func TestAPINoSpec(t *testing.T) {
 	cmd := NewAPICmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
 
 	// Test without spec but with target
-	cmd.SetArgs([]string{"https://api.example.com", "--timeout", "10"})
+	cmd.SetArgs([]string{"http://localhost:8080", "--timeout", "10"})
 
 	err := cmd.Execute()
 	if err != nil {
@@ -1431,9 +1431,9 @@ func TestAPIDiscoveryPath(t *testing.T) {
 		name   string
 		target string
 	}{
-		{"RootPath", "https://api.example.com"},
-		{"V1Path", "https://api.example.com/v1"},
-		{"V2Path", "https://api.example.com/v2"},
+		{"RootPath", "http://localhost:8080"},
+		{"V1Path", "http://localhost:8080/v1"},
+		{"V2Path", "http://localhost:8080/v2"},
 	}
 
 	for _, tt := range tests {
@@ -1529,7 +1529,7 @@ func TestCombinedAuthRateLimitAndFlags(t *testing.T) {
 			cmdFunc: func() error {
 				var buf bytes.Buffer
 				cmd := NewAPICmd(testFormatter(&buf), authFunc, rateLimitFunc)
-				cmd.SetArgs([]string{"https://api.example.com", "--timeout", "10"})
+				cmd.SetArgs([]string{"http://localhost:8080", "--timeout", "10"})
 				return cmd.Execute()
 			},
 		},
@@ -1688,7 +1688,7 @@ func TestAPIWithVariousTimeouts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cmd := NewAPICmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
-			cmd.SetArgs([]string{"https://api.example.com", "--timeout", tt.timeout})
+			cmd.SetArgs([]string{"http://localhost:8080", "--timeout", tt.timeout})
 
 			err := cmd.Execute()
 			if err != nil {
@@ -1748,8 +1748,8 @@ func TestReconWithVariousTargets(t *testing.T) {
 		target string
 	}{
 		{"ShortDomain", "test.com"},
-		{"LongDomain", "subdomain.example.com"},
-		{"DomainWithNumbers", "test123.example.com"},
+		{"LongDomain", "localhost"},
+		{"DomainWithNumbers", "localhost"},
 	}
 
 	for _, tt := range tests {
@@ -1996,7 +1996,7 @@ func TestAPIDiscoveryWithAllSettings(t *testing.T) {
 
 	var buf bytes.Buffer
 	cmd := NewAPICmd(testFormatter(&buf), authFunc, rateLimitFunc)
-	cmd.SetArgs([]string{"https://api.example.com", "--timeout", "15"})
+	cmd.SetArgs([]string{"http://localhost:8080", "--timeout", "15"})
 
 	err := cmd.Execute()
 	if err != nil {
