@@ -616,3 +616,405 @@ func TestHTTPHeadersScanner_Scan_CookieSameSiteVariants(t *testing.T) {
 		})
 	}
 }
+
+// CORSMockHTTPClient is a mock that supports CORS testing with origin reflection.
+type CORSMockHTTPClient struct {
+	Responses       map[string]*http.Response
+	Errors          map[string]error
+	Requests        []*http.Request
+	ReflectOrigin   bool // If true, the mock will reflect the Origin header
+}
+
+// NewCORSMockHTTPClient creates a new CORSMockHTTPClient.
+func NewCORSMockHTTPClient() *CORSMockHTTPClient {
+	return &CORSMockHTTPClient{
+		Responses:     make(map[string]*http.Response),
+		Errors:        make(map[string]error),
+		Requests:      make([]*http.Request, 0),
+		ReflectOrigin: false,
+	}
+}
+
+// AddResponse adds a mock response for a URL with headers and cookies.
+func (m *CORSMockHTTPClient) AddResponse(url string, statusCode int, body string, headers http.Header, cookies []*http.Cookie) {
+	resp := &http.Response{
+		StatusCode: statusCode,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     headers,
+	}
+	if headers == nil {
+		resp.Header = make(http.Header)
+	}
+	// Add cookies to Set-Cookie header for proper parsing
+	for _, c := range cookies {
+		resp.Header.Add("Set-Cookie", c.String())
+	}
+	m.Responses[url] = resp
+}
+
+// Do performs the mock HTTP request with optional origin reflection.
+func (m *CORSMockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	m.Requests = append(m.Requests, req)
+	url := req.URL.String()
+
+	if err, ok := m.Errors[url]; ok {
+		return nil, err
+	}
+
+	if resp, ok := m.Responses[url]; ok {
+		// Create a fresh body for each request (since bodies can only be read once)
+		body := "<html></html>"
+		newResp := &http.Response{
+			StatusCode: resp.StatusCode,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}
+		// Copy headers
+		for k, v := range resp.Header {
+			newResp.Header[k] = v
+		}
+		// Reflect origin if configured
+		if m.ReflectOrigin {
+			origin := req.Header.Get("Origin")
+			if origin != "" {
+				newResp.Header.Set("Access-Control-Allow-Origin", origin)
+			}
+		}
+		return newResp, nil
+	}
+
+	// Default: 404
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Body:       io.NopCloser(strings.NewReader("Not Found")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestHTTPHeadersScanner_Scan_CORSWildcardWithCredentials(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":      []string{"*"},
+		"Access-Control-Allow-Credentials": []string{"true"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have CORS findings
+	if len(result.CORS) == 0 {
+		t.Fatal("Expected CORS findings")
+	}
+
+	// Check for high severity finding for wildcard with credentials
+	foundHighSeverity := false
+	for _, c := range result.CORS {
+		if c.Header == "Access-Control-Allow-Origin" && c.Value == "*" && c.Severity == SeverityHigh {
+			foundHighSeverity = true
+			if len(c.Issues) == 0 {
+				t.Error("Expected issues for wildcard with credentials")
+			}
+		}
+	}
+
+	if !foundHighSeverity {
+		t.Error("Expected high severity finding for wildcard with credentials")
+	}
+
+	// Check summary
+	if result.Summary.HighSeverityCount == 0 {
+		t.Error("Expected high severity count > 0")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSWildcardWithoutCredentials(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin": []string{"*"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have CORS findings
+	if len(result.CORS) == 0 {
+		t.Fatal("Expected CORS findings")
+	}
+
+	// Check for medium severity finding for wildcard without credentials
+	foundMediumSeverity := false
+	for _, c := range result.CORS {
+		if c.Header == "Access-Control-Allow-Origin" && c.Value == "*" && c.Severity == SeverityMedium {
+			foundMediumSeverity = true
+			if len(c.Issues) == 0 {
+				t.Error("Expected issues for wildcard origin")
+			}
+		}
+	}
+
+	if !foundMediumSeverity {
+		t.Error("Expected medium severity finding for wildcard origin")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSOriginReflection(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+	mockClient.ReflectOrigin = true
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin": []string{"https://trusted.example.com"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have CORS findings including origin reflection
+	foundOriginReflection := false
+	for _, c := range result.CORS {
+		if c.OriginReflection {
+			foundOriginReflection = true
+			if c.Severity != SeverityMedium && c.Severity != SeverityHigh {
+				t.Errorf("Expected medium or high severity for origin reflection, got %s", c.Severity)
+			}
+		}
+	}
+
+	if !foundOriginReflection {
+		t.Error("Expected origin reflection finding")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSOriginReflectionWithCredentials(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+	mockClient.ReflectOrigin = true
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":      []string{"https://trusted.example.com"},
+		"Access-Control-Allow-Credentials": []string{"true"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have CORS findings including origin reflection with high severity
+	foundHighSeverityReflection := false
+	for _, c := range result.CORS {
+		if c.OriginReflection && c.Severity == SeverityHigh {
+			foundHighSeverityReflection = true
+		}
+	}
+
+	if !foundHighSeverityReflection {
+		t.Error("Expected high severity finding for origin reflection with credentials")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSAllowMethods(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":  []string{"https://trusted.example.com"},
+		"Access-Control-Allow-Methods": []string{"GET, POST, PUT, DELETE"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have finding for methods
+	foundMethodsFinding := false
+	for _, c := range result.CORS {
+		if c.Header == "Access-Control-Allow-Methods" {
+			foundMethodsFinding = true
+			if c.Severity != SeverityLow {
+				t.Errorf("Expected low severity for dangerous methods, got %s", c.Severity)
+			}
+			if len(c.Issues) == 0 {
+				t.Error("Expected issues for dangerous methods (PUT, DELETE)")
+			}
+		}
+	}
+
+	if !foundMethodsFinding {
+		t.Error("Expected methods finding")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSAllowHeaders(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":  []string{"https://trusted.example.com"},
+		"Access-Control-Allow-Headers": []string{"*"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have finding for wildcard headers
+	foundHeadersFinding := false
+	for _, c := range result.CORS {
+		if c.Header == "Access-Control-Allow-Headers" && c.Value == "*" {
+			foundHeadersFinding = true
+			if c.Severity != SeverityLow {
+				t.Errorf("Expected low severity for wildcard headers, got %s", c.Severity)
+			}
+			if len(c.Issues) == 0 {
+				t.Error("Expected issues for wildcard headers")
+			}
+		}
+	}
+
+	if !foundHeadersFinding {
+		t.Error("Expected headers finding for wildcard")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSExposeHeaders(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":   []string{"https://trusted.example.com"},
+		"Access-Control-Expose-Headers": []string{"*"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have finding for wildcard expose headers
+	foundExposeFinding := false
+	for _, c := range result.CORS {
+		if c.Header == "Access-Control-Expose-Headers" && c.Value == "*" {
+			foundExposeFinding = true
+			if c.Severity != SeverityLow {
+				t.Errorf("Expected low severity for wildcard expose headers, got %s", c.Severity)
+			}
+			if len(c.Issues) == 0 {
+				t.Error("Expected issues for wildcard expose headers")
+			}
+		}
+	}
+
+	if !foundExposeFinding {
+		t.Error("Expected expose headers finding for wildcard")
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_CORSSecureConfiguration(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Access-Control-Allow-Origin":  []string{"https://trusted.example.com"},
+		"Access-Control-Allow-Methods": []string{"GET, POST"},
+		"Access-Control-Allow-Headers": []string{"Content-Type, Authorization"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// All CORS findings should have info severity (secure configuration)
+	for _, c := range result.CORS {
+		if c.Severity != SeverityInfo {
+			t.Errorf("Expected info severity for secure CORS config, got %s for %s", c.Severity, c.Header)
+		}
+	}
+
+	// Summary should reflect no CORS issues
+	if result.Summary.CORSIssues != 0 {
+		t.Errorf("Expected 0 CORS issues, got %d", result.Summary.CORSIssues)
+	}
+}
+
+func TestHTTPHeadersScanner_Scan_NoCORSHeaders(t *testing.T) {
+	mockClient := NewCORSMockHTTPClient()
+
+	headers := http.Header{
+		"Content-Type": []string{"text/html"},
+	}
+
+	mockClient.AddResponse("https://example.com", 200, "<html></html>", headers, nil)
+
+	scanner := NewHTTPHeadersScanner(WithHTTPClient(mockClient))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	// Should have no CORS findings when no CORS headers are present
+	if len(result.CORS) != 0 {
+		t.Errorf("Expected no CORS findings when no CORS headers present, got %d", len(result.CORS))
+	}
+}
+
+func TestHeaderScanResult_HasResults_WithCORS(t *testing.T) {
+	result := &HeaderScanResult{
+		Target: "https://example.com",
+		CORS:   []CORSFinding{{Header: "Access-Control-Allow-Origin"}},
+	}
+
+	if !result.HasResults() {
+		t.Error("Expected HasResults to return true when CORS findings present")
+	}
+}
+
+func TestHeaderScanResult_String_WithCORS(t *testing.T) {
+	result := &HeaderScanResult{
+		Target: "https://example.com",
+		CORS: []CORSFinding{
+			{
+				Header:      "Access-Control-Allow-Origin",
+				Value:       "*",
+				Present:     true,
+				Severity:    SeverityMedium,
+				Description: "Specifies which origins can access the resource",
+				Issues:      []string{"Wildcard (*) allows any origin to access resources"},
+				Remediation: "Consider restricting to specific trusted origins",
+			},
+		},
+		Summary: ScanSummary{
+			CORSIssues:          1,
+			MediumSeverityCount: 1,
+		},
+	}
+
+	str := result.String()
+
+	// Check that CORS section is present
+	checks := []string{
+		"CORS Policy",
+		"Access-Control-Allow-Origin",
+		"MEDIUM",
+		"Wildcard",
+		"Remediation",
+		"CORS Issues: 1",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(str, check) {
+			t.Errorf("String should contain %q", check)
+		}
+	}
+}

@@ -68,10 +68,12 @@ Examples:
 					ScanTypes: []string{
 						"header_analysis",
 						"cookie_security",
+						"cors_policy",
 					},
 					Capabilities: []string{
 						"http_security_headers",
 						"cookie_attribute_analysis",
+						"cors_policy_validation",
 						"severity_rating",
 						"remediation_guidance",
 					},
