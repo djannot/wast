@@ -1,20 +1,26 @@
 package commands
 
 import (
+	"context"
+	"time"
+
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/scanner"
 	"github.com/spf13/cobra"
 )
 
-// ScanResult represents the result of a security scan.
+// ScanResult represents the result of a security scan (for no-target case).
 type ScanResult struct {
 	Target       string   `json:"target,omitempty" yaml:"target,omitempty"`
-	ScanTypes    []string `json:"scan_types" yaml:"scan_types"`
-	Capabilities []string `json:"capabilities" yaml:"capabilities"`
-	Status       string   `json:"status" yaml:"status"`
+	ScanTypes    []string `json:"scan_types,omitempty" yaml:"scan_types,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Status       string   `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 // NewScanCmd creates and returns the scan command.
 func NewScanCmd(getFormatter func() *output.Formatter) *cobra.Command {
+	var timeout int
+
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
 		Short: "Security vulnerability scanning",
@@ -43,10 +49,9 @@ Output includes severity ratings, remediation guidance, and
 CWE/CVE references where applicable.
 
 Examples:
-  wast scan https://example.com               # Full security scan
+  wast scan https://example.com               # Security headers scan
   wast scan https://example.com --output json # JSON output for AI
-  wast scan https://example.com --quick       # Fast scan mode
-  wast scan https://example.com --sqli-only   # SQLi tests only`,
+  wast scan https://example.com --timeout 60  # Custom timeout`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 
@@ -55,33 +60,46 @@ Examples:
 				target = args[0]
 			}
 
-			result := ScanResult{
-				Target: target,
-				ScanTypes: []string{
-					"sqli",
-					"xss",
-					"csrf",
-					"ssrf",
-					"xxe",
-					"rce",
-					"lfi_rfi",
-					"auth_flaws",
-					"misconfig",
-				},
-				Capabilities: []string{
-					"header_analysis",
-					"ssl_tls_check",
-					"cookie_security",
-					"cors_validation",
-					"severity_rating",
-					"remediation_guidance",
-				},
-				Status: "placeholder - not yet implemented",
+			// If no target is provided, show available capabilities
+			if target == "" {
+				result := ScanResult{
+					ScanTypes: []string{
+						"header_analysis",
+						"cookie_security",
+					},
+					Capabilities: []string{
+						"http_security_headers",
+						"cookie_attribute_analysis",
+						"severity_rating",
+						"remediation_guidance",
+					},
+					Status: "No target provided. Specify a URL to perform a security headers scan.",
+				}
+				formatter.Success("scan", "Scan command - available capabilities", result)
+				return
 			}
 
-			formatter.Success("scan", "Scan command (placeholder)", result)
+			// Create scanner with timeout option
+			opts := []scanner.Option{
+				scanner.WithTimeout(time.Duration(timeout) * time.Second),
+			}
+
+			headerScanner := scanner.NewHTTPHeadersScanner(opts...)
+
+			// Perform the scan
+			ctx := context.Background()
+			result := headerScanner.Scan(ctx, target)
+
+			// Output result based on whether it succeeded
+			if len(result.Errors) > 0 && !result.HasResults() {
+				formatter.Failure("scan", "Security headers scan failed", result)
+			} else {
+				formatter.Success("scan", "Security headers scan completed", result)
+			}
 		},
 	}
+
+	cmd.Flags().IntVar(&timeout, "timeout", 30, "HTTP request timeout in seconds")
 
 	return cmd
 }
