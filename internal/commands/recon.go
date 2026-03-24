@@ -7,6 +7,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/dns"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/tls"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,7 @@ type ReconResult struct {
 	Methods []string        `json:"methods,omitempty" yaml:"methods,omitempty"`
 	Status  string          `json:"status,omitempty" yaml:"status,omitempty"`
 	DNS     *dns.DNSResult  `json:"dns,omitempty" yaml:"dns,omitempty"`
+	TLS     *tls.TLSResult  `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // NewReconCmd creates and returns the recon command.
@@ -74,19 +76,30 @@ Examples:
 			enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 			dnsResult := enumerator.Enumerate(target)
 
+			// Perform TLS certificate analysis
+			analyzer := tls.NewCertAnalyzer(tls.WithTimeout(timeout))
+			tlsResult := analyzer.Analyze(target)
+
 			result := ReconResult{
 				Target: target,
 				DNS:    dnsResult,
+				TLS:    tlsResult,
 			}
 
 			// Determine message based on results
-			message := "DNS enumeration completed"
-			if !dnsResult.HasRecords() {
-				if len(dnsResult.Errors) > 0 {
-					message = "DNS enumeration completed with errors"
-				} else {
-					message = "DNS enumeration completed - no records found"
-				}
+			message := "Reconnaissance completed"
+			hasIssues := false
+			if !dnsResult.HasRecords() && len(dnsResult.Errors) > 0 {
+				hasIssues = true
+			}
+			if !tlsResult.HasCertificate() && len(tlsResult.Errors) > 0 {
+				hasIssues = true
+			}
+			if hasIssues {
+				message = "Reconnaissance completed with some errors"
+			}
+			if tlsResult.HasSecurityIssues() {
+				message = "Reconnaissance completed - security issues found"
 			}
 
 			formatter.Success("recon", message, result)
