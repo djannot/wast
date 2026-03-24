@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"context"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
@@ -24,6 +25,7 @@ type ReconResult struct {
 // Note: getAuthConfig is accepted for future use when HTTP-based recon is implemented.
 func NewReconCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var timeout time.Duration
+	var subdomains bool
 
 	cmd := &cobra.Command{
 		Use:   "recon [target]",
@@ -47,7 +49,8 @@ Examples:
   wast recon example.com                    # Basic reconnaissance
   wast recon example.com --output json      # JSON output for AI agents
   wast recon example.com --verbose          # Detailed output
-  wast recon example.com --timeout 30s      # Custom DNS timeout`,
+  wast recon example.com --timeout 30s      # Custom DNS timeout
+  wast recon example.com --subdomains       # Include subdomain discovery`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 
@@ -75,6 +78,17 @@ Examples:
 			// Perform DNS enumeration
 			enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 			dnsResult := enumerator.Enumerate(target)
+
+			// Perform subdomain discovery if enabled
+			if subdomains {
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				defer cancel()
+
+				discoverer := dns.NewSubdomainDiscoverer(dns.WithSubdomainTimeout(timeout))
+				subs, subErrs := discoverer.Discover(ctx, target)
+				dnsResult.Subdomains = subs
+				dnsResult.Errors = append(dnsResult.Errors, subErrs...)
+			}
 
 			// Perform TLS certificate analysis
 			analyzer := tls.NewCertAnalyzer(tls.WithTimeout(timeout))
@@ -108,6 +122,7 @@ Examples:
 
 	// Add flags
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Second, "Timeout for DNS queries")
+	cmd.Flags().BoolVar(&subdomains, "subdomains", false, "Enable subdomain discovery via CT logs and zone transfer")
 
 	return cmd
 }

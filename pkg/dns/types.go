@@ -14,14 +14,15 @@ type MXRecord struct {
 
 // DNSResult contains the results of DNS enumeration for a domain.
 type DNSResult struct {
-	Domain string     `json:"domain" yaml:"domain"`
-	A      []string   `json:"a_records,omitempty" yaml:"a_records,omitempty"`
-	AAAA   []string   `json:"aaaa_records,omitempty" yaml:"aaaa_records,omitempty"`
-	MX     []MXRecord `json:"mx_records,omitempty" yaml:"mx_records,omitempty"`
-	NS     []string   `json:"ns_records,omitempty" yaml:"ns_records,omitempty"`
-	TXT    []string   `json:"txt_records,omitempty" yaml:"txt_records,omitempty"`
-	CNAME  string     `json:"cname,omitempty" yaml:"cname,omitempty"`
-	Errors []string   `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Domain     string     `json:"domain" yaml:"domain"`
+	Subdomains []string   `json:"subdomains,omitempty" yaml:"subdomains,omitempty"`
+	A          []string   `json:"a_records,omitempty" yaml:"a_records,omitempty"`
+	AAAA       []string   `json:"aaaa_records,omitempty" yaml:"aaaa_records,omitempty"`
+	MX         []MXRecord `json:"mx_records,omitempty" yaml:"mx_records,omitempty"`
+	NS         []string   `json:"ns_records,omitempty" yaml:"ns_records,omitempty"`
+	TXT        []string   `json:"txt_records,omitempty" yaml:"txt_records,omitempty"`
+	CNAME      string     `json:"cname,omitempty" yaml:"cname,omitempty"`
+	Errors     []string   `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // String returns a human-readable representation of the DNS result.
@@ -30,6 +31,13 @@ func (r *DNSResult) String() string {
 
 	sb.WriteString(fmt.Sprintf("DNS Enumeration Results for: %s\n", r.Domain))
 	sb.WriteString(strings.Repeat("=", 50) + "\n")
+
+	if len(r.Subdomains) > 0 {
+		sb.WriteString("\nSubdomains Discovered:\n")
+		for _, sub := range r.Subdomains {
+			sb.WriteString(fmt.Sprintf("  - %s\n", sub))
+		}
+	}
 
 	if len(r.A) > 0 {
 		sb.WriteString("\nA Records (IPv4):\n")
@@ -83,5 +91,5 @@ func (r *DNSResult) String() string {
 // HasRecords returns true if any DNS records were found.
 func (r *DNSResult) HasRecords() bool {
 	return len(r.A) > 0 || len(r.AAAA) > 0 || len(r.MX) > 0 ||
-		len(r.NS) > 0 || len(r.TXT) > 0 || r.CNAME != ""
+		len(r.NS) > 0 || len(r.TXT) > 0 || r.CNAME != "" || len(r.Subdomains) > 0
 }
