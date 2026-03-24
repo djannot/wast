@@ -446,9 +446,9 @@ func TestSQLiScanResult_String(t *testing.T) {
 			},
 		},
 		Summary: SQLiSummary{
-			TotalTests:          10,
+			TotalTests:           10,
 			VulnerabilitiesFound: 1,
-			HighSeverityCount:   1,
+			HighSeverityCount:    1,
 		},
 	}
 
@@ -629,43 +629,43 @@ func TestSQLiScanner_WithCustomOptions(t *testing.T) {
 func TestSQLiScanner_SQLErrorPatterns(t *testing.T) {
 	// Test that our error patterns can detect various database errors
 	testCases := []struct {
-		name     string
-		response string
+		name         string
+		response     string
 		shouldDetect bool
 	}{
 		{
-			name:     "MySQL error",
-			response: "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version",
+			name:         "MySQL error",
+			response:     "You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version",
 			shouldDetect: true,
 		},
 		{
-			name:     "PostgreSQL error",
-			response: "PostgreSQL query failed: ERROR: syntax error",
+			name:         "PostgreSQL error",
+			response:     "PostgreSQL query failed: ERROR: syntax error",
 			shouldDetect: true,
 		},
 		{
-			name:     "SQL Server error",
-			response: "Unclosed quotation mark after the character string",
+			name:         "SQL Server error",
+			response:     "Unclosed quotation mark after the character string",
 			shouldDetect: true,
 		},
 		{
-			name:     "Oracle error",
-			response: "ORA-01756: quoted string not properly terminated",
+			name:         "Oracle error",
+			response:     "ORA-01756: quoted string not properly terminated",
 			shouldDetect: true,
 		},
 		{
-			name:     "SQLite error",
-			response: "SQLite3::SQLException: near",
+			name:         "SQLite error",
+			response:     "SQLite3::SQLException: near",
 			shouldDetect: true,
 		},
 		{
-			name:     "Generic SQL error",
-			response: "SQLSTATE[42000]: Syntax error",
+			name:         "Generic SQL error",
+			response:     "SQLSTATE[42000]: Syntax error",
 			shouldDetect: true,
 		},
 		{
-			name:     "No error",
-			response: "This is a normal response with no database errors",
+			name:         "No error",
+			response:     "This is a normal response with no database errors",
 			shouldDetect: false,
 		},
 	}

@@ -619,10 +619,10 @@ func TestHTTPHeadersScanner_Scan_CookieSameSiteVariants(t *testing.T) {
 
 // CORSMockHTTPClient is a mock that supports CORS testing with origin reflection.
 type CORSMockHTTPClient struct {
-	Responses       map[string]*http.Response
-	Errors          map[string]error
-	Requests        []*http.Request
-	ReflectOrigin   bool // If true, the mock will reflect the Origin header
+	Responses     map[string]*http.Response
+	Errors        map[string]error
+	Requests      []*http.Request
+	ReflectOrigin bool // If true, the mock will reflect the Origin header
 }
 
 // NewCORSMockHTTPClient creates a new CORSMockHTTPClient.

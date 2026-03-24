@@ -571,10 +571,10 @@ func TestTestResult_String(t *testing.T) {
 				Tested:       true,
 			},
 			{
-				Endpoint:     EndpointInfo{Path: "/error", Method: "GET"},
-				StatusCode:   0,
-				Error:        "connection refused",
-				Tested:       true,
+				Endpoint:   EndpointInfo{Path: "/error", Method: "GET"},
+				StatusCode: 0,
+				Error:      "connection refused",
+				Tested:     true,
 			},
 		},
 		Summary: TestSummary{
@@ -735,10 +735,10 @@ func TestTester_RateLimitDetection_429Response(t *testing.T) {
 
 	// Check rate limit headers
 	expectedHeaders := map[string]string{
-		"Retry-After":          "30",
-		"X-RateLimit-Limit":    "100",
+		"Retry-After":           "30",
+		"X-RateLimit-Limit":     "100",
 		"X-RateLimit-Remaining": "0",
-		"X-RateLimit-Reset":    "1625140800",
+		"X-RateLimit-Reset":     "1625140800",
 	}
 
 	for name, expected := range expectedHeaders {
@@ -892,13 +892,13 @@ func TestTester_extractRateLimitHeaders(t *testing.T) {
 	result := tester.extractRateLimitHeaders(headers)
 
 	expectedHeaders := map[string]string{
-		"Retry-After":          "60",
-		"X-RateLimit-Limit":    "1000",
+		"Retry-After":           "60",
+		"X-RateLimit-Limit":     "1000",
 		"X-RateLimit-Remaining": "999",
-		"X-RateLimit-Reset":    "1625140800",
-		"RateLimit-Limit":      "500",
-		"RateLimit-Remaining":  "499",
-		"RateLimit-Reset":      "1625140900",
+		"X-RateLimit-Reset":     "1625140800",
+		"RateLimit-Limit":       "500",
+		"RateLimit-Remaining":   "499",
+		"RateLimit-Reset":       "1625140900",
 	}
 
 	for name, expected := range expectedHeaders {

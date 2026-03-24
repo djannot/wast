@@ -523,11 +523,11 @@ func TestCrawlResult_HasResults(t *testing.T) {
 
 func TestRobotsData_ParseRobots(t *testing.T) {
 	tests := []struct {
-		name            string
-		content         string
-		wantDisallow    []string
-		wantAllow       []string
-		wantSitemaps    []string
+		name         string
+		content      string
+		wantDisallow []string
+		wantAllow    []string
+		wantSitemaps []string
 	}{
 		{
 			name: "basic robots.txt",

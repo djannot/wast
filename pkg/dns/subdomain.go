@@ -175,7 +175,7 @@ func (d *SubdomainDiscoverer) Discover(ctx context.Context, domain string) ([]st
 
 // CTLogEntry represents an entry from crt.sh Certificate Transparency logs.
 type CTLogEntry struct {
-	NameValue string `json:"name_value"`
+	NameValue  string `json:"name_value"`
 	CommonName string `json:"common_name"`
 }
 

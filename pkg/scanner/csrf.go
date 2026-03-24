@@ -57,8 +57,8 @@ var csrfTokenFieldNames = []string{
 	"csrf_token",
 	"_csrf",
 	"_token",
-	"authenticity_token",        // Rails
-	"csrfmiddlewaretoken",       // Django
+	"authenticity_token",         // Rails
+	"csrfmiddlewaretoken",        // Django
 	"__requestverificationtoken", // .NET (case-insensitive)
 	"_csrf_token",
 	"csrf",
