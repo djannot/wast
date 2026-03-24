@@ -19,6 +19,14 @@ type ScanResult struct {
 	Status       string   `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
+// CompleteScanResult represents the combined results of all security scans.
+type CompleteScanResult struct {
+	Target  string                   `json:"target" yaml:"target"`
+	Headers *scanner.HeaderScanResult `json:"headers,omitempty" yaml:"headers,omitempty"`
+	XSS     *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
+	Errors  []string                  `json:"errors,omitempty" yaml:"errors,omitempty"`
+}
+
 // NewScanCmd creates and returns the scan command.
 func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var timeout int
@@ -77,46 +85,74 @@ Examples:
 						"header_analysis",
 						"cookie_security",
 						"cors_policy",
+						"xss_detection",
 					},
 					Capabilities: []string{
 						"http_security_headers",
 						"cookie_attribute_analysis",
 						"cors_policy_validation",
+						"xss_vulnerability_detection",
+						"reflected_xss_testing",
 						"severity_rating",
 						"remediation_guidance",
 					},
-					Status: "No target provided. Specify a URL to perform a security headers scan.",
+					Status: "No target provided. Specify a URL to perform a comprehensive security scan.",
 				}
 				formatter.Success("scan", "Scan command - available capabilities", result)
 				return
 			}
 
-			// Create scanner with timeout option
-			opts := []scanner.Option{
+			// Create scanner options
+			headerOpts := []scanner.Option{
 				scanner.WithTimeout(time.Duration(timeout) * time.Second),
+			}
+			xssOpts := []scanner.XSSOption{
+				scanner.WithXSSTimeout(time.Duration(timeout) * time.Second),
 			}
 
 			// Add authentication if configured
 			if !authConfig.IsEmpty() {
-				opts = append(opts, scanner.WithAuth(authConfig))
+				headerOpts = append(headerOpts, scanner.WithAuth(authConfig))
+				xssOpts = append(xssOpts, scanner.WithXSSAuth(authConfig))
 			}
 
 			// Add rate limiting if configured
 			if rateLimitConfig.IsEnabled() {
-				opts = append(opts, scanner.WithRateLimitConfig(rateLimitConfig))
+				headerOpts = append(headerOpts, scanner.WithRateLimitConfig(rateLimitConfig))
+				xssOpts = append(xssOpts, scanner.WithXSSRateLimitConfig(rateLimitConfig))
 			}
 
-			headerScanner := scanner.NewHTTPHeadersScanner(opts...)
+			// Create scanners
+			headerScanner := scanner.NewHTTPHeadersScanner(headerOpts...)
+			xssScanner := scanner.NewXSSScanner(xssOpts...)
 
-			// Perform the scan
+			// Perform the scans
 			ctx := context.Background()
-			result := headerScanner.Scan(ctx, target)
+			headerResult := headerScanner.Scan(ctx, target)
+			xssResult := xssScanner.Scan(ctx, target)
+
+			// Combine results
+			combinedResult := CompleteScanResult{
+				Target:  target,
+				Headers: headerResult,
+				XSS:     xssResult,
+				Errors:  make([]string, 0),
+			}
+
+			// Aggregate errors from both scans
+			if len(headerResult.Errors) > 0 {
+				combinedResult.Errors = append(combinedResult.Errors, headerResult.Errors...)
+			}
+			if len(xssResult.Errors) > 0 {
+				combinedResult.Errors = append(combinedResult.Errors, xssResult.Errors...)
+			}
 
 			// Output result based on whether it succeeded
-			if len(result.Errors) > 0 && !result.HasResults() {
-				formatter.Failure("scan", "Security headers scan failed", result)
+			hasResults := headerResult.HasResults() || xssResult.HasResults()
+			if len(combinedResult.Errors) > 0 && !hasResults {
+				formatter.Failure("scan", "Security scan failed", combinedResult)
 			} else {
-				formatter.Success("scan", "Security headers scan completed", result)
+				formatter.Success("scan", "Security scan completed", combinedResult)
 			}
 		},
 	}
