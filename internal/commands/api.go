@@ -11,9 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// APIResult represents the result of an API testing operation.
+// APIResult represents the result of an API testing operation when no target is provided.
 type APIResult struct {
-	Target   string   `json:"target,omitempty" yaml:"target,omitempty"`
 	Features []string `json:"features" yaml:"features"`
 	Formats  []string `json:"formats" yaml:"formats"`
 	Status   string   `json:"status" yaml:"status"`
@@ -82,33 +81,34 @@ Examples:
 				return
 			}
 
-			target := ""
-			if len(args) > 0 {
-				target = args[0]
+			// If no target is provided, show available features
+			if len(args) == 0 {
+				result := APIResult{
+					Features: []string{
+						"endpoint_discovery",
+						"auth_bypass_testing",
+						"authorization_testing",
+						"rate_limit_testing",
+						"input_validation",
+						"injection_testing",
+						"jwt_analysis",
+						"oauth_testing",
+					},
+					Formats: []string{
+						"rest",
+						"graphql",
+						"grpc",
+						"soap",
+					},
+					Status: "ready - provide a target URL or --spec flag to begin",
+				}
+				formatter.Success("api", "API command capabilities", result)
+				return
 			}
 
-			result := APIResult{
-				Target: target,
-				Features: []string{
-					"endpoint_discovery",
-					"auth_bypass_testing",
-					"authorization_testing",
-					"rate_limit_testing",
-					"input_validation",
-					"injection_testing",
-					"jwt_analysis",
-					"oauth_testing",
-				},
-				Formats: []string{
-					"rest",
-					"graphql",
-					"grpc",
-					"soap",
-				},
-				Status: "placeholder - not yet implemented",
-			}
-
-			formatter.Success("api", "API command (placeholder)", result)
+			// Target URL provided - perform API discovery
+			target := args[0]
+			runAPIDiscovery(formatter, authConfig, rateLimitConfig, target, timeout)
 		},
 	}
 
@@ -174,5 +174,37 @@ func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, rat
 		formatter.Failure("api", "API endpoint testing failed", result)
 	} else {
 		formatter.Success("api", message, result)
+	}
+}
+
+// runAPIDiscovery performs API endpoint discovery on the target URL.
+func runAPIDiscovery(formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, target string, timeout int) {
+	// Build discoverer options
+	opts := []api.DiscovererOption{
+		api.WithDiscovererTimeout(time.Duration(timeout) * time.Second),
+	}
+
+	// Add authentication if configured
+	if !authConfig.IsEmpty() {
+		opts = append(opts, api.WithDiscovererAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		opts = append(opts, api.WithDiscovererRateLimitConfig(rateLimitConfig))
+	}
+
+	// Create discoverer and run discovery
+	discoverer := api.NewDiscoverer(opts...)
+	ctx := context.Background()
+	result := discoverer.Discover(ctx, target)
+
+	// Determine success/failure based on results
+	if len(result.Errors) > 0 && result.Summary.EndpointsFound == 0 {
+		formatter.Failure("api", "API discovery failed", result)
+	} else if result.Summary.EndpointsFound > 0 {
+		formatter.Success("api", "API discovery completed", result)
+	} else {
+		formatter.Success("api", "API discovery completed - no documentation endpoints found", result)
 	}
 }
