@@ -75,28 +75,34 @@ func TestCrawlCmd(t *testing.T) {
 }
 
 func TestInterceptCmd(t *testing.T) {
-	var buf bytes.Buffer
-	cmd := NewInterceptCmd(testFormatter(&buf))
+	cmd := NewInterceptCmd(testFormatter(&bytes.Buffer{}))
 
+	// Test command structure (not execution since it's a blocking server)
 	if cmd.Use != "intercept" {
 		t.Errorf("Expected Use 'intercept', got %s", cmd.Use)
 	}
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Fatalf("Command execution failed: %v", err)
+	// Test that flags are registered
+	portFlag := cmd.Flag("port")
+	if portFlag == nil {
+		t.Error("Expected 'port' flag to be registered")
+	} else {
+		if portFlag.DefValue != "8080" {
+			t.Errorf("Expected default port 8080, got %s", portFlag.DefValue)
+		}
 	}
 
-	var result output.CommandResult
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		t.Fatalf("Failed to unmarshal output: %v", err)
+	saveFlag := cmd.Flag("save")
+	if saveFlag == nil {
+		t.Error("Expected 'save' flag to be registered")
 	}
 
-	if !result.Success {
-		t.Error("Expected success to be true")
+	// Test short and long description
+	if cmd.Short == "" {
+		t.Error("Expected short description to be set")
 	}
-	if result.Command != "intercept" {
-		t.Errorf("Expected command 'intercept', got %s", result.Command)
+	if cmd.Long == "" {
+		t.Error("Expected long description to be set")
 	}
 }
 
