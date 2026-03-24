@@ -42,6 +42,7 @@ type SQLiFinding struct {
 	Type        string `json:"type" yaml:"type"` // "error-based", "boolean-based", "time-based"
 	Description string `json:"description" yaml:"description"`
 	Remediation string `json:"remediation" yaml:"remediation"`
+	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
 }
 
 // SQLiSummary provides an overview of the SQL injection scan results.
@@ -434,6 +435,7 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 				Type:        payload.Type,
 				Description: payload.Description,
 				Remediation: s.getRemediation(),
+				Confidence:  "high", // Error-based detection with SQL errors is high confidence
 			}
 			return finding
 		}
@@ -442,101 +444,212 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 	return nil
 }
 
-// testBooleanBased tests a single parameter with a boolean-based SQL injection payload.
-func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse) *SQLiFinding {
-	if baseline == nil {
-		return nil
-	}
+// responseCharacteristics holds response data for comparison
+type responseCharacteristics struct {
+	StatusCode int
+	BodyLength int
+	Body       string
+}
 
-	// Create a copy of the URL with the test payload
+// makeRequest is a helper to make a request with a specific payload
+func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string) (*responseCharacteristics, error) {
 	testURL := *baseURL
 	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
+	q.Set(paramName, payloadValue)
 	testURL.RawQuery = q.Encode()
 
-	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	req.Header.Set("User-Agent", s.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	// Apply authentication configuration
 	if s.authConfig != nil {
 		s.authConfig.ApplyToRequest(req)
 	}
 
-	// Send the request
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// Handle rate limiting (HTTP 429)
 	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("rate limited")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return &responseCharacteristics{
+		StatusCode: resp.StatusCode,
+		BodyLength: len(body),
+		Body:       string(body),
+	}, nil
+}
+
+// testBooleanBased tests a single parameter with a boolean-based SQL injection payload.
+// It now performs differential analysis with complementary payloads to reduce false positives.
+func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse) *SQLiFinding {
+	if baseline == nil {
 		return nil
 	}
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	// For boolean-based detection, we need to test complementary conditions
+	// to confirm it's actually SQL injection and not just application behavior
+	var truePayload, falsePayload string
+	confidence := "medium"
+
+	// Identify the payload type and determine complementary payloads
+	if strings.Contains(payload.Payload, "'1'='1") {
+		truePayload = payload.Payload
+		// Create a complementary false condition
+		falsePayload = strings.ReplaceAll(payload.Payload, "'1'='1", "'1'='2")
+	} else if strings.Contains(payload.Payload, "'1'='2") {
+		falsePayload = payload.Payload
+		// Create a complementary true condition
+		truePayload = strings.ReplaceAll(payload.Payload, "'1'='2", "'1'='1")
+	} else {
+		// For other payloads, just do single test (backward compatibility)
+		testResp, err := s.makeRequest(ctx, baseURL, paramName, payload.Payload)
+		if err != nil {
+			return nil
+		}
+
+		// Check for SQL errors first (high confidence)
+		for _, pattern := range sqlErrorPatterns {
+			if pattern.MatchString(testResp.Body) {
+				match := pattern.FindString(testResp.Body)
+				return &SQLiFinding{
+					URL:         baseURL.String(),
+					Parameter:   paramName,
+					Payload:     payload.Payload,
+					Evidence:    s.extractEvidence(testResp.Body, match),
+					Severity:    payload.Severity,
+					Type:        payload.Type,
+					Description: payload.Description,
+					Remediation: s.getRemediation(),
+					Confidence:  "high", // SQL errors are high confidence
+				}
+			}
+		}
+
+		// Compare with baseline for significant differences
+		significantDifference := false
+		evidenceMsg := ""
+
+		if testResp.StatusCode != baseline.StatusCode {
+			significantDifference = true
+			evidenceMsg = fmt.Sprintf("Status code changed from %d to %d", baseline.StatusCode, testResp.StatusCode)
+		}
+
+		lengthDiff := abs(testResp.BodyLength - baseline.BodyLength)
+		if baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/10 {
+			significantDifference = true
+			if evidenceMsg != "" {
+				evidenceMsg += "; "
+			}
+			evidenceMsg += fmt.Sprintf("Response length changed from %d to %d bytes", baseline.BodyLength, testResp.BodyLength)
+		}
+
+		if significantDifference {
+			return &SQLiFinding{
+				URL:         baseURL.String(),
+				Parameter:   paramName,
+				Payload:     payload.Payload,
+				Evidence:    evidenceMsg,
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  "low", // Without differential analysis, confidence is low
+			}
+		}
+
+		return nil
+	}
+
+	// Perform differential analysis with true and false conditions
+	trueResp, err := s.makeRequest(ctx, baseURL, paramName, truePayload)
 	if err != nil {
 		return nil
 	}
 
-	bodyStr := string(body)
-
-	// Compare with baseline
-	// Check for significant differences in response
-	bodyLength := len(body)
-	statusCode := resp.StatusCode
-
-	// Detect boolean-based SQLi by comparing response characteristics
-	significantDifference := false
-	evidenceMsg := ""
-
-	// Check for status code change
-	if statusCode != baseline.StatusCode {
-		significantDifference = true
-		evidenceMsg = fmt.Sprintf("Status code changed from %d to %d", baseline.StatusCode, statusCode)
+	falseResp, err := s.makeRequest(ctx, baseURL, paramName, falsePayload)
+	if err != nil {
+		return nil
 	}
 
-	// Check for significant body length change (more than 10% difference)
-	lengthDiff := abs(bodyLength - baseline.BodyLength)
-	if baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/10 {
-		significantDifference = true
-		if evidenceMsg != "" {
-			evidenceMsg += "; "
-		}
-		evidenceMsg += fmt.Sprintf("Response length changed from %d to %d bytes", baseline.BodyLength, bodyLength)
-	}
-
-	// Also check for SQL errors (which would indicate vulnerability)
+	// Check if either response has SQL errors (indicates vulnerability)
 	for _, pattern := range sqlErrorPatterns {
-		if pattern.MatchString(bodyStr) {
-			significantDifference = true
-			match := pattern.FindString(bodyStr)
-			evidenceMsg = s.extractEvidence(bodyStr, match)
-			break
+		if pattern.MatchString(trueResp.Body) || pattern.MatchString(falseResp.Body) {
+			var match string
+			if pattern.MatchString(trueResp.Body) {
+				match = pattern.FindString(trueResp.Body)
+			} else {
+				match = pattern.FindString(falseResp.Body)
+			}
+			return &SQLiFinding{
+				URL:         baseURL.String(),
+				Parameter:   paramName,
+				Payload:     payload.Payload,
+				Evidence:    s.extractEvidence(trueResp.Body+falseResp.Body, match),
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  "high", // SQL errors are always high confidence
+			}
 		}
 	}
 
-	if significantDifference {
-		finding := &SQLiFinding{
-			URL:         testURL.String(),
+	// Differential analysis: compare true vs false responses
+	// For SQL injection: true and false conditions should produce different responses
+	trueDiffFromBaseline := abs(trueResp.BodyLength - baseline.BodyLength)
+	falseDiffFromBaseline := abs(falseResp.BodyLength - baseline.BodyLength)
+	trueFalseDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+
+	// Check if responses differ significantly between true and false conditions
+	statusDiffers := trueResp.StatusCode != falseResp.StatusCode
+	lengthDiffersSignificantly := false
+
+	// True and false should differ from each other
+	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+		lengthDiffersSignificantly = true
+	}
+
+	// Additionally, at least one should differ from baseline
+	baselineDiffers := false
+	if baseline.BodyLength > 0 && (trueDiffFromBaseline > baseline.BodyLength/10 || falseDiffFromBaseline > baseline.BodyLength/10) {
+		baselineDiffers = true
+	}
+
+	// For high confidence: true/false must behave differently AND one must differ from baseline
+	if (statusDiffers || lengthDiffersSignificantly) && (baselineDiffers || statusDiffers) {
+		confidence = "high"
+		evidenceMsg := fmt.Sprintf("Differential analysis: true condition returned %d bytes (status %d), false condition returned %d bytes (status %d), baseline was %d bytes (status %d)",
+			trueResp.BodyLength, trueResp.StatusCode,
+			falseResp.BodyLength, falseResp.StatusCode,
+			baseline.BodyLength, baseline.StatusCode)
+
+		return &SQLiFinding{
+			URL:         baseURL.String(),
 			Parameter:   paramName,
 			Payload:     payload.Payload,
 			Evidence:    evidenceMsg,
 			Severity:    payload.Severity,
 			Type:        payload.Type,
-			Description: payload.Description,
+			Description: payload.Description + " (confirmed via differential analysis)",
 			Remediation: s.getRemediation(),
+			Confidence:  confidence,
 		}
-		return finding
 	}
 
+	// If responses are identical or don't show SQL-like behavior, it's not vulnerable
 	return nil
 }
 

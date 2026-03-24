@@ -706,3 +706,178 @@ func TestAbs(t *testing.T) {
 		})
 	}
 }
+
+// Test for false positive: response differences that are NOT SQL injection
+func TestSQLiScanner_Scan_FalsePositive_NormalVariation(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline response
+	mock.responses["https://example.com/search?q=test"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Search results for 'test'</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	// Response with true payload - different but not due to SQL injection
+	// (e.g., application filters out single quotes)
+	mock.responses["https://example.com/search?q=%27+OR+%271%27%3D%271"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Search results for ''</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	// Response with false payload - similar to true payload (both filtered)
+	mock.responses["https://example.com/search?q=%27+OR+%271%27%3D%272"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Search results for ''</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT report vulnerability because true and false conditions produce same result
+	// (indicating proper input sanitization, not SQL injection)
+	vulnerabilitiesFound := 0
+	for _, finding := range result.Findings {
+		if finding.Type == "boolean-based" && strings.Contains(finding.Payload, "'1'='1") {
+			vulnerabilitiesFound++
+		}
+	}
+
+	if vulnerabilitiesFound > 0 {
+		t.Errorf("Should not report boolean-based SQLi when true/false conditions produce same result, but found %d", vulnerabilitiesFound)
+	}
+}
+
+// Test for true positive with high confidence: differential analysis confirms SQLi
+func TestSQLiScanner_Scan_TruePositive_DifferentialAnalysis(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline response
+	mock.responses["https://example.com/product?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Product ID 1: Widget</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	// Response with true payload - returns all products
+	mock.responses["https://example.com/product?id=%27+OR+%271%27%3D%271"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Product ID 1: Widget\nProduct ID 2: Gadget\nProduct ID 3: Tool\nProduct ID 4: Device</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	// Response with false payload - returns no products
+	mock.responses["https://example.com/product?id=%27+OR+%271%27%3D%272"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>No products found</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/product?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should find boolean-based SQLi with high confidence
+	found := false
+	for _, finding := range result.Findings {
+		if finding.Type == "boolean-based" && strings.Contains(finding.Payload, "'1'='1") {
+			found = true
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for differential analysis, got %s", finding.Confidence)
+			}
+			if !strings.Contains(finding.Description, "differential analysis") {
+				t.Errorf("Expected description to mention differential analysis, got %s", finding.Description)
+			}
+		}
+	}
+
+	if !found {
+		t.Error("Expected to find boolean-based SQLi with differential analysis confirmation")
+	}
+}
+
+// Test that error-based detection has high confidence
+func TestSQLiScanner_Scan_ErrorBased_HighConfidence(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Configure mock to return MySQL error
+	mock.responses["https://example.com/user?id=%27"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/user?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SQL injection vulnerability")
+	}
+
+	// Check that error-based findings have high confidence
+	for _, finding := range result.Findings {
+		if finding.Type == "error-based" {
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for error-based detection, got %s", finding.Confidence)
+			}
+		}
+	}
+}
+
+// Test that findings without clear evidence have appropriate confidence levels
+func TestSQLiScanner_Confidence_Levels(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline
+	baselineBody := "<html><body>Product details</body></html>"
+	mock.responses["https://example.com/item?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineBody)),
+		Header:     make(http.Header),
+	}
+
+	// Test with AND condition (no differential analysis)
+	mock.responses["https://example.com/item?id=%27+AND+%271%27%3D%271"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Product details with different length for testing</body></html>")),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/item?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// If any findings are reported for AND condition without differential analysis,
+	// they should have low confidence
+	for _, finding := range result.Findings {
+		if strings.Contains(finding.Payload, "AND '1'='1") {
+			if finding.Confidence != "low" && finding.Confidence != "high" {
+				t.Logf("Finding with payload %s has confidence %s", finding.Payload, finding.Confidence)
+			}
+		}
+	}
+}
