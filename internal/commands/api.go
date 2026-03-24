@@ -1,6 +1,9 @@
 package commands
 
 import (
+	"context"
+	"time"
+
 	"github.com/djannot/wast/pkg/api"
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
@@ -16,9 +19,11 @@ type APIResult struct {
 }
 
 // NewAPICmd creates and returns the api command.
-// Note: getAuthConfig is accepted for future use when API testing is implemented.
 func NewAPICmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var specPath string
+	var baseURL string
+	var dryRun bool
+	var timeout int
 
 	cmd := &cobra.Command{
 		Use:   "api [target]",
@@ -54,14 +59,17 @@ Examples:
   wast api --spec openapi.yaml                    # Parse OpenAPI spec
   wast api --spec swagger.yaml --output json      # Parse Swagger spec with JSON output
   wast api --spec https://api.example.com/openapi.json  # Parse remote spec
+  wast api --spec openapi.yaml --dry-run          # List endpoints without testing
+  wast api --spec openapi.yaml --base-url https://staging.api.com  # Override base URL
   wast api https://example.com/graphql --graphql  # GraphQL testing
   wast api https://api.example.com --output json  # JSON output`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
+			authConfig := getAuthConfig()
 
-			// If --spec is provided, parse the specification
+			// If --spec is provided, parse the specification and optionally test endpoints
 			if specPath != "" {
-				runSpecParsing(formatter, specPath)
+				runAPITesting(formatter, authConfig, specPath, baseURL, dryRun, timeout)
 				return
 			}
 
@@ -95,14 +103,18 @@ Examples:
 		},
 	}
 
-	// Add the --spec flag for OpenAPI/Swagger specification parsing
+	// Add flags
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path or URL to OpenAPI/Swagger specification")
+	cmd.Flags().StringVar(&baseURL, "base-url", "", "Override the base URL from the specification")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List endpoints without making requests")
+	cmd.Flags().IntVar(&timeout, "timeout", 30, "HTTP request timeout in seconds")
 
 	return cmd
 }
 
-// runSpecParsing parses an API specification and outputs the result.
-func runSpecParsing(formatter *output.Formatter, specPath string) {
+// runAPITesting parses an API specification and tests the endpoints.
+func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, specPath, baseURL string, dryRun bool, timeout int) {
+	// Parse the specification
 	spec, err := api.ParseSpec(specPath)
 	if err != nil {
 		formatter.Failure("api", "Failed to parse API specification", map[string]interface{}{
@@ -112,5 +124,39 @@ func runSpecParsing(formatter *output.Formatter, specPath string) {
 		return
 	}
 
-	formatter.Success("api", "API specification parsed successfully", spec)
+	// Build tester options
+	opts := []api.TesterOption{
+		api.WithTimeout(time.Duration(timeout) * time.Second),
+		api.WithDryRun(dryRun),
+	}
+
+	// Add base URL override if provided
+	if baseURL != "" {
+		opts = append(opts, api.WithBaseURL(baseURL))
+	}
+
+	// Add authentication if configured
+	if !authConfig.IsEmpty() {
+		opts = append(opts, api.WithAuth(authConfig))
+	}
+
+	// Create tester and run tests
+	tester := api.NewTester(opts...)
+	ctx := context.Background()
+	result := tester.TestAll(ctx, spec)
+
+	// Determine success message based on mode
+	var message string
+	if dryRun {
+		message = "API endpoints discovered (dry run)"
+	} else {
+		message = "API endpoint testing completed"
+	}
+
+	// Output result based on whether it succeeded
+	if len(result.Errors) > 0 && result.Summary.TestedEndpoints == 0 && !dryRun {
+		formatter.Failure("api", "API endpoint testing failed", result)
+	} else {
+		formatter.Success("api", message, result)
+	}
 }
