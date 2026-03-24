@@ -5,13 +5,14 @@ import (
 	"context"
 	"time"
 
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
 
 // NewCrawlCmd creates and returns the crawl command.
-func NewCrawlCmd(getFormatter func() *output.Formatter) *cobra.Command {
+func NewCrawlCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var (
 		depth     int
 		timeout   time.Duration
@@ -46,6 +47,7 @@ Examples:
   wast crawl https://example.com --user-agent "MyBot/1.0" # Custom user agent`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
+			authConfig := getAuthConfig()
 
 			// Check if target is provided
 			if len(args) == 0 {
@@ -71,12 +73,19 @@ Examples:
 			target := args[0]
 
 			// Create crawler with configured options
-			c := crawler.NewCrawler(
+			opts := []crawler.Option{
 				crawler.WithMaxDepth(depth),
 				crawler.WithTimeout(timeout),
 				crawler.WithUserAgent(userAgent),
 				crawler.WithRespectRobots(!noRobots),
-			)
+			}
+
+			// Add authentication if configured
+			if !authConfig.IsEmpty() {
+				opts = append(opts, crawler.WithAuth(authConfig))
+			}
+
+			c := crawler.NewCrawler(opts...)
 
 			// Create context with timeout
 			ctx, cancel := context.WithTimeout(context.Background(), timeout*time.Duration(depth+1))

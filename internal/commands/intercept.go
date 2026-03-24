@@ -7,13 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/proxy"
 	"github.com/spf13/cobra"
 )
 
 // NewInterceptCmd creates and returns the intercept command.
-func NewInterceptCmd(getFormatter func() *output.Formatter) *cobra.Command {
+// Note: getAuthConfig is accepted for future use when traffic modification is implemented.
+func NewInterceptCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var (
 		port     int
 		saveFile string

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/djannot/wast/pkg/auth"
 	"golang.org/x/net/html"
 )
 
@@ -51,6 +52,7 @@ type Crawler struct {
 	maxDepth      int
 	respectRobots bool
 	robotsData    *RobotsData
+	authConfig    *auth.AuthConfig
 }
 
 // Option is a function that configures a Crawler.
@@ -88,6 +90,13 @@ func WithMaxDepth(depth int) Option {
 func WithRespectRobots(respect bool) Option {
 	return func(cr *Crawler) {
 		cr.respectRobots = respect
+	}
+}
+
+// WithAuth sets the authentication configuration for the crawler.
+func WithAuth(config *auth.AuthConfig) Option {
+	return func(cr *Crawler) {
+		cr.authConfig = config
 	}
 }
 
@@ -298,6 +307,11 @@ func (c *Crawler) fetchPage(ctx context.Context, targetURL string) (string, erro
 	req.Header.Set("User-Agent", c.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+	// Apply authentication configuration
+	if c.authConfig != nil {
+		c.authConfig.ApplyToRequest(req)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

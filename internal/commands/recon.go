@@ -4,6 +4,7 @@ package commands
 import (
 	"time"
 
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/dns"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
@@ -18,7 +19,8 @@ type ReconResult struct {
 }
 
 // NewReconCmd creates and returns the recon command.
-func NewReconCmd(getFormatter func() *output.Formatter) *cobra.Command {
+// Note: getAuthConfig is accepted for future use when HTTP-based recon is implemented.
+func NewReconCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var timeout time.Duration
 
 	cmd := &cobra.Command{

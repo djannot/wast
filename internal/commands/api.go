@@ -2,6 +2,7 @@ package commands
 
 import (
 	"github.com/djannot/wast/pkg/api"
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -15,7 +16,8 @@ type APIResult struct {
 }
 
 // NewAPICmd creates and returns the api command.
-func NewAPICmd(getFormatter func() *output.Formatter) *cobra.Command {
+// Note: getAuthConfig is accepted for future use when API testing is implemented.
+func NewAPICmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
 	var specPath string
 
 	cmd := &cobra.Command{

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/djannot/wast/internal/commands"
+	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -22,6 +23,11 @@ var (
 	outputFormat string
 	quiet        bool
 	verbose      bool
+	// Authentication flags
+	authHeader  string
+	authBearer  string
+	authBasic   string
+	authCookies []string
 )
 
 // rootCmd represents the base command when called without any subcommands.
@@ -77,15 +83,35 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
 		"Enable verbose output")
 
+	// Authentication flags
+	rootCmd.PersistentFlags().StringVar(&authHeader, "auth-header", "",
+		"Custom auth header (e.g., \"Authorization: Bearer <token>\")")
+	rootCmd.PersistentFlags().StringVar(&authBearer, "auth-bearer", "",
+		"Bearer token (shorthand for Authorization: Bearer <token>)")
+	rootCmd.PersistentFlags().StringVar(&authBasic, "auth-basic", "",
+		"Basic auth credentials (format: user:pass)")
+	rootCmd.PersistentFlags().StringArrayVar(&authCookies, "cookie", nil,
+		"Session cookie (format: name=value, can be used multiple times)")
+
 	// Add subcommands
-	rootCmd.AddCommand(commands.NewReconCmd(getFormatter))
-	rootCmd.AddCommand(commands.NewCrawlCmd(getFormatter))
-	rootCmd.AddCommand(commands.NewInterceptCmd(getFormatter))
-	rootCmd.AddCommand(commands.NewScanCmd(getFormatter))
-	rootCmd.AddCommand(commands.NewAPICmd(getFormatter))
+	rootCmd.AddCommand(commands.NewReconCmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewCrawlCmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewInterceptCmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig))
+	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig))
 }
 
 // getFormatter returns a new formatter with the current global settings.
 func getFormatter() *output.Formatter {
 	return output.NewFormatter(outputFormat, quiet, verbose)
+}
+
+// getAuthConfig returns the current authentication configuration.
+func getAuthConfig() *auth.AuthConfig {
+	return &auth.AuthConfig{
+		AuthHeader:  authHeader,
+		BearerToken: authBearer,
+		BasicAuth:   authBasic,
+		Cookies:     authCookies,
+	}
 }
