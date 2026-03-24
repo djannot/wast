@@ -11,11 +11,11 @@ import (
 
 func TestValidFormats(t *testing.T) {
 	formats := ValidFormats()
-	if len(formats) != 3 {
-		t.Errorf("Expected 3 formats, got %d", len(formats))
+	if len(formats) != 4 {
+		t.Errorf("Expected 4 formats, got %d", len(formats))
 	}
 
-	expected := []string{"json", "yaml", "text"}
+	expected := []string{"json", "yaml", "text", "sarif"}
 	for i, f := range formats {
 		if f != expected[i] {
 			t.Errorf("Expected format %s at index %d, got %s", expected[i], i, f)
@@ -31,6 +31,7 @@ func TestIsValidFormat(t *testing.T) {
 		{"json", true},
 		{"yaml", true},
 		{"text", true},
+		{"sarif", true},
 		{"JSON", false}, // case sensitive
 		{"xml", false},
 		{"", false},
