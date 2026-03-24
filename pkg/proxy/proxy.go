@@ -36,10 +36,10 @@ type DefaultTransport struct {
 func NewDefaultTransport() *DefaultTransport {
 	return &DefaultTransport{
 		transport: &http.Transport{
-			MaxIdleConns:        100,
-			IdleConnTimeout:     90 * time.Second,
-			DisableKeepAlives:   false,
-			DisableCompression:  false,
+			MaxIdleConns:       100,
+			IdleConnTimeout:    90 * time.Second,
+			DisableKeepAlives:  false,
+			DisableCompression: false,
 		},
 	}
 }
@@ -56,6 +56,12 @@ type Proxy struct {
 	transport Transport
 	listener  Listener
 	server    *http.Server
+
+	// HTTPS interception
+	ca           *CertificateAuthority
+	certCache    *CertCache
+	mitmHandler  *MITMHandler
+	httpsEnabled bool
 
 	mu       sync.RWMutex
 	traffic  []*RequestResponsePair
@@ -97,6 +103,21 @@ func WithListener(l Listener) Option {
 	}
 }
 
+// WithCA sets the certificate authority for HTTPS interception.
+func WithCA(ca *CertificateAuthority) Option {
+	return func(p *Proxy) {
+		p.ca = ca
+		p.httpsEnabled = true
+	}
+}
+
+// WithHTTPSEnabled enables or disables HTTPS interception.
+func WithHTTPSEnabled(enabled bool) Option {
+	return func(p *Proxy) {
+		p.httpsEnabled = enabled
+	}
+}
+
 // NewProxy creates a new Proxy with the given options.
 func NewProxy(opts ...Option) *Proxy {
 	p := &Proxy{
@@ -112,6 +133,16 @@ func NewProxy(opts ...Option) *Proxy {
 	// Create default transport if not set
 	if p.transport == nil {
 		p.transport = NewDefaultTransport()
+	}
+
+	// Initialize HTTPS interception components if CA is set
+	if p.ca != nil && p.httpsEnabled {
+		p.certCache = NewCertCache(p.ca, DefaultCacheSize)
+		p.mitmHandler = NewMITMHandler(p, &MITMConfig{
+			CA:        p.ca,
+			CertCache: p.certCache,
+			Enabled:   true,
+		})
 	}
 
 	return p
@@ -171,6 +202,12 @@ func (p *Proxy) Start(ctx context.Context) (*ProxyResult, error) {
 
 // handleRequest handles incoming HTTP requests and proxies them.
 func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Handle CONNECT method for HTTPS tunneling
+	if r.Method == http.MethodConnect {
+		p.handleConnect(w, r)
+		return
+	}
+
 	startTime := time.Now()
 
 	// Generate unique request ID
@@ -285,6 +322,64 @@ func (p *Proxy) captureResponse(resp *http.Response, reqID string, startTime tim
 	}
 }
 
+// handleConnect handles CONNECT requests for HTTPS proxying.
+func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if p.mitmHandler != nil && p.httpsEnabled {
+		// Use MITM handler for HTTPS interception
+		p.mitmHandler.HandleConnect(w, r)
+	} else {
+		// Create a plain tunnel without interception
+		p.handleTunnel(w, r)
+	}
+}
+
+// handleTunnel creates a transparent tunnel for CONNECT requests without interception.
+func (p *Proxy) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	// Connect to target server
+	targetConn, err := net.DialTimeout("tcp", r.Host, 30*time.Second)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to connect to target: %v", err), http.StatusBadGateway)
+		p.addError(fmt.Sprintf("CONNECT tunnel failed to %s: %v", r.Host, err))
+		return
+	}
+	defer targetConn.Close()
+
+	// Hijack the client connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		p.addError("CONNECT failed: hijacking not supported")
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to hijack connection: %v", err), http.StatusInternalServerError)
+		p.addError(fmt.Sprintf("CONNECT hijack failed: %v", err))
+		return
+	}
+	defer clientConn.Close()
+
+	// Send 200 Connection Established to client
+	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+	// Create bidirectional tunnel
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		io.Copy(targetConn, clientConn)
+	}()
+
+	go func() {
+		defer wg.Done()
+		io.Copy(clientConn, targetConn)
+	}()
+
+	wg.Wait()
+}
+
 // handleError handles proxy errors and sends an error response to the client.
 func (p *Proxy) handleError(w http.ResponseWriter, reqID string, errMsg string) {
 	p.addError(fmt.Sprintf("[%s] %s", reqID, errMsg))
@@ -308,13 +403,24 @@ func (p *Proxy) buildResult() *ProxyResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Update HTTPS connection count
+	if p.mitmHandler != nil {
+		p.stats.HTTPSConnections = int(p.mitmHandler.GetHTTPSConnectionCount())
+	}
+
 	result := &ProxyResult{
-		Port:       p.port,
-		StartTime:  p.started,
-		EndTime:    time.Now(),
-		Traffic:    p.traffic,
-		Statistics: p.stats,
-		Errors:     p.errors,
+		Port:         p.port,
+		StartTime:    p.started,
+		EndTime:      time.Now(),
+		Traffic:      p.traffic,
+		Statistics:   p.stats,
+		Errors:       p.errors,
+		HTTPSEnabled: p.httpsEnabled,
+	}
+
+	// Include CA certificate path if HTTPS is enabled
+	if p.ca != nil && p.httpsEnabled {
+		result.CACertPath = p.ca.GetCertPath()
 	}
 
 	// Save to file if specified
