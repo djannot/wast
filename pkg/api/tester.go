@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/ratelimit"
 )
 
 // HTTPClient defines the interface for HTTP operations, allowing for mock implementations in tests.
@@ -141,6 +142,7 @@ type Tester struct {
 	baseURL           string
 	dryRun            bool
 	respectRateLimits bool
+	rateLimiter       ratelimit.Limiter
 }
 
 // TesterOption is a function that configures a Tester.
@@ -192,6 +194,20 @@ func WithDryRun(dryRun bool) TesterOption {
 func WithRespectRateLimits(respect bool) TesterOption {
 	return func(t *Tester) {
 		t.respectRateLimits = respect
+	}
+}
+
+// WithRateLimiter sets a rate limiter for the tester.
+func WithRateLimiter(limiter ratelimit.Limiter) TesterOption {
+	return func(t *Tester) {
+		t.rateLimiter = limiter
+	}
+}
+
+// WithRateLimitConfig sets rate limiting from a configuration.
+func WithRateLimitConfig(cfg ratelimit.Config) TesterOption {
+	return func(t *Tester) {
+		t.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
 	}
 }
 
@@ -275,6 +291,14 @@ func (t *Tester) TestEndpoint(ctx context.Context, baseURL string, endpoint Endp
 	// In dry run mode, just return the endpoint info without testing
 	if t.dryRun {
 		return result
+	}
+
+	// Apply rate limiting before making the request
+	if t.rateLimiter != nil {
+		if err := t.rateLimiter.Wait(ctx); err != nil {
+			result.Error = fmt.Sprintf("Rate limiting error: %s", err.Error())
+			return result
+		}
 	}
 
 	// Build the full URL

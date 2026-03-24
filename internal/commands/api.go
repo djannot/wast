@@ -7,6 +7,7 @@ import (
 	"github.com/djannot/wast/pkg/api"
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +20,7 @@ type APIResult struct {
 }
 
 // NewAPICmd creates and returns the api command.
-func NewAPICmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig) *cobra.Command {
+func NewAPICmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var specPath string
 	var baseURL string
 	var dryRun bool
@@ -55,6 +56,10 @@ API-Specific Checks:
   - Excessive data exposure
   - Broken function level authorization
 
+Rate Limiting:
+  Use --rate-limit or --delay to throttle requests proactively.
+  Use --respect-rate-limits to handle HTTP 429 responses with automatic backoff.
+
 Examples:
   wast api https://api.example.com                # Test API
   wast api --spec openapi.yaml                    # Parse OpenAPI spec
@@ -63,14 +68,17 @@ Examples:
   wast api --spec openapi.yaml --dry-run          # List endpoints without testing
   wast api --spec openapi.yaml --base-url https://staging.api.com  # Override base URL
   wast api https://example.com/graphql --graphql  # GraphQL testing
-  wast api https://api.example.com --output json  # JSON output`,
+  wast api https://api.example.com --output json  # JSON output
+  wast api --spec openapi.yaml --rate-limit 5     # 5 requests per second
+  wast api --spec openapi.yaml --delay 200        # 200ms delay between requests`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
+			rateLimitConfig := getRateLimitConfig()
 
 			// If --spec is provided, parse the specification and optionally test endpoints
 			if specPath != "" {
-				runAPITesting(formatter, authConfig, specPath, baseURL, dryRun, timeout, respectRateLimits)
+				runAPITesting(formatter, authConfig, rateLimitConfig, specPath, baseURL, dryRun, timeout, respectRateLimits)
 				return
 			}
 
@@ -115,7 +123,7 @@ Examples:
 }
 
 // runAPITesting parses an API specification and tests the endpoints.
-func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, specPath, baseURL string, dryRun bool, timeout int, respectRateLimits bool) {
+func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, specPath, baseURL string, dryRun bool, timeout int, respectRateLimits bool) {
 	// Parse the specification
 	spec, err := api.ParseSpec(specPath)
 	if err != nil {
@@ -141,6 +149,11 @@ func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, spe
 	// Add authentication if configured
 	if !authConfig.IsEmpty() {
 		opts = append(opts, api.WithAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		opts = append(opts, api.WithRateLimitConfig(rateLimitConfig))
 	}
 
 	// Create tester and run tests
