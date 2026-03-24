@@ -34,6 +34,9 @@ var (
 	delayMs   int
 )
 
+// osExit is a variable that points to os.Exit, allowing it to be overridden in tests
+var osExit = os.Exit
+
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
 	Use:   "wast",
@@ -61,12 +64,12 @@ Examples:
 		if !output.IsValidFormat(outputFormat) {
 			fmt.Fprintf(os.Stderr, "Invalid output format: %s. Valid formats: %v\n",
 				outputFormat, output.ValidFormats())
-			os.Exit(1)
+			osExit(1)
 		}
 		// Validate quiet and verbose are not both set
 		if quiet && verbose {
 			fmt.Fprintln(os.Stderr, "Cannot use both --quiet and --verbose")
-			os.Exit(1)
+			osExit(1)
 		}
 	},
 }
