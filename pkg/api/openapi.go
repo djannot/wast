@@ -8,12 +8,12 @@ import (
 
 // OpenAPI3Spec represents an OpenAPI 3.x specification.
 type OpenAPI3Spec struct {
-	OpenAPI    string                        `json:"openapi" yaml:"openapi"`
-	Info       OpenAPI3Info                  `json:"info" yaml:"info"`
-	Servers    []OpenAPI3Server              `json:"servers,omitempty" yaml:"servers,omitempty"`
-	Paths      map[string]OpenAPI3PathItem   `json:"paths" yaml:"paths"`
-	Components *OpenAPI3Components           `json:"components,omitempty" yaml:"components,omitempty"`
-	Security   []map[string][]string         `json:"security,omitempty" yaml:"security,omitempty"`
+	OpenAPI    string                      `json:"openapi" yaml:"openapi"`
+	Info       OpenAPI3Info                `json:"info" yaml:"info"`
+	Servers    []OpenAPI3Server            `json:"servers,omitempty" yaml:"servers,omitempty"`
+	Paths      map[string]OpenAPI3PathItem `json:"paths" yaml:"paths"`
+	Components *OpenAPI3Components         `json:"components,omitempty" yaml:"components,omitempty"`
+	Security   []map[string][]string       `json:"security,omitempty" yaml:"security,omitempty"`
 }
 
 // OpenAPI3Info represents the info section of an OpenAPI 3.x specification.
@@ -31,28 +31,28 @@ type OpenAPI3Server struct {
 
 // OpenAPI3PathItem represents a path item in an OpenAPI 3.x specification.
 type OpenAPI3PathItem struct {
-	Get        *OpenAPI3Operation   `json:"get,omitempty" yaml:"get,omitempty"`
-	Post       *OpenAPI3Operation   `json:"post,omitempty" yaml:"post,omitempty"`
-	Put        *OpenAPI3Operation   `json:"put,omitempty" yaml:"put,omitempty"`
-	Delete     *OpenAPI3Operation   `json:"delete,omitempty" yaml:"delete,omitempty"`
-	Patch      *OpenAPI3Operation   `json:"patch,omitempty" yaml:"patch,omitempty"`
-	Options    *OpenAPI3Operation   `json:"options,omitempty" yaml:"options,omitempty"`
-	Head       *OpenAPI3Operation   `json:"head,omitempty" yaml:"head,omitempty"`
-	Trace      *OpenAPI3Operation   `json:"trace,omitempty" yaml:"trace,omitempty"`
-	Parameters []OpenAPI3Parameter  `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	Get        *OpenAPI3Operation  `json:"get,omitempty" yaml:"get,omitempty"`
+	Post       *OpenAPI3Operation  `json:"post,omitempty" yaml:"post,omitempty"`
+	Put        *OpenAPI3Operation  `json:"put,omitempty" yaml:"put,omitempty"`
+	Delete     *OpenAPI3Operation  `json:"delete,omitempty" yaml:"delete,omitempty"`
+	Patch      *OpenAPI3Operation  `json:"patch,omitempty" yaml:"patch,omitempty"`
+	Options    *OpenAPI3Operation  `json:"options,omitempty" yaml:"options,omitempty"`
+	Head       *OpenAPI3Operation  `json:"head,omitempty" yaml:"head,omitempty"`
+	Trace      *OpenAPI3Operation  `json:"trace,omitempty" yaml:"trace,omitempty"`
+	Parameters []OpenAPI3Parameter `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 }
 
 // OpenAPI3Operation represents an operation in an OpenAPI 3.x specification.
 type OpenAPI3Operation struct {
-	OperationID string                   `json:"operationId,omitempty" yaml:"operationId,omitempty"`
-	Summary     string                   `json:"summary,omitempty" yaml:"summary,omitempty"`
-	Description string                   `json:"description,omitempty" yaml:"description,omitempty"`
-	Tags        []string                 `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Parameters  []OpenAPI3Parameter      `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	RequestBody *OpenAPI3RequestBody     `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
+	OperationID string                      `json:"operationId,omitempty" yaml:"operationId,omitempty"`
+	Summary     string                      `json:"summary,omitempty" yaml:"summary,omitempty"`
+	Description string                      `json:"description,omitempty" yaml:"description,omitempty"`
+	Tags        []string                    `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Parameters  []OpenAPI3Parameter         `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	RequestBody *OpenAPI3RequestBody        `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
 	Responses   map[string]OpenAPI3Response `json:"responses,omitempty" yaml:"responses,omitempty"`
-	Security    []map[string][]string    `json:"security,omitempty" yaml:"security,omitempty"`
-	Deprecated  bool                     `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
+	Security    []map[string][]string       `json:"security,omitempty" yaml:"security,omitempty"`
+	Deprecated  bool                        `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 }
 
 // OpenAPI3Parameter represents a parameter in an OpenAPI 3.x specification.
@@ -67,10 +67,10 @@ type OpenAPI3Parameter struct {
 
 // OpenAPI3RequestBody represents a request body in an OpenAPI 3.x specification.
 type OpenAPI3RequestBody struct {
-	Description string                           `json:"description,omitempty" yaml:"description,omitempty"`
-	Required    bool                             `json:"required,omitempty" yaml:"required,omitempty"`
-	Content     map[string]OpenAPI3MediaType     `json:"content,omitempty" yaml:"content,omitempty"`
-	Ref         string                           `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+	Description string                       `json:"description,omitempty" yaml:"description,omitempty"`
+	Required    bool                         `json:"required,omitempty" yaml:"required,omitempty"`
+	Content     map[string]OpenAPI3MediaType `json:"content,omitempty" yaml:"content,omitempty"`
+	Ref         string                       `json:"$ref,omitempty" yaml:"$ref,omitempty"`
 }
 
 // OpenAPI3MediaType represents a media type in an OpenAPI 3.x specification.
@@ -100,10 +100,10 @@ type OpenAPI3Schema struct {
 
 // OpenAPI3Components represents the components section of an OpenAPI 3.x specification.
 type OpenAPI3Components struct {
-	Schemas         map[string]*OpenAPI3Schema       `json:"schemas,omitempty" yaml:"schemas,omitempty"`
+	Schemas         map[string]*OpenAPI3Schema         `json:"schemas,omitempty" yaml:"schemas,omitempty"`
 	SecuritySchemes map[string]*OpenAPI3SecurityScheme `json:"securitySchemes,omitempty" yaml:"securitySchemes,omitempty"`
-	Parameters      map[string]*OpenAPI3Parameter    `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	RequestBodies   map[string]*OpenAPI3RequestBody  `json:"requestBodies,omitempty" yaml:"requestBodies,omitempty"`
+	Parameters      map[string]*OpenAPI3Parameter      `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	RequestBodies   map[string]*OpenAPI3RequestBody    `json:"requestBodies,omitempty" yaml:"requestBodies,omitempty"`
 }
 
 // OpenAPI3SecurityScheme represents a security scheme in an OpenAPI 3.x specification.

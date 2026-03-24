@@ -404,9 +404,9 @@ func TestXSSScanResult_String(t *testing.T) {
 			},
 		},
 		Summary: XSSSummary{
-			TotalTests:          10,
+			TotalTests:           10,
 			VulnerabilitiesFound: 1,
-			HighSeverityCount:   1,
+			HighSeverityCount:    1,
 		},
 	}
 
@@ -716,32 +716,32 @@ func TestXSSScanner_AnalyzeContext(t *testing.T) {
 	scanner := NewXSSScanner()
 
 	tests := []struct {
-		name                string
-		body                string
-		payload             string
-		expectedExecutable  bool
-		expectedConfidence  string
+		name               string
+		body               string
+		payload            string
+		expectedExecutable bool
+		expectedConfidence string
 	}{
 		{
-			name:                "HTML encoded - not executable",
-			body:                "<html><body>&lt;script&gt;alert('XSS')&lt;/script&gt;</body></html>",
-			payload:             "<script>alert('XSS')</script>",
-			expectedExecutable:  false,
-			expectedConfidence:  "low",
+			name:               "HTML encoded - not executable",
+			body:               "<html><body>&lt;script&gt;alert('XSS')&lt;/script&gt;</body></html>",
+			payload:            "<script>alert('XSS')</script>",
+			expectedExecutable: false,
+			expectedConfidence: "low",
 		},
 		{
-			name:                "Unencoded script tag - executable",
-			body:                "<html><body><script>alert('XSS')</script></body></html>",
-			payload:             "<script>alert('XSS')</script>",
-			expectedExecutable:  true,
-			expectedConfidence:  "high",
+			name:               "Unencoded script tag - executable",
+			body:               "<html><body><script>alert('XSS')</script></body></html>",
+			payload:            "<script>alert('XSS')</script>",
+			expectedExecutable: true,
+			expectedConfidence: "high",
 		},
 		{
-			name:                "Event handler - executable",
-			body:                "<html><body><img src=x onerror=alert('XSS')></body></html>",
-			payload:             "<img src=x onerror=alert('XSS')>",
-			expectedExecutable:  true,
-			expectedConfidence:  "high",
+			name:               "Event handler - executable",
+			body:               "<html><body><img src=x onerror=alert('XSS')></body></html>",
+			payload:            "<img src=x onerror=alert('XSS')>",
+			expectedExecutable: true,
+			expectedConfidence: "high",
 		},
 	}
 

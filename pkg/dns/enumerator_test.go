@@ -55,16 +55,16 @@ func (m *MockResolver) LookupCNAME(ctx context.Context, host string) (string, er
 
 func TestEnumerator_Enumerate(t *testing.T) {
 	tests := []struct {
-		name     string
-		domain   string
-		mock     *MockResolver
-		wantA    []string
-		wantAAAA []string
-		wantMX   []MXRecord
-		wantNS   []string
-		wantTXT  []string
+		name      string
+		domain    string
+		mock      *MockResolver
+		wantA     []string
+		wantAAAA  []string
+		wantMX    []MXRecord
+		wantNS    []string
+		wantTXT   []string
 		wantCNAME string
-		wantErrs int
+		wantErrs  int
 	}{
 		{
 			name:   "successful enumeration with all record types",
@@ -89,10 +89,10 @@ func TestEnumerator_Enumerate(t *testing.T) {
 				{Host: "mail.example.com", Priority: 10},
 				{Host: "mail2.example.com", Priority: 20},
 			},
-			wantNS:  []string{"a.iana-servers.net", "b.iana-servers.net"},
-			wantTXT: []string{"v=spf1 -all"},
+			wantNS:    []string{"a.iana-servers.net", "b.iana-servers.net"},
+			wantTXT:   []string{"v=spf1 -all"},
 			wantCNAME: "", // Same as domain, so not set
-			wantErrs: 0,
+			wantErrs:  0,
 		},
 		{
 			name:   "domain with CNAME pointing elsewhere",
@@ -106,15 +106,15 @@ func TestEnumerator_Enumerate(t *testing.T) {
 			wantErrs:  0,
 		},
 		{
-			name:   "empty domain",
-			domain: "",
-			mock:   &MockResolver{},
+			name:     "empty domain",
+			domain:   "",
+			mock:     &MockResolver{},
 			wantErrs: 1,
 		},
 		{
-			name:   "whitespace only domain",
-			domain: "   ",
-			mock:   &MockResolver{},
+			name:     "whitespace only domain",
+			domain:   "   ",
+			mock:     &MockResolver{},
 			wantErrs: 1,
 		},
 		{

@@ -10,8 +10,8 @@ import (
 	"github.com/djannot/wast/pkg/output"
 )
 
-// TestVersionString tests that version information is formatted correctly
-func TestVersionString(t *testing.T) {
+// TestVersionStringFormat tests that version information format string is correct
+func TestVersionStringFormat(t *testing.T) {
 	// Save original values
 	origVersion := version
 	origCommit := commit
@@ -81,7 +81,7 @@ func TestOutputFormatValidation(t *testing.T) {
 
 // TestQuietVerboseMutualExclusion tests that --quiet and --verbose cannot both be set
 func TestQuietVerboseMutualExclusion(t *testing.T) {
-	// Create a new root command for testing to avoid polluting global state
+	// Use the global rootCmd (test properly cleans up state with defer)
 	testCmd := rootCmd
 
 	// Capture stderr
@@ -326,46 +326,46 @@ func TestGetAuthConfig(t *testing.T) {
 // TestGetRateLimitConfig tests that getRateLimitConfig correctly maps CLI flags
 func TestGetRateLimitConfig(t *testing.T) {
 	tests := []struct {
-		name              string
-		rateLimit         float64
-		delayMs           int
-		wantRateLimit     float64
-		wantDelayMs       int
+		name          string
+		rateLimit     float64
+		delayMs       int
+		wantRateLimit float64
+		wantDelayMs   int
 	}{
 		{
-			name:              "no rate limiting",
-			rateLimit:         0,
-			delayMs:           0,
-			wantRateLimit:     0,
-			wantDelayMs:       0,
+			name:          "no rate limiting",
+			rateLimit:     0,
+			delayMs:       0,
+			wantRateLimit: 0,
+			wantDelayMs:   0,
 		},
 		{
-			name:              "rate limit only",
-			rateLimit:         10.0,
-			delayMs:           0,
-			wantRateLimit:     10.0,
-			wantDelayMs:       0,
+			name:          "rate limit only",
+			rateLimit:     10.0,
+			delayMs:       0,
+			wantRateLimit: 10.0,
+			wantDelayMs:   0,
 		},
 		{
-			name:              "delay only",
-			rateLimit:         0,
-			delayMs:           100,
-			wantRateLimit:     0,
-			wantDelayMs:       100,
+			name:          "delay only",
+			rateLimit:     0,
+			delayMs:       100,
+			wantRateLimit: 0,
+			wantDelayMs:   100,
 		},
 		{
-			name:              "both rate limit and delay",
-			rateLimit:         5.0,
-			delayMs:           200,
-			wantRateLimit:     5.0,
-			wantDelayMs:       200,
+			name:          "both rate limit and delay",
+			rateLimit:     5.0,
+			delayMs:       200,
+			wantRateLimit: 5.0,
+			wantDelayMs:   200,
 		},
 		{
-			name:              "fractional rate limit",
-			rateLimit:         0.5,
-			delayMs:           0,
-			wantRateLimit:     0.5,
-			wantDelayMs:       0,
+			name:          "fractional rate limit",
+			rateLimit:     0.5,
+			delayMs:       0,
+			wantRateLimit: 0.5,
+			wantDelayMs:   0,
 		},
 	}
 

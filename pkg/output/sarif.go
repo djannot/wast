@@ -21,8 +21,8 @@ type SARIFReport struct {
 
 // SARIFRun represents a single run of the analysis tool.
 type SARIFRun struct {
-	Tool    SARIFTool      `json:"tool"`
-	Results []SARIFResult  `json:"results"`
+	Tool        SARIFTool         `json:"tool"`
+	Results     []SARIFResult     `json:"results"`
 	Invocations []SARIFInvocation `json:"invocations,omitempty"`
 }
 
@@ -33,11 +33,11 @@ type SARIFTool struct {
 
 // SARIFToolComponent describes the tool component.
 type SARIFToolComponent struct {
-	Name           string      `json:"name"`
-	Version        string      `json:"version,omitempty"`
-	SemanticVersion string     `json:"semanticVersion,omitempty"`
-	InformationURI string      `json:"informationUri,omitempty"`
-	Rules          []SARIFRule `json:"rules,omitempty"`
+	Name            string      `json:"name"`
+	Version         string      `json:"version,omitempty"`
+	SemanticVersion string      `json:"semanticVersion,omitempty"`
+	InformationURI  string      `json:"informationUri,omitempty"`
+	Rules           []SARIFRule `json:"rules,omitempty"`
 }
 
 // SARIFRule describes a rule that was evaluated during the analysis.
@@ -52,11 +52,11 @@ type SARIFRule struct {
 
 // SARIFResult represents a single result from the analysis.
 type SARIFResult struct {
-	RuleID    string          `json:"ruleId"`
-	RuleIndex int             `json:"ruleIndex,omitempty"`
-	Level     string          `json:"level"`
-	Message   SARIFMessage    `json:"message"`
-	Locations []SARIFLocation `json:"locations,omitempty"`
+	RuleID     string                 `json:"ruleId"`
+	RuleIndex  int                    `json:"ruleIndex,omitempty"`
+	Level      string                 `json:"level"`
+	Message    SARIFMessage           `json:"message"`
+	Locations  []SARIFLocation        `json:"locations,omitempty"`
 	Properties map[string]interface{} `json:"properties,omitempty"`
 }
 
@@ -85,10 +85,10 @@ type SARIFArtifactLocation struct {
 
 // SARIFRegion represents a region within an artifact.
 type SARIFRegion struct {
-	StartLine   int    `json:"startLine,omitempty"`
-	StartColumn int    `json:"startColumn,omitempty"`
-	EndLine     int    `json:"endLine,omitempty"`
-	EndColumn   int    `json:"endColumn,omitempty"`
+	StartLine   int                   `json:"startLine,omitempty"`
+	StartColumn int                   `json:"startColumn,omitempty"`
+	EndLine     int                   `json:"endLine,omitempty"`
+	EndColumn   int                   `json:"endColumn,omitempty"`
 	Snippet     *SARIFArtifactContent `json:"snippet,omitempty"`
 }
 
@@ -118,12 +118,12 @@ const (
 
 // CWE references for common vulnerabilities
 const (
-	CWEXSS      = "CWE-79"
-	CWESQLi     = "CWE-89"
-	CWECSRF     = "CWE-352"
-	CWEHeaders  = "CWE-693"
-	CWECookie   = "CWE-614"
-	CWECORS     = "CWE-942"
+	CWEXSS     = "CWE-79"
+	CWESQLi    = "CWE-89"
+	CWECSRF    = "CWE-352"
+	CWEHeaders = "CWE-693"
+	CWECookie  = "CWE-614"
+	CWECORS    = "CWE-942"
 )
 
 // outputSARIF outputs data as SARIF 2.1.0 format.
@@ -491,7 +491,7 @@ func createHeaderResult(header map[string]interface{}, target string) *SARIFResu
 		RuleIndex: getRuleIndex(ruleID),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: fmt.Sprintf("Missing security header: %s - %s", name, description),
+			Text:     fmt.Sprintf("Missing security header: %s - %s", name, description),
 			Markdown: fmt.Sprintf("**Missing security header:** `%s`\n\n%s\n\n%s", name, description, remediation),
 		},
 		Locations: []SARIFLocation{
@@ -528,7 +528,7 @@ func createCookieResult(cookie map[string]interface{}, target string) *SARIFResu
 		RuleIndex: getRuleIndex(RuleIDCookie),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: fmt.Sprintf("Insecure cookie: %s - %s", name, issuesText),
+			Text:     fmt.Sprintf("Insecure cookie: %s - %s", name, issuesText),
 			Markdown: fmt.Sprintf("**Insecure cookie:** `%s`\n\nIssues:\n- %s\n\n%s", name, strings.Join(issues, "\n- "), remediation),
 		},
 		Locations: []SARIFLocation{
@@ -541,7 +541,7 @@ func createCookieResult(cookie map[string]interface{}, target string) *SARIFResu
 			},
 		},
 		Properties: map[string]interface{}{
-			"cookie": name,
+			"cookie":   name,
 			"httpOnly": getBoolValue(cookie, "http_only"),
 			"secure":   getBoolValue(cookie, "secure"),
 			"sameSite": getStringValue(cookie, "same_site"),
@@ -575,7 +575,7 @@ func createCORSResult(cors map[string]interface{}, target string) *SARIFResult {
 		RuleIndex: getRuleIndex(RuleIDCORS),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: messageText,
+			Text:     messageText,
 			Markdown: fmt.Sprintf("**Insecure CORS policy:** `%s`\n\n%s\n\nIssues:\n- %s\n\n%s", header, description, strings.Join(issues, "\n- "), remediation),
 		},
 		Locations: []SARIFLocation{
@@ -610,7 +610,7 @@ func createXSSResult(finding map[string]interface{}, target string) *SARIFResult
 		RuleIndex: getRuleIndex(RuleIDXSS),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: fmt.Sprintf("XSS vulnerability in parameter '%s': %s", parameter, description),
+			Text:     fmt.Sprintf("XSS vulnerability in parameter '%s': %s", parameter, description),
 			Markdown: fmt.Sprintf("**XSS Vulnerability (%s)**\n\nParameter: `%s`\n\n%s\n\n**Evidence:** `%s`\n\n**Remediation:** %s", xssType, parameter, description, evidence, remediation),
 		},
 		Locations: []SARIFLocation{
@@ -647,7 +647,7 @@ func createSQLiResult(finding map[string]interface{}, target string) *SARIFResul
 		RuleIndex: getRuleIndex(RuleIDSQLi),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: fmt.Sprintf("SQL Injection vulnerability in parameter '%s': %s", parameter, description),
+			Text:     fmt.Sprintf("SQL Injection vulnerability in parameter '%s': %s", parameter, description),
 			Markdown: fmt.Sprintf("**SQL Injection (%s)**\n\nParameter: `%s`\n\n%s\n\n**Evidence:** `%s`\n\n**Remediation:** %s", sqliType, parameter, description, evidence, remediation),
 		},
 		Locations: []SARIFLocation{
@@ -687,7 +687,7 @@ func createCSRFResult(finding map[string]interface{}) *SARIFResult {
 		RuleIndex: getRuleIndex(RuleIDCSRF),
 		Level:     mapSeverityToLevel(severity),
 		Message: SARIFMessage{
-			Text: fmt.Sprintf("CSRF vulnerability in form: %s - %s", formAction, description),
+			Text:     fmt.Sprintf("CSRF vulnerability in form: %s - %s", formAction, description),
 			Markdown: fmt.Sprintf("**CSRF Vulnerability**\n\nForm: `%s %s`\n\n%s\n\n**Remediation:** %s", formMethod, formAction, description, remediation),
 		},
 		Locations: []SARIFLocation{

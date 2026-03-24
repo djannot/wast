@@ -18,11 +18,11 @@ type Limiter interface {
 
 // TokenBucketLimiter implements a token bucket rate limiter.
 type TokenBucketLimiter struct {
-	rate       float64       // tokens per second
-	burst      int           // maximum bucket size
-	tokens     float64       // current number of tokens
-	lastUpdate time.Time     // last time tokens were updated
-	mu         sync.Mutex    // protects tokens and lastUpdate
+	rate       float64    // tokens per second
+	burst      int        // maximum bucket size
+	tokens     float64    // current number of tokens
+	lastUpdate time.Time  // last time tokens were updated
+	mu         sync.Mutex // protects tokens and lastUpdate
 }
 
 // NewLimiter creates a new rate limiter that allows requestsPerSecond requests per second.
@@ -113,10 +113,10 @@ func (l *TokenBucketLimiter) Allow() bool {
 
 // DelayLimiter implements a simple delay-based rate limiter.
 type DelayLimiter struct {
-	delay      time.Duration
-	lastTime   time.Time
-	mu         sync.Mutex
-	firstCall  bool
+	delay     time.Duration
+	lastTime  time.Time
+	mu        sync.Mutex
+	firstCall bool
 }
 
 // NewDelayLimiter creates a new delay-based rate limiter that waits delayMs milliseconds between requests.

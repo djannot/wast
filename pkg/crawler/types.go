@@ -17,10 +17,10 @@ type LinkInfo struct {
 
 // FormInfo represents a discovered HTML form.
 type FormInfo struct {
-	Action string            `json:"action" yaml:"action"`
-	Method string            `json:"method" yaml:"method"`
-	Fields []FormFieldInfo   `json:"fields,omitempty" yaml:"fields,omitempty"`
-	Page   string            `json:"page" yaml:"page"`
+	Action string          `json:"action" yaml:"action"`
+	Method string          `json:"method" yaml:"method"`
+	Fields []FormFieldInfo `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Page   string          `json:"page" yaml:"page"`
 }
 
 // FormFieldInfo represents a form input field.
@@ -53,11 +53,11 @@ type CrawlResult struct {
 
 // CrawlStats contains statistics about the crawl operation.
 type CrawlStats struct {
-	TotalURLs      int `json:"total_urls" yaml:"total_urls"`
-	InternalURLs   int `json:"internal_urls" yaml:"internal_urls"`
-	ExternalURLs   int `json:"external_urls" yaml:"external_urls"`
-	FormsFound     int `json:"forms_found" yaml:"forms_found"`
-	ResourcesFound int `json:"resources_found" yaml:"resources_found"`
+	TotalURLs       int `json:"total_urls" yaml:"total_urls"`
+	InternalURLs    int `json:"internal_urls" yaml:"internal_urls"`
+	ExternalURLs    int `json:"external_urls" yaml:"external_urls"`
+	FormsFound      int `json:"forms_found" yaml:"forms_found"`
+	ResourcesFound  int `json:"resources_found" yaml:"resources_found"`
 	MaxDepthReached int `json:"max_depth_reached" yaml:"max_depth_reached"`
 }
 

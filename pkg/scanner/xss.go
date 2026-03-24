@@ -47,11 +47,11 @@ type XSSFinding struct {
 
 // XSSSummary provides an overview of the XSS scan results.
 type XSSSummary struct {
-	TotalTests          int `json:"total_tests" yaml:"total_tests"`
+	TotalTests           int `json:"total_tests" yaml:"total_tests"`
 	VulnerabilitiesFound int `json:"vulnerabilities_found" yaml:"vulnerabilities_found"`
-	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
-	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
-	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
+	HighSeverityCount    int `json:"high_severity_count" yaml:"high_severity_count"`
+	MediumSeverityCount  int `json:"medium_severity_count" yaml:"medium_severity_count"`
+	LowSeverityCount     int `json:"low_severity_count" yaml:"low_severity_count"`
 }
 
 // xssPayload represents a test payload for XSS detection.
@@ -390,8 +390,8 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 			} else if contextType == ContextHTMLBody {
 				// Check if it's actually a complete executable tag
 				if strings.Contains(payload.Payload, "<script") ||
-				   strings.Contains(payload.Payload, "onerror") ||
-				   strings.Contains(payload.Payload, "onload") {
+					strings.Contains(payload.Payload, "onerror") ||
+					strings.Contains(payload.Payload, "onload") {
 					confidence = "high"
 				} else {
 					confidence = "medium"

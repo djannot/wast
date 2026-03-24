@@ -75,8 +75,8 @@ func TestAuthConfig_ApplyToRequest(t *testing.T) {
 		expectedCookie map[string]string
 	}{
 		{
-			name:   "nil config",
-			config: nil,
+			name:           "nil config",
+			config:         nil,
 			expectedHeader: map[string]string{},
 			expectedCookie: map[string]string{},
 		},

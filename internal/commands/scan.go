@@ -21,7 +21,7 @@ type ScanResult struct {
 
 // CompleteScanResult represents the combined results of all security scans.
 type CompleteScanResult struct {
-	Target  string                   `json:"target" yaml:"target"`
+	Target  string                    `json:"target" yaml:"target"`
 	Headers *scanner.HeaderScanResult `json:"headers,omitempty" yaml:"headers,omitempty"`
 	XSS     *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
 	SQLi    *scanner.SQLiScanResult   `json:"sqli,omitempty" yaml:"sqli,omitempty"`

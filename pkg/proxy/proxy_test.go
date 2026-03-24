@@ -472,8 +472,8 @@ func TestCopyHeaders(t *testing.T) {
 	src := make(http.Header)
 	src.Set("Content-Type", "application/json")
 	src.Set("X-Custom-Header", "custom-value")
-	src.Set("Connection", "keep-alive")          // hop-by-hop, should be skipped
-	src.Set("Transfer-Encoding", "chunked")      // hop-by-hop, should be skipped
+	src.Set("Connection", "keep-alive")     // hop-by-hop, should be skipped
+	src.Set("Transfer-Encoding", "chunked") // hop-by-hop, should be skipped
 
 	dst := make(http.Header)
 	copyHeaders(dst, src)

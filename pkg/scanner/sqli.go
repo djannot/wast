@@ -47,21 +47,21 @@ type SQLiFinding struct {
 
 // SQLiSummary provides an overview of the SQL injection scan results.
 type SQLiSummary struct {
-	TotalTests          int `json:"total_tests" yaml:"total_tests"`
+	TotalTests           int `json:"total_tests" yaml:"total_tests"`
 	VulnerabilitiesFound int `json:"vulnerabilities_found" yaml:"vulnerabilities_found"`
-	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
-	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
-	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
+	HighSeverityCount    int `json:"high_severity_count" yaml:"high_severity_count"`
+	MediumSeverityCount  int `json:"medium_severity_count" yaml:"medium_severity_count"`
+	LowSeverityCount     int `json:"low_severity_count" yaml:"low_severity_count"`
 }
 
 // sqliPayload represents a test payload for SQL injection detection.
 type sqliPayload struct {
-	Payload     string
-	Type        string // "error-based", "boolean-based", "time-based"
-	Severity    string
-	Description string
-	ErrorPattern *regexp.Regexp // Pattern to match in response for error-based detection
-	CompareBaseline bool // Whether to compare with baseline response for boolean-based
+	Payload         string
+	Type            string // "error-based", "boolean-based", "time-based"
+	Severity        string
+	Description     string
+	ErrorPattern    *regexp.Regexp // Pattern to match in response for error-based detection
+	CompareBaseline bool           // Whether to compare with baseline response for boolean-based
 }
 
 // Common SQL error patterns from various database systems.
@@ -114,66 +114,66 @@ var sqlErrorPatterns = []*regexp.Regexp{
 var sqliPayloads = []sqliPayload{
 	// Error-based detection - single quote
 	{
-		Payload:     "'",
-		Type:        "error-based",
-		Severity:    SeverityHigh,
-		Description: "Single quote injection triggers database error - indicates SQL injection vulnerability",
+		Payload:      "'",
+		Type:         "error-based",
+		Severity:     SeverityHigh,
+		Description:  "Single quote injection triggers database error - indicates SQL injection vulnerability",
 		ErrorPattern: nil, // Will check against all patterns
 	},
 	// Error-based detection - double quote
 	{
-		Payload:     "\"",
-		Type:        "error-based",
-		Severity:    SeverityHigh,
-		Description: "Double quote injection triggers database error - indicates SQL injection vulnerability",
+		Payload:      "\"",
+		Type:         "error-based",
+		Severity:     SeverityHigh,
+		Description:  "Double quote injection triggers database error - indicates SQL injection vulnerability",
 		ErrorPattern: nil,
 	},
 	// Error-based detection - SQL comment
 	{
-		Payload:     "' OR '1'='1' --",
-		Type:        "error-based",
-		Severity:    SeverityHigh,
-		Description: "SQL comment injection detected - allows bypassing authentication and query logic",
+		Payload:      "' OR '1'='1' --",
+		Type:         "error-based",
+		Severity:     SeverityHigh,
+		Description:  "SQL comment injection detected - allows bypassing authentication and query logic",
 		ErrorPattern: nil,
 	},
 	// Boolean-based blind - always true
 	{
-		Payload:     "' OR '1'='1",
-		Type:        "boolean-based",
-		Severity:    SeverityHigh,
-		Description: "Boolean-based SQL injection detected - allows data extraction through logic manipulation",
+		Payload:         "' OR '1'='1",
+		Type:            "boolean-based",
+		Severity:        SeverityHigh,
+		Description:     "Boolean-based SQL injection detected - allows data extraction through logic manipulation",
 		CompareBaseline: true,
 	},
 	// Boolean-based blind - always false
 	{
-		Payload:     "' OR '1'='2",
-		Type:        "boolean-based",
-		Severity:    SeverityHigh,
-		Description: "Boolean-based SQL injection detected - response differs from baseline",
+		Payload:         "' OR '1'='2",
+		Type:            "boolean-based",
+		Severity:        SeverityHigh,
+		Description:     "Boolean-based SQL injection detected - response differs from baseline",
 		CompareBaseline: true,
 	},
 	// Boolean-based - AND true
 	{
-		Payload:     "' AND '1'='1",
-		Type:        "boolean-based",
-		Severity:    SeverityHigh,
-		Description: "Boolean-based SQL injection with AND condition detected",
+		Payload:         "' AND '1'='1",
+		Type:            "boolean-based",
+		Severity:        SeverityHigh,
+		Description:     "Boolean-based SQL injection with AND condition detected",
 		CompareBaseline: true,
 	},
 	// Union-based detection marker
 	{
-		Payload:     "' UNION SELECT NULL--",
-		Type:        "error-based",
-		Severity:    SeverityHigh,
-		Description: "UNION-based SQL injection marker detected - could allow data extraction",
+		Payload:      "' UNION SELECT NULL--",
+		Type:         "error-based",
+		Severity:     SeverityHigh,
+		Description:  "UNION-based SQL injection marker detected - could allow data extraction",
 		ErrorPattern: nil,
 	},
 	// Numeric injection test
 	{
-		Payload:     "1' OR '1'='1",
-		Type:        "boolean-based",
-		Severity:    SeverityHigh,
-		Description: "Numeric field SQL injection detected",
+		Payload:         "1' OR '1'='1",
+		Type:            "boolean-based",
+		Severity:        SeverityHigh,
+		Description:     "Numeric field SQL injection detected",
 		CompareBaseline: true,
 	},
 }

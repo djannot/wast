@@ -14,11 +14,11 @@ import (
 
 // ReconResult represents the result of a reconnaissance operation.
 type ReconResult struct {
-	Target  string          `json:"target,omitempty" yaml:"target,omitempty"`
-	Methods []string        `json:"methods,omitempty" yaml:"methods,omitempty"`
-	Status  string          `json:"status,omitempty" yaml:"status,omitempty"`
-	DNS     *dns.DNSResult  `json:"dns,omitempty" yaml:"dns,omitempty"`
-	TLS     *tls.TLSResult  `json:"tls,omitempty" yaml:"tls,omitempty"`
+	Target  string         `json:"target,omitempty" yaml:"target,omitempty"`
+	Methods []string       `json:"methods,omitempty" yaml:"methods,omitempty"`
+	Status  string         `json:"status,omitempty" yaml:"status,omitempty"`
+	DNS     *dns.DNSResult `json:"dns,omitempty" yaml:"dns,omitempty"`
+	TLS     *tls.TLSResult `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // NewReconCmd creates and returns the recon command.
