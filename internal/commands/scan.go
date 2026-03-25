@@ -202,6 +202,17 @@ Examples:
 				}
 			}
 
+			// Create unified result with correlation and risk scoring
+			unifiedResult := scanner.NewUnifiedScanResult(
+				target,
+				safeMode,
+				headerResult,
+				combinedResult.XSS,
+				combinedResult.SQLi,
+				combinedResult.CSRF,
+				combinedResult.Errors,
+			)
+
 			// Output result based on whether it succeeded
 			// In safe mode, we consider it successful if we attempted the scan (headers scanner ran)
 			// In active mode, check all scanners for results
@@ -216,12 +227,12 @@ Examples:
 
 			if shouldSucceed {
 				if safeMode {
-					formatter.Success("scan", "Security scan completed (passive checks only)", combinedResult)
+					formatter.Success("scan", "Security scan completed (passive checks only)", unifiedResult)
 				} else {
-					formatter.Success("scan", "Security scan completed (active testing enabled)", combinedResult)
+					formatter.Success("scan", "Security scan completed (active testing enabled)", unifiedResult)
 				}
 			} else {
-				formatter.Failure("scan", "Security scan failed", combinedResult)
+				formatter.Failure("scan", "Security scan failed", unifiedResult)
 			}
 		},
 	}

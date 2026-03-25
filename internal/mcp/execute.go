@@ -222,7 +222,18 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		}
 	}
 
-	return combinedResult
+	// Create unified result with correlation and risk scoring
+	unifiedResult := scanner.NewUnifiedScanResult(
+		target,
+		safeMode,
+		headerResult,
+		combinedResult.XSS,
+		combinedResult.SQLi,
+		combinedResult.CSRF,
+		combinedResult.Errors,
+	)
+
+	return unifiedResult
 }
 
 // executeCrawl performs web crawling on a target URL.

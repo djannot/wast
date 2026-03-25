@@ -9,6 +9,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/scanner"
 )
 
 // TestExecuteRecon tests the executeRecon function
@@ -179,9 +180,9 @@ func TestExecuteScan(t *testing.T) {
 			}
 
 			// Verify result structure
-			scanResult, ok := result.(CompleteScanResult)
+			scanResult, ok := result.(*scanner.UnifiedScanResult)
 			if !ok {
-				t.Fatalf("Expected CompleteScanResult type, got %T", result)
+				t.Fatalf("Expected *scanner.UnifiedScanResult type, got %T", result)
 			}
 
 			if scanResult.Target != tt.target {
@@ -247,9 +248,9 @@ func TestExecuteScanWithAuth(t *testing.T) {
 		t.Fatal("executeScan with auth returned nil")
 	}
 
-	scanResult, ok := result.(CompleteScanResult)
+	scanResult, ok := result.(*scanner.UnifiedScanResult)
 	if !ok {
-		t.Fatalf("Expected CompleteScanResult type, got %T", result)
+		t.Fatalf("Expected *scanner.UnifiedScanResult type, got %T", result)
 	}
 
 	if scanResult.Target != "https://example.com" {
@@ -273,9 +274,9 @@ func TestExecuteScanWithRateLimit(t *testing.T) {
 		t.Fatal("executeScan with rate limit returned nil")
 	}
 
-	scanResult, ok := result.(CompleteScanResult)
+	scanResult, ok := result.(*scanner.UnifiedScanResult)
 	if !ok {
-		t.Fatalf("Expected CompleteScanResult type, got %T", result)
+		t.Fatalf("Expected *scanner.UnifiedScanResult type, got %T", result)
 	}
 
 	if scanResult.Target != "https://example.com" {
