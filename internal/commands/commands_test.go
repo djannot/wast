@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/proxy"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 )
@@ -2447,5 +2449,369 @@ func TestAPISpecWithAllOptions(t *testing.T) {
 
 	if result.Command != "api" {
 		t.Errorf("Expected command 'api', got %s", result.Command)
+	}
+}
+// TestHandleInitCA_ExistingCA tests handleInitCA when CA already exists
+func TestHandleInitCA_ExistingCA(t *testing.T) {
+	// Create a temporary directory for CA files
+	tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create CA certificate and key files
+	caCertPath := filepath.Join(tmpDir, "ca.crt")
+	caKeyPath := filepath.Join(tmpDir, "ca.key")
+
+	// Initialize CA
+	config := &proxy.CAConfig{
+		CertPath:      caCertPath,
+		KeyPath:       caKeyPath,
+		ValidityYears: proxy.DefaultCAValidityYears,
+		KeyBits:       proxy.DefaultKeyBits,
+	}
+	ca := proxy.NewCertificateAuthority(config)
+	if err := ca.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize CA: %v", err)
+	}
+
+	// Test handleInitCA with existing CA
+	var buf bytes.Buffer
+	formatter := testFormatter(&buf)()
+
+	handleInitCA(formatter, caCertPath, caKeyPath)
+
+	// Verify output contains expected messages
+	output := buf.String()
+	if !strings.Contains(output, "CA certificate already exists") {
+		t.Errorf("Expected output to contain 'CA certificate already exists', got: %s", output)
+	}
+}
+
+// TestHandleInitCA_MismatchedFlags tests handleInitCA with mismatched cert/key flags
+func TestHandleInitCA_MismatchedFlags(t *testing.T) {
+	tests := []struct {
+		name   string
+		caCert string
+		caKey  string
+	}{
+		{
+			name:   "cert without key",
+			caCert: "/tmp/ca.crt",
+			caKey:  "",
+		},
+		{
+			name:   "key without cert",
+			caCert: "",
+			caKey:  "/tmp/ca.key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			formatter := testFormatter(&buf)()
+
+			handleInitCA(formatter, tt.caCert, tt.caKey)
+
+			// Verify failure output
+			var result output.CommandResult
+			if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+				t.Fatalf("Failed to unmarshal output: %v", err)
+			}
+
+			if result.Success {
+				t.Error("Expected success to be false for mismatched flags")
+			}
+			if result.Command != "init-ca" {
+				t.Errorf("Expected command 'init-ca', got %s", result.Command)
+			}
+		})
+	}
+}
+
+// TestHandleInitCA_NewCA tests handleInitCA creating a new CA
+func TestHandleInitCA_NewCA(t *testing.T) {
+	// Create a temporary directory for CA files
+	tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caCertPath := filepath.Join(tmpDir, "ca.crt")
+	caKeyPath := filepath.Join(tmpDir, "ca.key")
+
+	var buf bytes.Buffer
+	formatter := testFormatter(&buf)()
+
+	handleInitCA(formatter, caCertPath, caKeyPath)
+
+	// Verify CA files were created
+	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
+		t.Errorf("Expected CA certificate to be created at %s", caCertPath)
+	}
+	if _, err := os.Stat(caKeyPath); os.IsNotExist(err) {
+		t.Errorf("Expected CA key to be created at %s", caKeyPath)
+	}
+
+	// Verify success output - check for both success and init-ca in the output
+	outputStr := buf.String()
+	if !strings.Contains(outputStr, `"success": true`) {
+		t.Error("Expected success to be true in output")
+	}
+	if !strings.Contains(outputStr, `"command": "init-ca"`) {
+		t.Error("Expected command to be 'init-ca' in output")
+	}
+	if !strings.Contains(outputStr, "CA certificate generated successfully") {
+		t.Error("Expected success message in output")
+	}
+}
+
+// TestInitializeCA_CustomPaths tests initializeCA with custom CA paths
+func TestInitializeCA_CustomPaths(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupFiles  bool
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "valid custom paths",
+			setupFiles:  true,
+			expectError: false,
+		},
+		{
+			name:        "cert not found",
+			setupFiles:  false,
+			expectError: true,
+			errorMsg:    "CA certificate not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a temporary directory for CA files
+			tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+			if err != nil {
+				t.Fatalf("Failed to create temp directory: %v", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			caCertPath := filepath.Join(tmpDir, "ca.crt")
+			caKeyPath := filepath.Join(tmpDir, "ca.key")
+
+			if tt.setupFiles {
+				// Initialize CA
+				config := &proxy.CAConfig{
+					CertPath:      caCertPath,
+					KeyPath:       caKeyPath,
+					ValidityYears: proxy.DefaultCAValidityYears,
+					KeyBits:       proxy.DefaultKeyBits,
+				}
+				ca := proxy.NewCertificateAuthority(config)
+				if err := ca.Initialize(); err != nil {
+					t.Fatalf("Failed to initialize CA: %v", err)
+				}
+			}
+
+			var buf bytes.Buffer
+			formatter := testFormatter(&buf)()
+
+			ca, err := initializeCA(formatter, caCertPath, caKeyPath)
+
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+				if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("Expected error to contain '%s', got: %v", tt.errorMsg, err)
+				}
+				if ca != nil {
+					t.Error("Expected CA to be nil on error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error, got: %v", err)
+				}
+				if ca == nil {
+					t.Error("Expected CA to be initialized")
+				}
+			}
+		})
+	}
+}
+
+// TestInitializeCA_MissingKey tests initializeCA when cert exists but key doesn't
+func TestInitializeCA_MissingKey(t *testing.T) {
+	// Create a temporary directory for CA files
+	tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caCertPath := filepath.Join(tmpDir, "ca.crt")
+	caKeyPath := filepath.Join(tmpDir, "ca.key")
+
+	// Create only the cert file (not the key)
+	certFile, err := os.Create(caCertPath)
+	if err != nil {
+		t.Fatalf("Failed to create cert file: %v", err)
+	}
+	certFile.Close()
+
+	var buf bytes.Buffer
+	formatter := testFormatter(&buf)()
+
+	ca, err := initializeCA(formatter, caCertPath, caKeyPath)
+
+	// Should fail because key doesn't exist
+	if err == nil {
+		t.Error("Expected error when key is missing")
+	}
+	if !strings.Contains(err.Error(), "CA private key not found") {
+		t.Errorf("Expected error about missing key, got: %v", err)
+	}
+	if ca != nil {
+		t.Error("Expected CA to be nil when key is missing")
+	}
+}
+
+// TestInitializeCA_MissingCert tests initializeCA when key exists but cert doesn't
+func TestInitializeCA_MissingCert(t *testing.T) {
+	// Create a temporary directory for CA files
+	tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caCertPath := filepath.Join(tmpDir, "ca.crt")
+	caKeyPath := filepath.Join(tmpDir, "ca.key")
+
+	// Create only the key file (not the cert)
+	keyFile, err := os.Create(caKeyPath)
+	if err != nil {
+		t.Fatalf("Failed to create key file: %v", err)
+	}
+	keyFile.Close()
+
+	var buf bytes.Buffer
+	formatter := testFormatter(&buf)()
+
+	ca, err := initializeCA(formatter, caCertPath, caKeyPath)
+
+	// Should fail because cert doesn't exist
+	if err == nil {
+		t.Error("Expected error when cert is missing")
+	}
+	if !strings.Contains(err.Error(), "CA certificate not found") {
+		t.Errorf("Expected error about missing cert, got: %v", err)
+	}
+	if ca != nil {
+		t.Error("Expected CA to be nil when cert is missing")
+	}
+}
+
+// TestInitializeCA_MismatchedFlags tests initializeCA with mismatched cert/key flags
+func TestInitializeCA_MismatchedFlags(t *testing.T) {
+	tests := []struct {
+		name   string
+		caCert string
+		caKey  string
+	}{
+		{
+			name:   "cert without key",
+			caCert: "/tmp/ca.crt",
+			caKey:  "",
+		},
+		{
+			name:   "key without cert",
+			caCert: "",
+			caKey:  "/tmp/ca.key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			formatter := testFormatter(&buf)()
+
+			ca, err := initializeCA(formatter, tt.caCert, tt.caKey)
+
+			if err == nil {
+				t.Error("Expected error for mismatched flags")
+			}
+			if !strings.Contains(err.Error(), "both --ca-cert and --ca-key must be specified together") {
+				t.Errorf("Expected error about mismatched flags, got: %v", err)
+			}
+			if ca != nil {
+				t.Error("Expected CA to be nil for mismatched flags")
+			}
+		})
+	}
+}
+
+// TestInitializeCA_DefaultPath tests initializeCA with default paths (auto-initialization)
+func TestInitializeCA_DefaultPath(t *testing.T) {
+	// Create a temporary home directory
+	tmpHome, err := os.MkdirTemp("", "wast-test-home-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp home directory: %v", err)
+	}
+	defer os.RemoveAll(tmpHome)
+
+	// Save original HOME and restore after test
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", originalHome)
+
+	var buf bytes.Buffer
+	formatter := testFormatter(&buf)()
+
+	// Call with empty paths (should use default)
+	ca, err := initializeCA(formatter, "", "")
+
+	if err != nil {
+		t.Errorf("Expected no error with default paths, got: %v", err)
+	}
+	if ca == nil {
+		t.Error("Expected CA to be initialized")
+	}
+
+	// Verify CA was created in default location
+	expectedCertPath := filepath.Join(tmpHome, proxy.DefaultCADir, "ca.crt")
+	expectedKeyPath := filepath.Join(tmpHome, proxy.DefaultCADir, "ca.key")
+
+	if _, err := os.Stat(expectedCertPath); os.IsNotExist(err) {
+		t.Errorf("Expected CA certificate at %s", expectedCertPath)
+	}
+	if _, err := os.Stat(expectedKeyPath); os.IsNotExist(err) {
+		t.Errorf("Expected CA key at %s", expectedKeyPath)
+	}
+}
+
+// TestInterceptCmd_HttpOnly tests the --http-only flag behavior
+func TestInterceptCmd_HttpOnly(t *testing.T) {
+	// This test verifies that the command handles the --http-only flag correctly
+	// We can't fully test the runtime behavior without starting the server,
+	// but we can verify the flag is properly registered and has correct default
+	var buf bytes.Buffer
+	cmd := NewInterceptCmd(testFormatter(&buf), testAuthConfig)
+
+	httpOnlyFlag := cmd.Flag("http-only")
+	if httpOnlyFlag == nil {
+		t.Fatal("Expected 'http-only' flag to be registered")
+	}
+
+	if httpOnlyFlag.DefValue != "false" {
+		t.Errorf("Expected default value 'false' for http-only flag, got %s", httpOnlyFlag.DefValue)
+	}
+
+	// Verify flag description mentions HTTPS
+	if !strings.Contains(httpOnlyFlag.Usage, "HTTPS") {
+		t.Error("Expected http-only flag usage to mention HTTPS")
 	}
 }
