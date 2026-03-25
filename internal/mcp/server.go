@@ -337,7 +337,7 @@ func (t *ScanTool) Name() string {
 }
 
 func (t *ScanTool) Description() string {
-	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing (SQLi, XSS, CSRF, SSRF)."
+	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing (SQLi, XSS, CSRF, SSRF). Use discover=true to first crawl the target and discover forms/endpoints, then scan all discovered attack surfaces."
 }
 
 func (t *ScanTool) InputSchema() map[string]interface{} {
@@ -362,6 +362,21 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"type":        "boolean",
 				"description": "Enable finding verification to reduce false positives. Re-tests findings with payload variants.",
 				"default":     false,
+			},
+			"discover": map[string]interface{}{
+				"type":        "boolean",
+				"description": "First crawl the target to discover forms and endpoints, then scan all discovered attack surfaces with their actual field names.",
+				"default":     false,
+			},
+			"depth": map[string]interface{}{
+				"type":        "integer",
+				"description": "Maximum crawl depth for discovery mode (used with discover=true)",
+				"default":     2,
+			},
+			"concurrency": map[string]interface{}{
+				"type":        "integer",
+				"description": "Number of concurrent workers for crawling (used with discover=true)",
+				"default":     5,
 			},
 			"bearer_token": map[string]interface{}{
 				"type":        "string",
@@ -420,6 +435,9 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		Timeout           int      `json:"timeout"`
 		Active            bool     `json:"active"`
 		Verify            bool     `json:"verify"`
+		Discover          bool     `json:"discover"`
+		Depth             int      `json:"depth"`
+		Concurrency       int      `json:"concurrency"`
 		BearerToken       string   `json:"bearer_token"`
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
@@ -442,6 +460,14 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 
 	if args.Timeout <= 0 {
 		args.Timeout = 30
+	}
+
+	if args.Depth <= 0 {
+		args.Depth = 2
+	}
+
+	if args.Concurrency <= 0 {
+		args.Concurrency = 5
 	}
 
 	// Construct auth config from arguments
@@ -470,7 +496,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, authConfig, rateLimitConfig, t.server.tracer)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }
