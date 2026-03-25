@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -66,7 +67,10 @@ Finding Verification (--verify flag):
   When enabled with active testing, reduces false positives by:
   - Re-testing findings with payload variants
   - Updating confidence levels based on verification results
-  - Filtering out unverified findings
+  - Filtering out unverified findings from results
+
+  WARNING: Unverified findings will be EXCLUDED from results.
+  Use without --verify first to see all potential findings.
   Note: Increases scan time due to additional verification requests.
 
 Output includes severity ratings, remediation guidance, and
@@ -92,6 +96,14 @@ Examples:
 			// Handle flag logic: --active overrides --safe-mode
 			if active {
 				safeMode = false
+			}
+
+			// Warn if --verify is used without --active
+			if verify && safeMode {
+				if formatter.Format() == output.FormatText {
+					formatter.Info("⚠️  WARNING: --verify flag requires --active mode. Verification will be skipped.")
+				}
+				verify = false
 			}
 
 			target := ""
@@ -237,6 +249,12 @@ Examples:
 						Delay:      500 * time.Millisecond,
 					}
 
+					// Track findings before verification for reporting
+					totalXSSFindings := len(xssResult.Findings)
+					totalSQLiFindings := len(sqliResult.Findings)
+					totalCSRFFindings := len(csrfResult.Findings)
+					totalSSRFFindings := len(ssrfResult.Findings)
+
 					// Verify XSS findings
 					for i := range xssResult.Findings {
 						result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
@@ -272,6 +290,7 @@ Examples:
 					}
 
 					// Verify CSRF findings
+					// Note: CSRF findings don't have a confidence field like other vulnerability types
 					for i := range csrfResult.Findings {
 						result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
 						if err == nil && result != nil {
@@ -333,6 +352,17 @@ Examples:
 					}
 					ssrfResult.Findings = verifiedSSRFFindings
 					ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
+
+					// Report filtered findings count (in text mode only)
+					if formatter.Format() == output.FormatText {
+						totalFiltered := (totalXSSFindings - len(verifiedXSSFindings)) +
+							(totalSQLiFindings - len(verifiedSQLiFindings)) +
+							(totalCSRFFindings - len(verifiedCSRFFindings)) +
+							(totalSSRFFindings - len(verifiedSSRFFindings))
+						if totalFiltered > 0 {
+							formatter.Info(fmt.Sprintf("ℹ️  Verification: %d findings excluded due to failed verification", totalFiltered))
+						}
+					}
 				}
 
 				combinedResult.XSS = xssResult
