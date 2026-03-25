@@ -326,7 +326,7 @@ func (t *ScanTool) Name() string {
 }
 
 func (t *ScanTool) Description() string {
-	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing."
+	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing (SQLi, XSS, CSRF, SSRF)."
 }
 
 func (t *ScanTool) InputSchema() map[string]interface{} {
@@ -344,7 +344,7 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 			},
 			"active": map[string]interface{}{
 				"type":        "boolean",
-				"description": "Enable active vulnerability testing (SQLi, XSS, CSRF). Defaults to false for safe mode.",
+				"description": "Enable active vulnerability testing (SQLi, XSS, CSRF, SSRF). Defaults to false for safe mode.",
 				"default":     false,
 			},
 			"verify": map[string]interface{}{

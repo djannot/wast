@@ -27,6 +27,7 @@ type UnifiedScanResult struct {
 	SQLi         *SQLiScanResult       `json:"sqli,omitempty" yaml:"sqli,omitempty"`
 	XSS          *XSSScanResult        `json:"xss,omitempty" yaml:"xss,omitempty"`
 	CSRF         *CSRFScanResult       `json:"csrf,omitempty" yaml:"csrf,omitempty"`
+	SSRF         *SSRFScanResult       `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
 	Correlations []CorrelatedFinding   `json:"correlations,omitempty" yaml:"correlations,omitempty"`
 	RiskScore    RiskScore             `json:"risk_score" yaml:"risk_score"`
 	Summary      UnifiedSummary        `json:"summary" yaml:"summary"`
@@ -63,7 +64,7 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:       target,
 		PassiveOnly:  passiveOnly,
@@ -71,6 +72,7 @@ func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanRe
 		XSS:          xss,
 		SQLi:         sqli,
 		CSRF:         csrf,
+		SSRF:         ssrf,
 		Correlations: make([]CorrelatedFinding, 0),
 		Errors:       errors,
 	}
@@ -228,6 +230,18 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	}
 	breakdown["csrf"] = min(csrfScore, 20) // Cap at 20 points
 
+	// Score SSRF vulnerabilities
+	ssrfScore := 0
+	if u.SSRF != nil {
+		for _, finding := range u.SSRF.Findings {
+			score := u.severityToScore(finding.Severity)
+			ssrfScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
+	breakdown["ssrf"] = min(ssrfScore, 30) // Cap at 30 points
+
 	// Score header misconfigurations
 	misconfigScore := 0
 	if u.Headers != nil {
@@ -318,6 +332,13 @@ func (u *UnifiedScanResult) generateSummary() {
 
 	if u.CSRF != nil {
 		for _, finding := range u.CSRF.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
+	if u.SSRF != nil {
+		for _, finding := range u.SSRF.Findings {
 			summary.TotalFindings++
 			severityCounts[finding.Severity]++
 		}

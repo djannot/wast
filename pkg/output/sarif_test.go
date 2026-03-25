@@ -517,8 +517,8 @@ func TestGetRuleIDForHeader(t *testing.T) {
 func TestSARIFRulesDefinition(t *testing.T) {
 	rules := buildAllRules()
 
-	if len(rules) != 9 {
-		t.Errorf("Expected 9 rules, got %d", len(rules))
+	if len(rules) != 10 {
+		t.Errorf("Expected 10 rules, got %d", len(rules))
 	}
 
 	// Check that all rule IDs are present
@@ -526,6 +526,7 @@ func TestSARIFRulesDefinition(t *testing.T) {
 		RuleIDXSS,
 		RuleIDSQLi,
 		RuleIDCSRF,
+		RuleIDSSRF,
 		RuleIDHeaderHSTS,
 		RuleIDHeaderCSP,
 		RuleIDHeaderXFrame,
