@@ -49,7 +49,7 @@ func TestExecuteRecon(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result := executeRecon(ctx, tt.target, tt.timeout, tt.includeSubdomains)
+			result := executeRecon(ctx, tt.target, tt.timeout, tt.includeSubdomains, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -93,7 +93,7 @@ func TestExecuteReconContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// Use a timeout longer than context to ensure context cancellation is tested
-	result := executeRecon(ctx, "example.com", 30*time.Second, true)
+	result := executeRecon(ctx, "example.com", 30*time.Second, true, nil)
 
 	// Result should still be returned even if context is canceled
 	if result == nil {
@@ -172,7 +172,7 @@ func TestExecuteScan(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, authConfig, rateLimitConfig)
+			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, authConfig, rateLimitConfig, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -242,7 +242,7 @@ func TestExecuteScanWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig)
+	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with auth returned nil")
@@ -268,7 +268,7 @@ func TestExecuteScanWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 5.0,
 	}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig)
+	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with rate limit returned nil")
@@ -338,7 +338,7 @@ func TestExecuteCrawl(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig)
+			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -370,7 +370,7 @@ func TestExecuteCrawlWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with auth returned nil")
@@ -387,7 +387,7 @@ func TestExecuteCrawlWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 2.0,
 	}
 
-	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with rate limit returned nil")
@@ -448,7 +448,7 @@ func TestExecuteAPI(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeAPI(ctx, tt.target, tt.specFile, tt.dryRun, tt.timeout, authConfig, rateLimitConfig)
+			result := executeAPI(ctx, tt.target, tt.specFile, tt.dryRun, tt.timeout, authConfig, rateLimitConfig, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -481,7 +481,7 @@ func TestExecuteAPIWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeAPI(ctx, "https://api.example.com", "", false, 30, authConfig, rateLimitConfig)
+	result := executeAPI(ctx, "https://api.example.com", "", false, 30, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeAPI with auth returned nil")
@@ -498,7 +498,7 @@ func TestExecuteAPIWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 10.0,
 	}
 
-	result := executeAPI(ctx, "https://api.example.com", "", true, 30, authConfig, rateLimitConfig)
+	result := executeAPI(ctx, "https://api.example.com", "", true, 30, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeAPI with rate limit returned nil")
@@ -554,7 +554,7 @@ func TestExecuteIntercept(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), tt.duration+2*time.Second)
 			defer cancel()
 
-			result := executeIntercept(ctx, tt.port, tt.duration, tt.saveFile, tt.httpsInterception, tt.maxRequests)
+			result := executeIntercept(ctx, tt.port, tt.duration, tt.saveFile, tt.httpsInterception, tt.maxRequests, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -587,7 +587,7 @@ func TestExecuteInterceptHTTPS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	result := executeIntercept(ctx, 9097, 1*time.Second, "", true, 0)
+	result := executeIntercept(ctx, 9097, 1*time.Second, "", true, 0, nil)
 
 	if result == nil {
 		t.Fatal("executeIntercept with HTTPS returned nil")
@@ -616,7 +616,7 @@ func TestExecuteInterceptContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// Start intercept with a longer duration than the context timeout
-	result := executeIntercept(ctx, 9098, 10*time.Second, "", false, 0)
+	result := executeIntercept(ctx, 9098, 10*time.Second, "", false, 0, nil)
 
 	// Result should be returned even if context is canceled
 	if result == nil {
@@ -630,7 +630,7 @@ func TestExecuteInterceptMaxRequestsReached(t *testing.T) {
 	defer cancel()
 
 	// Set max_requests to a low value
-	result := executeIntercept(ctx, 9099, 5*time.Second, "", false, 1)
+	result := executeIntercept(ctx, 9099, 5*time.Second, "", false, 1, nil)
 
 	if result == nil {
 		t.Fatal("executeIntercept with max_requests returned nil")

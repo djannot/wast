@@ -13,6 +13,8 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SQLiScanner performs active SQL injection vulnerability detection.
@@ -22,6 +24,7 @@ type SQLiScanner struct {
 	timeout     time.Duration
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
+	tracer      trace.Tracer
 }
 
 // SQLiScanResult represents the result of a SQL injection vulnerability scan.
@@ -225,6 +228,13 @@ func WithSQLiRateLimitConfig(cfg ratelimit.Config) SQLiOption {
 	}
 }
 
+// WithSQLiTracer sets the OpenTelemetry tracer for the SQL injection scanner.
+func WithSQLiTracer(tracer trace.Tracer) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.tracer = tracer
+	}
+}
+
 // NewSQLiScanner creates a new SQLiScanner with the given options.
 func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
 	s := &SQLiScanner{
@@ -246,6 +256,13 @@ func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
 
 // Scan performs a SQL injection vulnerability scan on the given target URL.
 func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSQLi)
+		defer span.End()
+	}
+
 	result := &SQLiScanResult{
 		Target:   targetURL,
 		Findings: make([]SQLiFinding, 0),

@@ -14,6 +14,8 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SSRFScanner performs active SSRF vulnerability detection.
@@ -23,6 +25,7 @@ type SSRFScanner struct {
 	timeout     time.Duration
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
+	tracer      trace.Tracer
 }
 
 // SSRFScanResult represents the result of an SSRF vulnerability scan.
@@ -242,6 +245,13 @@ func WithSSRFRateLimitConfig(cfg ratelimit.Config) SSRFOption {
 	}
 }
 
+// WithSSRFTracer sets the OpenTelemetry tracer for the SSRF scanner.
+func WithSSRFTracer(tracer trace.Tracer) SSRFOption {
+	return func(s *SSRFScanner) {
+		s.tracer = tracer
+	}
+}
+
 // NewSSRFScanner creates a new SSRFScanner with the given options.
 func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
 	s := &SSRFScanner{
@@ -263,6 +273,13 @@ func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
 
 // Scan performs an SSRF vulnerability scan on the given target URL.
 func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSSRF)
+		defer span.End()
+	}
+
 	result := &SSRFScanResult{
 		Target:   targetURL,
 		Findings: make([]SSRFFinding, 0),

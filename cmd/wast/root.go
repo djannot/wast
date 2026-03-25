@@ -13,6 +13,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +44,8 @@ var (
 	// Rate limiting flags
 	rateLimit float64
 	delayMs   int
+	// Telemetry flags
+	telemetryEndpoint string
 )
 
 // osExit is a variable that points to os.Exit, allowing it to be overridden in tests
@@ -106,6 +109,28 @@ func runMCPServer() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize telemetry if configured
+	var telemetryProvider *telemetry.Provider
+	telemetryConfig := telemetry.ConfigFromEnv()
+	telemetryConfig.ServiceVersion = version
+
+	// Override with CLI flag if provided
+	if telemetryEndpoint != "" {
+		telemetryConfig.Enabled = true
+		telemetryConfig.Endpoint = telemetryEndpoint
+	}
+
+	if telemetryConfig.IsEnabled() {
+		var err error
+		telemetryProvider, err = telemetry.NewProvider(ctx, telemetryConfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to initialize telemetry: %v\n", err)
+		} else {
+			defer telemetryProvider.Shutdown(context.Background())
+			server.SetTracer(telemetryProvider.Tracer())
+		}
+	}
+
 	// Handle interrupt signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -163,6 +188,10 @@ func init() {
 		"Maximum requests per second (0 for unlimited)")
 	rootCmd.PersistentFlags().IntVar(&delayMs, "delay", 0,
 		"Delay between requests in milliseconds (overrides --rate-limit if both are set)")
+
+	// Telemetry flag
+	rootCmd.PersistentFlags().StringVar(&telemetryEndpoint, "telemetry-endpoint", "",
+		"OpenTelemetry OTLP gRPC endpoint (e.g., localhost:4317). Can also be set via WAST_OTEL_ENDPOINT")
 
 	// Add subcommands
 	rootCmd.AddCommand(commands.NewReconCmd(getFormatter, getAuthConfig))

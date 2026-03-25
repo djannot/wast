@@ -10,6 +10,8 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // HTTPClient defines the interface for HTTP operations, allowing for mock implementations in tests.
@@ -266,6 +268,7 @@ type HTTPHeadersScanner struct {
 	timeout     time.Duration
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
+	tracer      trace.Tracer
 }
 
 // Option is a function that configures an HTTPHeadersScanner.
@@ -313,6 +316,13 @@ func WithRateLimitConfig(cfg ratelimit.Config) Option {
 	}
 }
 
+// WithTracer sets the OpenTelemetry tracer for the scanner.
+func WithTracer(tracer trace.Tracer) Option {
+	return func(s *HTTPHeadersScanner) {
+		s.tracer = tracer
+	}
+}
+
 // NewHTTPHeadersScanner creates a new HTTPHeadersScanner with the given options.
 func NewHTTPHeadersScanner(opts ...Option) *HTTPHeadersScanner {
 	s := &HTTPHeadersScanner{
@@ -334,6 +344,13 @@ func NewHTTPHeadersScanner(opts ...Option) *HTTPHeadersScanner {
 
 // Scan performs a security headers scan on the given target URL.
 func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *HeaderScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanHeaders)
+		defer span.End()
+	}
+
 	result := &HeaderScanResult{
 		Target:  targetURL,
 		Headers: make([]HeaderFinding, 0, len(securityHeaders)),

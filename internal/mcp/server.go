@@ -13,6 +13,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // JSONRPCRequest represents a JSON-RPC 2.0 request.
@@ -43,6 +44,7 @@ type Server struct {
 	reader io.Reader
 	writer io.Writer
 	tools  map[string]Tool
+	tracer trace.Tracer
 }
 
 // Tool represents an MCP tool implementation.
@@ -67,13 +69,18 @@ func NewServer() *Server {
 	return s
 }
 
+// SetTracer sets the OpenTelemetry tracer for the server.
+func (s *Server) SetTracer(tracer trace.Tracer) {
+	s.tracer = tracer
+}
+
 // registerTools registers all WAST command tools.
 func (s *Server) registerTools() {
-	s.tools["wast_recon"] = &ReconTool{}
-	s.tools["wast_scan"] = &ScanTool{}
-	s.tools["wast_crawl"] = &CrawlTool{}
-	s.tools["wast_api"] = &APITool{}
-	s.tools["wast_intercept"] = &InterceptTool{}
+	s.tools["wast_recon"] = &ReconTool{server: s}
+	s.tools["wast_scan"] = &ScanTool{server: s}
+	s.tools["wast_crawl"] = &CrawlTool{server: s}
+	s.tools["wast_api"] = &APITool{server: s}
+	s.tools["wast_intercept"] = &InterceptTool{server: s}
 }
 
 // Run starts the MCP server and processes requests.
@@ -254,7 +261,9 @@ func (s *Server) sendError(id interface{}, code int, message string, data interf
 }
 
 // ReconTool implements the wast_recon MCP tool.
-type ReconTool struct{}
+type ReconTool struct {
+	server *Server
+}
 
 func (t *ReconTool) Name() string {
 	return "wast_recon"
@@ -313,13 +322,15 @@ func (t *ReconTool) Execute(ctx context.Context, params json.RawMessage) (interf
 	}
 
 	// Execute recon command logic
-	result := executeRecon(ctx, args.Target, timeout, args.IncludeSubdomains)
+	result := executeRecon(ctx, args.Target, timeout, args.IncludeSubdomains, t.server.tracer)
 
 	return result, nil
 }
 
 // ScanTool implements the wast_scan MCP tool.
-type ScanTool struct{}
+type ScanTool struct {
+	server *Server
+}
 
 func (t *ScanTool) Name() string {
 	return "wast_scan"
@@ -459,13 +470,15 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, authConfig, rateLimitConfig)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }
 
 // CrawlTool implements the wast_crawl MCP tool.
-type CrawlTool struct{}
+type CrawlTool struct {
+	server *Server
+}
 
 func (t *CrawlTool) Name() string {
 	return "wast_crawl"
@@ -625,13 +638,15 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute crawl command logic
-	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }
 
 // APITool implements the wast_api MCP tool.
-type APITool struct{}
+type APITool struct {
+	server *Server
+}
 
 func (t *APITool) Name() string {
 	return "wast_api"
@@ -769,13 +784,15 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute API command logic
-	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig)
+	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }
 
 // InterceptTool implements the wast_intercept MCP tool.
-type InterceptTool struct{}
+type InterceptTool struct {
+	server *Server
+}
 
 func (t *InterceptTool) Name() string {
 	return "wast_intercept"
@@ -844,7 +861,7 @@ func (t *InterceptTool) Execute(ctx context.Context, params json.RawMessage) (in
 	}
 
 	// Execute intercept command logic
-	result := executeIntercept(ctx, args.Port, duration, args.SaveFile, args.HTTPSInterception, args.MaxRequests)
+	result := executeIntercept(ctx, args.Port, duration, args.SaveFile, args.HTTPSInterception, args.MaxRequests, t.server.tracer)
 
 	return result, nil
 }

@@ -13,6 +13,8 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // XSSScanner performs active XSS vulnerability detection.
@@ -22,6 +24,7 @@ type XSSScanner struct {
 	timeout     time.Duration
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
+	tracer      trace.Tracer
 }
 
 // XSSScanResult represents the result of an XSS vulnerability scan.
@@ -171,6 +174,13 @@ func WithXSSRateLimitConfig(cfg ratelimit.Config) XSSOption {
 	}
 }
 
+// WithXSSTracer sets the OpenTelemetry tracer for the XSS scanner.
+func WithXSSTracer(tracer trace.Tracer) XSSOption {
+	return func(s *XSSScanner) {
+		s.tracer = tracer
+	}
+}
+
 // NewXSSScanner creates a new XSSScanner with the given options.
 func NewXSSScanner(opts ...XSSOption) *XSSScanner {
 	s := &XSSScanner{
@@ -192,6 +202,13 @@ func NewXSSScanner(opts ...XSSOption) *XSSScanner {
 
 // Scan performs an XSS vulnerability scan on the given target URL.
 func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanXSS)
+		defer span.End()
+	}
+
 	result := &XSSScanResult{
 		Target:   targetURL,
 		Findings: make([]XSSFinding, 0),
