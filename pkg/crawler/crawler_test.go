@@ -2,24 +2,29 @@ package crawler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/djannot/wast/pkg/ratelimit"
 )
 
 // MockHTTPClient implements the HTTPClient interface for testing.
 type MockHTTPClient struct {
-	Responses map[string]*http.Response
+	Responses map[string]string
 	Errors    map[string]error
 	Requests  []*http.Request
+	mu        sync.Mutex
 }
 
 // NewMockHTTPClient creates a new MockHTTPClient.
 func NewMockHTTPClient() *MockHTTPClient {
 	return &MockHTTPClient{
-		Responses: make(map[string]*http.Response),
+		Responses: make(map[string]string),
 		Errors:    make(map[string]error),
 		Requests:  make([]*http.Request, 0),
 	}
@@ -27,11 +32,9 @@ func NewMockHTTPClient() *MockHTTPClient {
 
 // AddResponse adds a mock response for a URL.
 func (m *MockHTTPClient) AddResponse(url string, statusCode int, body string) {
-	m.Responses[url] = &http.Response{
-		StatusCode: statusCode,
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     make(http.Header),
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Responses[url] = body
 }
 
 // AddError adds a mock error for a URL.
@@ -41,6 +44,9 @@ func (m *MockHTTPClient) AddError(url string, err error) {
 
 // Do performs the mock HTTP request.
 func (m *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.Requests = append(m.Requests, req)
 	url := req.URL.String()
 
@@ -48,15 +54,12 @@ func (m *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	if resp, ok := m.Responses[url]; ok {
-		// Create a fresh body for each request (since bodies can only be read once)
-		if originalResp, exists := m.Responses[url]; exists {
-			body, _ := io.ReadAll(originalResp.Body)
-			resp.Body = io.NopCloser(strings.NewReader(string(body)))
-			// Reset the original response body for future calls
-			m.Responses[url].Body = io.NopCloser(strings.NewReader(string(body)))
-		}
-		return resp, nil
+	if body, ok := m.Responses[url]; ok {
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
 	}
 
 	// Default: 404
@@ -751,5 +754,129 @@ func TestCrawler_Crawl_InvalidURL(t *testing.T) {
 	// Should have an error about invalid URL
 	if len(result.Errors) == 0 {
 		t.Error("Expected error for invalid URL")
+	}
+}
+
+func TestCrawler_Crawl_ConcurrentCrawling(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// Add mock responses for a network of pages
+	mockClient.AddResponse("https://example.com/robots.txt", 404, "")
+	mockClient.AddResponse("https://example.com", 200, `
+		<!DOCTYPE html>
+		<html>
+		<body>
+			<a href="/page1">Page 1</a>
+			<a href="/page2">Page 2</a>
+			<a href="/page3">Page 3</a>
+		</body>
+		</html>
+	`)
+	mockClient.AddResponse("https://example.com/page1", 200, `<html><body><a href="/page1a">Page 1A</a></body></html>`)
+	mockClient.AddResponse("https://example.com/page2", 200, `<html><body><a href="/page2a">Page 2A</a></body></html>`)
+	mockClient.AddResponse("https://example.com/page3", 200, `<html><body><a href="/page3a">Page 3A</a></body></html>`)
+	mockClient.AddResponse("https://example.com/page1a", 200, `<html><body>Page 1A Content</body></html>`)
+	mockClient.AddResponse("https://example.com/page2a", 200, `<html><body>Page 2A Content</body></html>`)
+	mockClient.AddResponse("https://example.com/page3a", 200, `<html><body>Page 3A Content</body></html>`)
+
+	// Test with different concurrency levels
+	concurrencyLevels := []int{1, 3, 10}
+
+	for _, concurrency := range concurrencyLevels {
+		t.Run(fmt.Sprintf("concurrency=%d", concurrency), func(t *testing.T) {
+			crawler := NewCrawler(
+				WithHTTPClient(mockClient),
+				WithMaxDepth(3),
+				WithConcurrency(concurrency),
+			)
+
+			ctx := context.Background()
+			result := crawler.Crawl(ctx, "https://example.com")
+
+			// Verify that all pages were crawled
+			if len(result.CrawledURLs) == 0 {
+				t.Error("Expected at least one crawled URL")
+			}
+
+			// Verify that internal links were discovered
+			if len(result.InternalLinks) < 3 {
+				t.Errorf("Expected at least 3 internal links, got %d", len(result.InternalLinks))
+			}
+
+			// Verify statistics
+			if result.Statistics.TotalURLs == 0 {
+				t.Error("Expected TotalURLs > 0")
+			}
+		})
+	}
+}
+
+func TestCrawler_WithConcurrency(t *testing.T) {
+	t.Run("default concurrency", func(t *testing.T) {
+		c := NewCrawler()
+		if c.concurrency != 5 {
+			t.Errorf("Expected default concurrency of 5, got %d", c.concurrency)
+		}
+	})
+
+	t.Run("custom concurrency", func(t *testing.T) {
+		c := NewCrawler(WithConcurrency(10))
+		if c.concurrency != 10 {
+			t.Errorf("Expected concurrency of 10, got %d", c.concurrency)
+		}
+	})
+
+	t.Run("zero concurrency ignored", func(t *testing.T) {
+		c := NewCrawler(WithConcurrency(0))
+		if c.concurrency != 5 {
+			t.Errorf("Expected default concurrency of 5 when 0 is provided, got %d", c.concurrency)
+		}
+	})
+
+	t.Run("negative concurrency ignored", func(t *testing.T) {
+		c := NewCrawler(WithConcurrency(-1))
+		if c.concurrency != 5 {
+			t.Errorf("Expected default concurrency of 5 when negative is provided, got %d", c.concurrency)
+		}
+	})
+}
+
+func TestCrawler_Crawl_ConcurrentWithRateLimiting(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	mockClient.AddResponse("https://example.com/robots.txt", 404, "")
+	mockClient.AddResponse("https://example.com", 200, `
+		<!DOCTYPE html>
+		<html>
+		<body>
+			<a href="/page1">Page 1</a>
+			<a href="/page2">Page 2</a>
+		</body>
+		</html>
+	`)
+	mockClient.AddResponse("https://example.com/page1", 200, `<html><body>Page 1</body></html>`)
+	mockClient.AddResponse("https://example.com/page2", 200, `<html><body>Page 2</body></html>`)
+
+	// Create rate limiter (5 requests per second)
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: 5}
+
+	crawler := NewCrawler(
+		WithHTTPClient(mockClient),
+		WithMaxDepth(2),
+		WithConcurrency(3),
+		WithRateLimitConfig(rateLimitConfig),
+	)
+
+	ctx := context.Background()
+	result := crawler.Crawl(ctx, "https://example.com")
+
+	// Verify that pages were crawled
+	if len(result.CrawledURLs) == 0 {
+		t.Error("Expected at least one crawled URL")
+	}
+
+	// Should have crawled all available pages
+	if result.Statistics.TotalURLs < 3 {
+		t.Errorf("Expected at least 3 crawled URLs with rate limiting, got %d", result.Statistics.TotalURLs)
 	}
 }

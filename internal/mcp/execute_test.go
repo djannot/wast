@@ -338,7 +338,7 @@ func TestExecuteCrawl(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, authConfig, rateLimitConfig)
+			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig)
 
 			// Verify result is not nil
 			if result == nil {
@@ -370,7 +370,7 @@ func TestExecuteCrawlWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig)
 
 	if result == nil {
 		t.Fatal("executeCrawl with auth returned nil")
@@ -387,7 +387,7 @@ func TestExecuteCrawlWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 2.0,
 	}
 
-	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig)
 
 	if result == nil {
 		t.Fatal("executeCrawl with rate limit returned nil")
