@@ -1230,8 +1230,8 @@ func TestAPIWithMultipleTargets(t *testing.T) {
 // TestCommandDescriptions verifies that all commands have proper descriptions
 func TestCommandDescriptions(t *testing.T) {
 	tests := []struct {
-		name      string
-		cmd       *cobra.Command
+		name       string
+		cmd        *cobra.Command
 		checkShort bool
 		checkLong  bool
 	}{
@@ -2451,6 +2451,7 @@ func TestAPISpecWithAllOptions(t *testing.T) {
 		t.Errorf("Expected command 'api', got %s", result.Command)
 	}
 }
+
 // TestHandleInitCA_ExistingCA tests handleInitCA when CA already exists
 func TestHandleInitCA_ExistingCA(t *testing.T) {
 	// Create a temporary directory for CA files

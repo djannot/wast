@@ -1403,43 +1403,43 @@ func TestGetRateLimitConfigValues(t *testing.T) {
 // TestPersistentPreRunErrorConditions tests all error paths in PersistentPreRun
 func TestPersistentPreRunErrorConditions(t *testing.T) {
 	tests := []struct {
-		name         string
-		outputFormat string
-		quiet        bool
-		verbose      bool
-		wantExit     bool
+		name          string
+		outputFormat  string
+		quiet         bool
+		verbose       bool
+		wantExit      bool
 		errorContains string
 	}{
 		{
-			name:         "invalid format triggers exit",
-			outputFormat: "xml",
-			quiet:        false,
-			verbose:      false,
-			wantExit:     true,
+			name:          "invalid format triggers exit",
+			outputFormat:  "xml",
+			quiet:         false,
+			verbose:       false,
+			wantExit:      true,
 			errorContains: "Invalid output format",
 		},
 		{
-			name:         "empty format triggers exit",
-			outputFormat: "",
-			quiet:        false,
-			verbose:      false,
-			wantExit:     true,
+			name:          "empty format triggers exit",
+			outputFormat:  "",
+			quiet:         false,
+			verbose:       false,
+			wantExit:      true,
 			errorContains: "Invalid output format",
 		},
 		{
-			name:         "uppercase format triggers exit",
-			outputFormat: "JSON",
-			quiet:        false,
-			verbose:      false,
-			wantExit:     true,
+			name:          "uppercase format triggers exit",
+			outputFormat:  "JSON",
+			quiet:         false,
+			verbose:       false,
+			wantExit:      true,
 			errorContains: "Invalid output format",
 		},
 		{
-			name:         "quiet and verbose both set",
-			outputFormat: "json",
-			quiet:        true,
-			verbose:      true,
-			wantExit:     true,
+			name:          "quiet and verbose both set",
+			outputFormat:  "json",
+			quiet:         true,
+			verbose:       true,
+			wantExit:      true,
 			errorContains: "Cannot use both",
 		},
 	}
@@ -1567,28 +1567,28 @@ func TestExecuteMCPPath(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name        string
-		args        []string
+		name         string
+		args         []string
 		shouldDetect bool
 	}{
 		{
-			name:        "mcp flag present",
-			args:        []string{"wast", "--mcp"},
+			name:         "mcp flag present",
+			args:         []string{"wast", "--mcp"},
 			shouldDetect: true,
 		},
 		{
-			name:        "mcp flag with other flags",
-			args:        []string{"wast", "--verbose", "--mcp", "--output", "json"},
+			name:         "mcp flag with other flags",
+			args:         []string{"wast", "--verbose", "--mcp", "--output", "json"},
 			shouldDetect: true,
 		},
 		{
-			name:        "no mcp flag",
-			args:        []string{"wast", "--help"},
+			name:         "no mcp flag",
+			args:         []string{"wast", "--help"},
 			shouldDetect: false,
 		},
 		{
-			name:        "similar but not mcp",
-			args:        []string{"wast", "--mcpx"},
+			name:         "similar but not mcp",
+			args:         []string{"wast", "--mcpx"},
 			shouldDetect: false,
 		},
 	}

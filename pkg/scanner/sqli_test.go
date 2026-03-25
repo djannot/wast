@@ -21,7 +21,7 @@ type mockSQLiHTTPClient struct {
 	differentialResponse bool
 	trueResponse         string
 	falseResponse        string
-	simulateTimeDelay    bool         // Whether to simulate time-based SQL injection
+	simulateTimeDelay    bool          // Whether to simulate time-based SQL injection
 	delayDuration        time.Duration // Duration to delay for time-based payloads
 }
 
