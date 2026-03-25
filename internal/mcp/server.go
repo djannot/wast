@@ -371,6 +371,28 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"login_url": map[string]interface{}{
+				"type":        "string",
+				"description": "Login endpoint URL for automated authentication",
+			},
+			"login_user": map[string]interface{}{
+				"type":        "string",
+				"description": "Username for automated login",
+			},
+			"login_pass": map[string]interface{}{
+				"type":        "string",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
+			},
+			"login_user_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for username (default: 'username')",
+				"default":     "username",
+			},
+			"login_pass_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for password (default: 'password')",
+				"default":     "password",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -391,6 +413,11 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
 		Cookies           []string `json:"cookies"`
+		LoginURL          string   `json:"login_url"`
+		LoginUser         string   `json:"login_user"`
+		LoginPass         string   `json:"login_pass"`
+		LoginUserField    string   `json:"login_user_field"`
+		LoginPassField    string   `json:"login_pass_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -413,6 +440,22 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
+
+	// Add login configuration if provided
+	if args.LoginURL != "" {
+		authConfig.Login = &auth.LoginConfig{
+			LoginURL:      args.LoginURL,
+			Username:      args.LoginUser,
+			Password:      args.LoginPass,
+			UsernameField: args.LoginUserField,
+			PasswordField: args.LoginPassField,
+		}
+		// Perform login to capture session cookies
+		if err := authConfig.PerformLogin(ctx); err != nil {
+			return nil, fmt.Errorf("automated login failed: %w", err)
+		}
+	}
+
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute scan command logic
@@ -479,6 +522,28 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"login_url": map[string]interface{}{
+				"type":        "string",
+				"description": "Login endpoint URL for automated authentication",
+			},
+			"login_user": map[string]interface{}{
+				"type":        "string",
+				"description": "Username for automated login",
+			},
+			"login_pass": map[string]interface{}{
+				"type":        "string",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
+			},
+			"login_user_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for username (default: 'username')",
+				"default":     "username",
+			},
+			"login_pass_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for password (default: 'password')",
+				"default":     "password",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -500,6 +565,11 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
 		Cookies           []string `json:"cookies"`
+		LoginURL          string   `json:"login_url"`
+		LoginUser         string   `json:"login_user"`
+		LoginPass         string   `json:"login_pass"`
+		LoginUserField    string   `json:"login_user_field"`
+		LoginPassField    string   `json:"login_pass_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -536,6 +606,22 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
+
+	// Add login configuration if provided
+	if args.LoginURL != "" {
+		authConfig.Login = &auth.LoginConfig{
+			LoginURL:      args.LoginURL,
+			Username:      args.LoginUser,
+			Password:      args.LoginPass,
+			UsernameField: args.LoginUserField,
+			PasswordField: args.LoginPassField,
+		}
+		// Perform login to capture session cookies
+		if err := authConfig.PerformLogin(ctx); err != nil {
+			return nil, fmt.Errorf("automated login failed: %w", err)
+		}
+	}
+
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute crawl command logic
@@ -596,6 +682,28 @@ func (t *APITool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"login_url": map[string]interface{}{
+				"type":        "string",
+				"description": "Login endpoint URL for automated authentication",
+			},
+			"login_user": map[string]interface{}{
+				"type":        "string",
+				"description": "Username for automated login",
+			},
+			"login_pass": map[string]interface{}{
+				"type":        "string",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
+			},
+			"login_user_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for username (default: 'username')",
+				"default":     "username",
+			},
+			"login_pass_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for password (default: 'password')",
+				"default":     "password",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -615,6 +723,11 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
 		Cookies           []string `json:"cookies"`
+		LoginURL          string   `json:"login_url"`
+		LoginUser         string   `json:"login_user"`
+		LoginPass         string   `json:"login_pass"`
+		LoginUserField    string   `json:"login_user_field"`
+		LoginPassField    string   `json:"login_pass_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -637,6 +750,22 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
+
+	// Add login configuration if provided
+	if args.LoginURL != "" {
+		authConfig.Login = &auth.LoginConfig{
+			LoginURL:      args.LoginURL,
+			Username:      args.LoginUser,
+			Password:      args.LoginPass,
+			UsernameField: args.LoginUserField,
+			PasswordField: args.LoginPassField,
+		}
+		// Perform login to capture session cookies
+		if err := authConfig.PerformLogin(ctx); err != nil {
+			return nil, fmt.Errorf("automated login failed: %w", err)
+		}
+	}
+
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute API command logic

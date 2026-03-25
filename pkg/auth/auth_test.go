@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -323,5 +326,351 @@ func TestAuthConfig_CustomHeaderFormat(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuthConfig_PerformLogin_Success(t *testing.T) {
+	// Create a test server that simulates a successful login
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request method
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected POST request, got %s", r.Method)
+		}
+
+		// Parse form data
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("Failed to parse form: %v", err)
+		}
+
+		// Verify credentials
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+		if username != "testuser" || password != "testpass" {
+			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		// Set session cookie on successful login
+		http.SetCookie(w, &http.Cookie{
+			Name:  "session_id",
+			Value: "abc123xyz",
+			Path:  "/",
+		})
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Login successful"))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL:      server.URL,
+			Username:      "testuser",
+			Password:      "testpass",
+			UsernameField: "username",
+			PasswordField: "password",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	// Verify cookies were captured
+	if len(config.Cookies) == 0 {
+		t.Fatal("Expected cookies to be captured, got none")
+	}
+
+	// Verify the session cookie
+	found := false
+	for _, cookie := range config.Cookies {
+		if strings.Contains(cookie, "session_id=abc123xyz") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected session_id cookie to be captured, got: %v", config.Cookies)
+	}
+}
+
+func TestAuthConfig_PerformLogin_JSONFormat(t *testing.T) {
+	// Create a test server that accepts JSON login
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify content type
+		contentType := r.Header.Get("Content-Type")
+		if contentType != "application/json" {
+			t.Errorf("Expected application/json, got %s", contentType)
+		}
+
+		// Set session cookie on successful login
+		http.SetCookie(w, &http.Cookie{
+			Name:  "auth_token",
+			Value: "json123",
+			Path:  "/",
+		})
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success": true}`))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL:    server.URL,
+			Username:    "jsonuser",
+			Password:    "jsonpass",
+			ContentType: "json",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	// Verify cookies were captured
+	if len(config.Cookies) == 0 {
+		t.Fatal("Expected cookies to be captured, got none")
+	}
+}
+
+func TestAuthConfig_PerformLogin_WithRedirect(t *testing.T) {
+	// Create a test server that redirects after login
+	loginCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			loginCalled = true
+			// Set cookie and redirect
+			http.SetCookie(w, &http.Cookie{
+				Name:  "session",
+				Value: "redirect123",
+				Path:  "/",
+			})
+			http.Redirect(w, r, "/dashboard", http.StatusFound)
+		} else if r.URL.Path == "/dashboard" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Dashboard"))
+		}
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL + "/login",
+			Username: "testuser",
+			Password: "testpass",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	if !loginCalled {
+		t.Error("Login endpoint was not called")
+	}
+
+	// Verify cookies were captured
+	if len(config.Cookies) == 0 {
+		t.Fatal("Expected cookies to be captured, got none")
+	}
+}
+
+func TestAuthConfig_PerformLogin_FailureStatusCode(t *testing.T) {
+	// Create a test server that returns 401
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("Unauthorized"))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL,
+			Username: "wronguser",
+			Password: "wrongpass",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err == nil {
+		t.Fatal("Expected error for failed login, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "login failed with status 401") {
+		t.Errorf("Expected status code error, got: %v", err)
+	}
+}
+
+func TestAuthConfig_PerformLogin_ErrorMessage(t *testing.T) {
+	// Create a test server that returns success status but error message
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Invalid credentials - please try again"))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL,
+			Username: "testuser",
+			Password: "wrongpass",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err == nil {
+		t.Fatal("Expected error for failed login with error message, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "invalid credentials") {
+		t.Errorf("Expected error message detection, got: %v", err)
+	}
+}
+
+func TestAuthConfig_PerformLogin_NoCookies(t *testing.T) {
+	// Create a test server that doesn't set cookies
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Success"))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL,
+			Username: "testuser",
+			Password: "testpass",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err == nil {
+		t.Fatal("Expected error when no cookies received, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "no cookies were received") {
+		t.Errorf("Expected no cookies error, got: %v", err)
+	}
+}
+
+func TestAuthConfig_PerformLogin_MissingConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *AuthConfig
+	}{
+		{
+			name:   "nil config",
+			config: nil,
+		},
+		{
+			name:   "nil login config",
+			config: &AuthConfig{Login: nil},
+		},
+		{
+			name: "empty login URL",
+			config: &AuthConfig{
+				Login: &LoginConfig{
+					LoginURL: "",
+				},
+			},
+		},
+		{
+			name: "missing username",
+			config: &AuthConfig{
+				Login: &LoginConfig{
+					LoginURL: "http://example.com/login",
+					Password: "pass",
+				},
+			},
+		},
+		{
+			name: "missing password",
+			config: &AuthConfig{
+				Login: &LoginConfig{
+					LoginURL: "http://example.com/login",
+					Username: "user",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			err := tt.config.PerformLogin(ctx)
+			if err == nil {
+				t.Fatal("Expected error for missing config, got nil")
+			}
+		})
+	}
+}
+
+func TestAuthConfig_PerformLogin_AdditionalFields(t *testing.T) {
+	// Create a test server that expects additional fields
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("Failed to parse form: %v", err)
+		}
+
+		// Verify additional field is present
+		csrfToken := r.FormValue("csrf_token")
+		if csrfToken != "token123" {
+			http.Error(w, "Missing CSRF token", http.StatusBadRequest)
+			return
+		}
+
+		// Set session cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:  "session",
+			Value: "session_with_csrf",
+			Path:  "/",
+		})
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Success"))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL,
+			Username: "testuser",
+			Password: "testpass",
+			AdditionalFields: map[string]string{
+				"csrf_token": "token123",
+			},
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	// Verify cookies were captured
+	if len(config.Cookies) == 0 {
+		t.Fatal("Expected cookies to be captured, got none")
+	}
+}
+
+func TestAuthConfig_IsEmpty_WithLogin(t *testing.T) {
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: "http://example.com/login",
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	if config.IsEmpty() {
+		t.Error("Expected IsEmpty() to return false when login config is set")
 	}
 }

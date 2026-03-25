@@ -34,6 +34,12 @@ var (
 	authBearer  string
 	authBasic   string
 	authCookies []string
+	// Login flow flags
+	loginURL       string
+	loginUser      string
+	loginPass      string
+	loginUserField string
+	loginPassField string
 	// Rate limiting flags
 	rateLimit float64
 	delayMs   int
@@ -140,6 +146,18 @@ func init() {
 	rootCmd.PersistentFlags().StringArrayVar(&authCookies, "cookie", nil,
 		"Session cookie (format: name=value, can be used multiple times)")
 
+	// Login flow flags
+	rootCmd.PersistentFlags().StringVar(&loginURL, "login-url", "",
+		"Login endpoint URL for automated authentication")
+	rootCmd.PersistentFlags().StringVar(&loginUser, "login-user", "",
+		"Username for automated login")
+	rootCmd.PersistentFlags().StringVar(&loginPass, "login-pass", "",
+		"Password for automated login (or set WAST_LOGIN_PASS env var)")
+	rootCmd.PersistentFlags().StringVar(&loginUserField, "login-user-field", "username",
+		"Form field name for username (default: username)")
+	rootCmd.PersistentFlags().StringVar(&loginPassField, "login-pass-field", "password",
+		"Form field name for password (default: password)")
+
 	// Rate limiting flags
 	rootCmd.PersistentFlags().Float64Var(&rateLimit, "rate-limit", 0,
 		"Maximum requests per second (0 for unlimited)")
@@ -162,12 +180,31 @@ func getFormatter() *output.Formatter {
 
 // getAuthConfig returns the current authentication configuration.
 func getAuthConfig() *auth.AuthConfig {
-	return &auth.AuthConfig{
+	config := &auth.AuthConfig{
 		AuthHeader:  authHeader,
 		BearerToken: authBearer,
 		BasicAuth:   authBasic,
 		Cookies:     authCookies,
 	}
+
+	// Add login configuration if login URL is provided
+	if loginURL != "" {
+		// Prefer environment variable for password to avoid shell history exposure
+		password := loginPass
+		if password == "" {
+			password = os.Getenv("WAST_LOGIN_PASS")
+		}
+
+		config.Login = &auth.LoginConfig{
+			LoginURL:      loginURL,
+			Username:      loginUser,
+			Password:      password,
+			UsernameField: loginUserField,
+			PasswordField: loginPassField,
+		}
+	}
+
+	return config
 }
 
 // getRateLimitConfig returns the current rate limiting configuration.
