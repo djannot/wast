@@ -66,7 +66,7 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
 	// Create scanner options
 	headerOpts := []scanner.Option{
 		scanner.WithTimeout(time.Duration(timeout) * time.Second),
@@ -125,6 +125,86 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		xssResult := xssScanner.Scan(ctx, target)
 		sqliResult := sqliScanner.Scan(ctx, target)
 		csrfResult := csrfScanner.Scan(ctx, target)
+
+		// Verify findings if enabled
+		if verifyFindings {
+			verifyConfig := scanner.VerificationConfig{
+				Enabled:    true,
+				MaxRetries: 3,
+				Delay:      500 * time.Millisecond,
+			}
+
+			// Verify XSS findings
+			for i := range xssResult.Findings {
+				result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					xssResult.Findings[i].Verified = result.Verified
+					xssResult.Findings[i].VerificationAttempts = result.Attempts
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						xssResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						xssResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						xssResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify SQLi findings
+			for i := range sqliResult.Findings {
+				result, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					sqliResult.Findings[i].Verified = result.Verified
+					sqliResult.Findings[i].VerificationAttempts = result.Attempts
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						sqliResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						sqliResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						sqliResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify CSRF findings
+			for i := range csrfResult.Findings {
+				result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					csrfResult.Findings[i].Verified = result.Verified
+					csrfResult.Findings[i].VerificationAttempts = result.Attempts
+				}
+			}
+
+			// Filter out unverified findings if verification was enabled
+			verifiedXSSFindings := make([]scanner.XSSFinding, 0)
+			for _, finding := range xssResult.Findings {
+				if finding.Verified {
+					verifiedXSSFindings = append(verifiedXSSFindings, finding)
+				}
+			}
+			xssResult.Findings = verifiedXSSFindings
+			xssResult.Summary.VulnerabilitiesFound = len(verifiedXSSFindings)
+
+			verifiedSQLiFindings := make([]scanner.SQLiFinding, 0)
+			for _, finding := range sqliResult.Findings {
+				if finding.Verified {
+					verifiedSQLiFindings = append(verifiedSQLiFindings, finding)
+				}
+			}
+			sqliResult.Findings = verifiedSQLiFindings
+			sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
+
+			verifiedCSRFFindings := make([]scanner.CSRFFinding, 0)
+			for _, finding := range csrfResult.Findings {
+				if finding.Verified {
+					verifiedCSRFFindings = append(verifiedCSRFFindings, finding)
+				}
+			}
+			csrfResult.Findings = verifiedCSRFFindings
+			csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
+		}
 
 		combinedResult.XSS = xssResult
 		combinedResult.SQLi = sqliResult

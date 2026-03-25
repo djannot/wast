@@ -347,6 +347,11 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"description": "Enable active vulnerability testing (SQLi, XSS, CSRF). Defaults to false for safe mode.",
 				"default":     false,
 			},
+			"verify": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Enable finding verification to reduce false positives. Re-tests findings with payload variants.",
+				"default":     false,
+			},
 			"bearer_token": map[string]interface{}{
 				"type":        "string",
 				"description": "Bearer token for Authorization header",
@@ -376,6 +381,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		Target      string   `json:"target"`
 		Timeout     int      `json:"timeout"`
 		Active      bool     `json:"active"`
+		Verify      bool     `json:"verify"`
 		BearerToken string   `json:"bearer_token"`
 		BasicAuth   string   `json:"basic_auth"`
 		AuthHeader  string   `json:"auth_header"`
@@ -404,7 +410,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, authConfig, rateLimitConfig)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, authConfig, rateLimitConfig)
 
 	return result, nil
 }

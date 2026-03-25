@@ -623,3 +623,102 @@ type FormFieldInfo struct {
 	Type  string
 	Value string
 }
+
+func TestCSRFScanner_VerifyFinding(t *testing.T) {
+	tests := []struct {
+		name            string
+		finding         *CSRFFinding
+		mockHTML        string
+		expectedVerif   bool
+		expectedMinConf float64
+	}{
+		{
+			name: "verified missing_samesite",
+			finding: &CSRFFinding{
+				FormAction: "Cookie: session",
+				Type:       "missing_samesite",
+			},
+			mockHTML:        "",
+			expectedVerif:   true,
+			expectedMinConf: 0.9,
+		},
+		{
+			name: "verified missing_token",
+			finding: &CSRFFinding{
+				FormAction: "/submit",
+				FormMethod: "POST",
+				FormPage:   "https://example.com/form",
+				Type:       "missing_token",
+			},
+			mockHTML: `<html><body>
+				<form action="/submit" method="POST">
+					<input type="text" name="username">
+					<button type="submit">Submit</button>
+				</form>
+			</body></html>`,
+			expectedVerif:   true,
+			expectedMinConf: 0.5,
+		},
+		{
+			name: "false positive - token added",
+			finding: &CSRFFinding{
+				FormAction: "/submit",
+				FormMethod: "POST",
+				FormPage:   "https://example.com/form",
+				Type:       "missing_token",
+			},
+			mockHTML: `<html><body>
+				<form action="/submit" method="POST">
+					<input type="hidden" name="csrf_token" value="abc123">
+					<input type="text" name="username">
+					<button type="submit">Submit</button>
+				</form>
+			</body></html>`,
+			expectedVerif:   false,
+			expectedMinConf: 0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockCSRFHTTPClient()
+			if tt.mockHTML != "" {
+				mock.responses["https://example.com/form"] = &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(tt.mockHTML)),
+					Header:     make(http.Header),
+				}
+			}
+
+			scanner := NewCSRFScanner(WithCSRFHTTPClient(mock))
+			config := VerificationConfig{
+				Enabled:    true,
+				MaxRetries: 2,
+				Delay:      10 * time.Millisecond,
+			}
+
+			ctx := context.Background()
+			result, err := scanner.VerifyFinding(ctx, tt.finding, config)
+
+			if err != nil {
+				t.Fatalf("VerifyFinding returned error: %v", err)
+			}
+
+			if result == nil {
+				t.Fatal("VerifyFinding returned nil result")
+			}
+
+			if result.Verified != tt.expectedVerif {
+				t.Errorf("Expected Verified=%v, got %v (explanation: %s)", tt.expectedVerif, result.Verified, result.Explanation)
+			}
+
+			if result.Confidence < tt.expectedMinConf {
+				t.Errorf("Expected Confidence >= %.2f, got %.2f", tt.expectedMinConf, result.Confidence)
+			}
+
+			if result.Attempts <= 0 {
+				t.Errorf("Expected Attempts > 0, got %d", result.Attempts)
+			}
+		})
+	}
+}

@@ -15,8 +15,12 @@ import (
 
 // mockSQLiHTTPClient is a mock HTTP client for testing SQL injection scanner.
 type mockSQLiHTTPClient struct {
-	responses map[string]*http.Response
-	requests  []*http.Request
+	responses            map[string]*http.Response
+	requests             []*http.Request
+	defaultResponse      string
+	differentialResponse bool
+	trueResponse         string
+	falseResponse        string
 }
 
 func (m *mockSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
@@ -27,18 +31,45 @@ func (m *mockSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 
-	// Default response - no vulnerability
+	var bodyStr string
+
+	// Check if we're doing differential testing
+	if m.differentialResponse {
+		query := req.URL.Query()
+		for _, val := range query {
+			for _, v := range val {
+				if strings.Contains(v, "1'='1") || strings.Contains(v, "2'='2") || strings.Contains(v, "a'='a") {
+					bodyStr = m.trueResponse
+					break
+				} else if strings.Contains(v, "1'='2") || strings.Contains(v, "2'='3") || strings.Contains(v, "a'='b") {
+					bodyStr = m.falseResponse
+					break
+				}
+			}
+		}
+	}
+
+	// Use default if not set by differential logic
+	if bodyStr == "" {
+		if m.defaultResponse != "" {
+			bodyStr = m.defaultResponse
+		} else {
+			bodyStr = "<html><body>Normal response</body></html>"
+		}
+	}
+
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader("<html><body>Normal response</body></html>")),
+		Body:       io.NopCloser(strings.NewReader(bodyStr)),
 		Header:     make(http.Header),
 	}, nil
 }
 
 func newMockSQLiHTTPClient() *mockSQLiHTTPClient {
 	return &mockSQLiHTTPClient{
-		responses: make(map[string]*http.Response),
-		requests:  make([]*http.Request, 0),
+		responses:       make(map[string]*http.Response),
+		requests:        make([]*http.Request, 0),
+		defaultResponse: "",
 	}
 }
 
@@ -879,5 +910,149 @@ func TestSQLiScanner_Confidence_Levels(t *testing.T) {
 				t.Logf("Finding with payload %s has confidence %s", finding.Payload, finding.Confidence)
 			}
 		}
+	}
+}
+
+func TestSQLiScanner_VerifyFinding(t *testing.T) {
+	tests := []struct {
+		name            string
+		finding         *SQLiFinding
+		mockResponses   map[string]string
+		expectedVerif   bool
+		expectedMinConf float64
+	}{
+		{
+			name: "verified error-based SQLi",
+			finding: &SQLiFinding{
+				URL:       "https://example.com/item?id=1%27",
+				Parameter: "id",
+				Payload:   "'",
+				Type:      "error-based",
+			},
+			mockResponses: map[string]string{
+				"default": "SQL syntax error: You have an error in your SQL syntax",
+			},
+			expectedVerif:   true,
+			expectedMinConf: 0.5,
+		},
+		{
+			name: "verified boolean-based SQLi with differential analysis",
+			finding: &SQLiFinding{
+				URL:       "https://example.com/item?id=1%27+OR+%271%27%3D%271",
+				Parameter: "id",
+				Payload:   "' OR '1'='1",
+				Type:      "boolean-based",
+			},
+			mockResponses: map[string]string{
+				"true":  strings.Repeat("A", 1000),
+				"false": strings.Repeat("B", 500),
+			},
+			expectedVerif:   true,
+			expectedMinConf: 0.5,
+		},
+		{
+			name: "false positive - WAF blocking",
+			finding: &SQLiFinding{
+				URL:       "https://example.com/item?id=1%27",
+				Parameter: "id",
+				Payload:   "'",
+				Type:      "error-based",
+			},
+			mockResponses: map[string]string{
+				"default": "Access denied",
+			},
+			expectedVerif:   false,
+			expectedMinConf: 0.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockSQLiHTTPClient()
+
+			// Setup mock based on test type
+			if tt.finding.Type == "boolean-based" {
+				mock.differentialResponse = true
+				mock.trueResponse = tt.mockResponses["true"]
+				mock.falseResponse = tt.mockResponses["false"]
+			} else {
+				mock.defaultResponse = tt.mockResponses["default"]
+			}
+
+			scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+			config := VerificationConfig{
+				Enabled:    true,
+				MaxRetries: 3,
+				Delay:      10 * time.Millisecond,
+			}
+
+			ctx := context.Background()
+			result, err := scanner.VerifyFinding(ctx, tt.finding, config)
+
+			if err != nil {
+				t.Fatalf("VerifyFinding returned error: %v", err)
+			}
+
+			if result == nil {
+				t.Fatal("VerifyFinding returned nil result")
+			}
+
+			if result.Verified != tt.expectedVerif {
+				t.Errorf("Expected Verified=%v, got %v (explanation: %s)", tt.expectedVerif, result.Verified, result.Explanation)
+			}
+
+			if result.Confidence < tt.expectedMinConf {
+				t.Errorf("Expected Confidence >= %.2f, got %.2f", tt.expectedMinConf, result.Confidence)
+			}
+
+			if result.Attempts <= 0 {
+				t.Errorf("Expected Attempts > 0, got %d", result.Attempts)
+			}
+		})
+	}
+}
+
+func TestSQLiScanner_GeneratePayloadVariants(t *testing.T) {
+	scanner := NewSQLiScanner()
+
+	tests := []struct {
+		name             string
+		payload          string
+		findingType      string
+		expectedMinCount int
+	}{
+		{
+			name:             "single quote payload",
+			payload:          "'",
+			findingType:      "error-based",
+			expectedMinCount: 1,
+		},
+		{
+			name:             "OR condition payload",
+			payload:          "' OR '1'='1",
+			findingType:      "boolean-based",
+			expectedMinCount: 2,
+		},
+		{
+			name:             "UNION payload",
+			payload:          "' UNION SELECT NULL--",
+			findingType:      "error-based",
+			expectedMinCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			variants := scanner.generateSQLiPayloadVariants(tt.payload, tt.findingType)
+
+			if len(variants) < tt.expectedMinCount {
+				t.Errorf("Expected at least %d variants, got %d", tt.expectedMinCount, len(variants))
+			}
+
+			// First variant should be the original
+			if variants[0] != tt.payload {
+				t.Errorf("Expected first variant to be original payload, got %s", variants[0])
+			}
+		})
 	}
 }

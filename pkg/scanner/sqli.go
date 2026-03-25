@@ -34,15 +34,17 @@ type SQLiScanResult struct {
 
 // SQLiFinding represents a single SQL injection vulnerability finding.
 type SQLiFinding struct {
-	URL         string `json:"url" yaml:"url"`
-	Parameter   string `json:"parameter" yaml:"parameter"`
-	Payload     string `json:"payload" yaml:"payload"`
-	Evidence    string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Severity    string `json:"severity" yaml:"severity"`
-	Type        string `json:"type" yaml:"type"` // "error-based", "boolean-based", "time-based"
-	Description string `json:"description" yaml:"description"`
-	Remediation string `json:"remediation" yaml:"remediation"`
-	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+	URL                  string `json:"url" yaml:"url"`
+	Parameter            string `json:"parameter" yaml:"parameter"`
+	Payload              string `json:"payload" yaml:"payload"`
+	Evidence             string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Severity             string `json:"severity" yaml:"severity"`
+	Type                 string `json:"type" yaml:"type"` // "error-based", "boolean-based", "time-based"
+	Description          string `json:"description" yaml:"description"`
+	Remediation          string `json:"remediation" yaml:"remediation"`
+	Confidence           string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+	Verified             bool   `json:"verified" yaml:"verified"`
+	VerificationAttempts int    `json:"verification_attempts,omitempty" yaml:"verification_attempts,omitempty"`
 }
 
 // SQLiSummary provides an overview of the SQL injection scan results.
@@ -764,4 +766,200 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// VerifyFinding re-tests a SQLi finding with payload variants using differential analysis.
+func (s *SQLiScanner) VerifyFinding(ctx context.Context, finding *SQLiFinding, config VerificationConfig) (*VerificationResult, error) {
+	if finding == nil {
+		return nil, fmt.Errorf("finding is nil")
+	}
+
+	// Parse the original URL to extract parameters
+	parsedURL, err := url.Parse(finding.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL in finding: %w", err)
+	}
+
+	// Get baseline for comparison
+	baseline := s.getBaseline(ctx, parsedURL, finding.Parameter)
+	if baseline == nil {
+		return &VerificationResult{
+			Verified:    false,
+			Attempts:    1,
+			Confidence:  0.0,
+			Explanation: "Failed to obtain baseline response for verification",
+		}, nil
+	}
+
+	// Generate payload variants for verification
+	variants := s.generateSQLiPayloadVariants(finding.Payload, finding.Type)
+
+	successCount := 0
+	totalAttempts := 0
+	maxAttempts := config.MaxRetries
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	// Test each variant using differential analysis
+	for i, variant := range variants {
+		if i >= maxAttempts {
+			break
+		}
+
+		// Apply rate limiting before making the request
+		if s.rateLimiter != nil {
+			if err := s.rateLimiter.Wait(ctx); err != nil {
+				return nil, fmt.Errorf("rate limiting error: %w", err)
+			}
+		}
+
+		// Apply delay between attempts if configured
+		if i > 0 && config.Delay > 0 {
+			time.Sleep(config.Delay)
+		}
+
+		totalAttempts++
+
+		// Test the variant
+		testResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, variant)
+		if err != nil {
+			continue
+		}
+
+		// For error-based SQLi, check for SQL error patterns
+		if finding.Type == "error-based" {
+			foundError := false
+			for _, pattern := range sqlErrorPatterns {
+				if pattern.MatchString(testResp.Body) {
+					foundError = true
+					break
+				}
+			}
+			if foundError {
+				successCount++
+			}
+		} else if finding.Type == "boolean-based" {
+			// For boolean-based, use differential analysis
+			// Generate complementary payload
+			complementary := s.generateComplementaryPayload(variant)
+			if complementary != "" {
+				trueResp := testResp
+				falseResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, complementary)
+				if err != nil {
+					continue
+				}
+
+				// Check if responses differ significantly
+				trueFalseDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+				if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+					successCount++
+				} else if trueResp.StatusCode != falseResp.StatusCode {
+					successCount++
+				}
+			}
+		}
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+
+	// Calculate verification result
+	confidence := float64(successCount) / float64(totalAttempts)
+	verified := confidence >= 0.5 // At least 50% of variants must succeed
+
+	explanation := fmt.Sprintf("Verified %d out of %d payload variants successfully reproduced the vulnerability",
+		successCount, totalAttempts)
+
+	if !verified {
+		explanation = fmt.Sprintf("Only %d out of %d payload variants reproduced the vulnerability - likely a false positive or WAF interference",
+			successCount, totalAttempts)
+	}
+
+	return &VerificationResult{
+		Verified:    verified,
+		Attempts:    totalAttempts,
+		Confidence:  confidence,
+		Explanation: explanation,
+	}, nil
+}
+
+// generateSQLiPayloadVariants creates different encodings and variations of the SQL injection payload.
+func (s *SQLiScanner) generateSQLiPayloadVariants(originalPayload, findingType string) []string {
+	variants := make([]string, 0)
+
+	// Add the original payload
+	variants = append(variants, originalPayload)
+
+	// Case variations
+	if strings.Contains(originalPayload, "OR") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "OR", "or"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "OR", "Or"))
+	}
+
+	// Space variations (tab, multiple spaces)
+	if strings.Contains(originalPayload, " ") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, " ", "  "))
+		variants = append(variants, strings.ReplaceAll(originalPayload, " ", "\t"))
+	}
+
+	// Comment style variations
+	if strings.Contains(originalPayload, "--") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "--", "#"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "--", "/**/"))
+	}
+
+	// Quote variations
+	if strings.Contains(originalPayload, "'") {
+		// Double quote variant
+		doubleQuote := strings.ReplaceAll(originalPayload, "'", "\"")
+		variants = append(variants, doubleQuote)
+		// Escaped single quote
+		variants = append(variants, strings.ReplaceAll(originalPayload, "'", "\\'"))
+	}
+
+	// Boolean condition variations
+	if strings.Contains(originalPayload, "1'='1") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "1'='1", "2'='2"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "1'='1", "'a'='a"))
+	}
+
+	// UNION variations
+	if strings.Contains(originalPayload, "UNION") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "UNION", "union"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "UNION", "UnIoN"))
+	}
+
+	return variants
+}
+
+// generateComplementaryPayload creates a complementary payload for differential analysis.
+func (s *SQLiScanner) generateComplementaryPayload(payload string) string {
+	// For true conditions, generate false conditions and vice versa
+	if strings.Contains(payload, "'1'='1") {
+		return strings.ReplaceAll(payload, "'1'='1", "'1'='2")
+	}
+	if strings.Contains(payload, "'1'='2") {
+		return strings.ReplaceAll(payload, "'1'='2", "'1'='1")
+	}
+	if strings.Contains(payload, "'a'='a") {
+		return strings.ReplaceAll(payload, "'a'='a", "'a'='b")
+	}
+	if strings.Contains(payload, "2'='2") {
+		return strings.ReplaceAll(payload, "2'='2", "2'='3")
+	}
+
+	// For AND conditions
+	if strings.Contains(payload, "AND") || strings.Contains(payload, "and") {
+		// Swap AND with OR to get different behavior
+		result := strings.ReplaceAll(payload, "AND", "OR")
+		result = strings.ReplaceAll(result, "and", "or")
+		return result
+	}
+
+	return ""
 }
