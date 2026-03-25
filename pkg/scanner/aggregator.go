@@ -3,8 +3,19 @@ package scanner
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
+)
+
+// Confidence level constants for correlation and risk scoring
+const (
+	ConfidenceVerified = 0.95 // Verified findings with proof
+	ConfidenceHigh     = 0.9  // High confidence (e.g., headers, confirmed XSS/SQLi)
+	ConfidenceMedium   = 0.7  // Medium confidence (e.g., possible CSRF)
+	ConfidenceLow      = 0.5  // Low confidence
+	ConfidenceCSRF     = 0.8  // CSRF findings require verification
+	ConfidenceHeader   = 0.9  // Header findings are factual
 )
 
 // UnifiedScanResult represents a comprehensive aggregation of all scan results
@@ -95,7 +106,7 @@ func (u *UnifiedScanResult) correlateFindings() {
 							missingCSP,
 						},
 						EffectiveSeverity: SeverityHigh,
-						Confidence:        u.calculateConfidence(xssFinding.Confidence, 0.9),
+						Confidence:        u.calculateConfidence(xssFinding.Confidence, ConfidenceHeader),
 						Explanation:       fmt.Sprintf("XSS vulnerability on parameter '%s' is more exploitable due to missing Content-Security-Policy header. An attacker can inject arbitrary JavaScript without CSP restrictions.", xssFinding.Parameter),
 					}
 					u.Correlations = append(u.Correlations, correlation)
@@ -119,7 +130,7 @@ func (u *UnifiedScanResult) correlateFindings() {
 							errorDisclosure,
 						},
 						EffectiveSeverity: SeverityHigh,
-						Confidence:        u.calculateConfidence(sqliFinding.Confidence, 0.85),
+						Confidence:        u.calculateConfidence(sqliFinding.Confidence, ConfidenceCSRF),
 						Explanation:       fmt.Sprintf("SQL injection on parameter '%s' combined with verbose server headers (X-Powered-By, Server) reveals technology stack, making exploitation easier.", sqliFinding.Parameter),
 					}
 					u.Correlations = append(u.Correlations, correlation)
@@ -142,7 +153,7 @@ func (u *UnifiedScanResult) correlateFindings() {
 							insecureCookies,
 						},
 						EffectiveSeverity: SeverityHigh,
-						Confidence:        0.85,
+						Confidence:        ConfidenceCSRF,
 						Explanation:       fmt.Sprintf("CSRF vulnerability on form '%s' is exploitable because session cookies lack SameSite attribute. Attacker-controlled sites can send authenticated requests.", csrfFinding.FormAction),
 					}
 					u.Correlations = append(u.Correlations, correlation)
@@ -248,7 +259,7 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	}
 
 	// Calculate average confidence
-	avgConfidence := 0.7 // Default confidence
+	avgConfidence := ConfidenceMedium // Default confidence
 	if confidenceCount > 0 {
 		avgConfidence = totalConfidence / float64(confidenceCount)
 	}
@@ -449,7 +460,7 @@ func (u *UnifiedScanResult) GetPrioritizedFindings() []interface{} {
 				findings = append(findings, prioritizedFinding{
 					finding:      finding,
 					severity:     finding.Severity,
-					confidence:   0.8,
+					confidence:   ConfidenceCSRF,
 					isCorrelated: false,
 				})
 			}
@@ -463,7 +474,7 @@ func (u *UnifiedScanResult) GetPrioritizedFindings() []interface{} {
 				findings = append(findings, prioritizedFinding{
 					finding:      finding,
 					severity:     finding.Severity,
-					confidence:   0.9,
+					confidence:   ConfidenceHeader,
 					isCorrelated: false,
 				})
 			}
@@ -504,9 +515,9 @@ func (u *UnifiedScanResult) findMissingHeader(name string) *HeaderFinding {
 	if u.Headers == nil {
 		return nil
 	}
-	for _, finding := range u.Headers.Headers {
-		if strings.EqualFold(finding.Name, name) && !finding.Present {
-			return &finding
+	for i := range u.Headers.Headers {
+		if strings.EqualFold(u.Headers.Headers[i].Name, name) && !u.Headers.Headers[i].Present {
+			return &u.Headers.Headers[i]
 		}
 	}
 	return nil
@@ -551,13 +562,13 @@ func (u *UnifiedScanResult) calculateConfidence(conf1 string, conf2 float64) flo
 func (u *UnifiedScanResult) parseConfidenceString(conf string) float64 {
 	switch strings.ToLower(conf) {
 	case "high":
-		return 0.9
+		return ConfidenceHigh
 	case "medium":
-		return 0.7
+		return ConfidenceMedium
 	case "low":
-		return 0.5
+		return ConfidenceLow
 	default:
-		return 0.7
+		return ConfidenceMedium
 	}
 }
 
@@ -578,11 +589,11 @@ func (u *UnifiedScanResult) severityToScore(severity string) int {
 
 func (u *UnifiedScanResult) isInCorrelations(finding interface{}) bool {
 	for _, corr := range u.Correlations {
-		if corr.PrimaryFinding == finding {
+		if reflect.DeepEqual(corr.PrimaryFinding, finding) {
 			return true
 		}
 		for _, related := range corr.RelatedFindings {
-			if related == finding {
+			if reflect.DeepEqual(related, finding) {
 				return true
 			}
 		}

@@ -644,3 +644,140 @@ func TestRiskScoreBreakdownCategories(t *testing.T) {
 		}
 	}
 }
+
+// TestGetPrioritizedFindings_NoDuplicates verifies that correlated findings
+// don't appear twice in the prioritized findings list (once as correlation, once as individual).
+// This test addresses the critical bug where pointer comparison was causing duplicates.
+func TestGetPrioritizedFindings_NoDuplicates(t *testing.T) {
+	target := "https://example.com"
+
+	// Create findings that will be in correlations
+	headers := &HeaderScanResult{
+		Target: target,
+		Headers: []HeaderFinding{
+			{Name: "Content-Security-Policy", Present: false, Severity: SeverityHigh},
+		},
+	}
+	xss := &XSSScanResult{
+		Target: target,
+		Findings: []XSSFinding{
+			{
+				URL:        target + "/search",
+				Parameter:  "q",
+				Severity:   SeverityHigh,
+				Type:       "reflected",
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil)
+	prioritized := result.GetPrioritizedFindings()
+
+	// Check for duplicates by building a map of findings
+	// We use a simple string representation as key
+	seen := make(map[string]int)
+	for _, finding := range prioritized {
+		var key string
+		switch f := finding.(type) {
+		case CorrelatedFinding:
+			key = f.ID
+		case XSSFinding:
+			key = "XSS:" + f.URL + ":" + f.Parameter
+		case HeaderFinding:
+			key = "Header:" + f.Name
+		case SQLiFinding:
+			key = "SQLi:" + f.URL + ":" + f.Parameter
+		case CSRFFinding:
+			key = "CSRF:" + f.FormAction
+		default:
+			key = "Unknown"
+		}
+		seen[key]++
+	}
+
+	// Check for any duplicates
+	for key, count := range seen {
+		if count > 1 {
+			t.Errorf("Duplicate finding detected: %s appeared %d times", key, count)
+		}
+	}
+
+	// Verify that we have at least one correlation and that the XSS finding
+	// appears only once (as part of the correlation, not separately)
+	correlationCount := 0
+	xssStandaloneCount := 0
+	for _, finding := range prioritized {
+		switch f := finding.(type) {
+		case CorrelatedFinding:
+			correlationCount++
+		case XSSFinding:
+			if f.Parameter == "q" {
+				xssStandaloneCount++
+			}
+		}
+	}
+
+	if correlationCount == 0 {
+		t.Error("Expected at least one correlation in prioritized findings")
+	}
+
+	// The XSS finding should NOT appear as a standalone finding since it's in a correlation
+	if xssStandaloneCount > 0 {
+		t.Errorf("Expected XSS finding to only appear in correlation, but found %d standalone instances", xssStandaloneCount)
+	}
+}
+
+// TestFindCookiesWithoutSameSite_NoneValue verifies that cookies with
+// SameSite="none" are correctly identified as insecure.
+func TestFindCookiesWithoutSameSite_NoneValue(t *testing.T) {
+	target := "https://example.com"
+
+	headers := &HeaderScanResult{
+		Target: target,
+		Cookies: []CookieFinding{
+			{
+				Name:     "session",
+				SameSite: "none",
+				Severity: SeverityMedium,
+			},
+			{
+				Name:     "safe_cookie",
+				SameSite: "strict",
+				Severity: SeverityInfo,
+			},
+			{
+				Name:     "empty_cookie",
+				SameSite: "",
+				Severity: SeverityMedium,
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(target, false, headers, nil, nil, nil, nil)
+	insecure := result.findCookiesWithoutSameSite()
+
+	// Should find 2 insecure cookies: "none" and empty string
+	if len(insecure) != 2 {
+		t.Errorf("Expected 2 insecure cookies, got %d", len(insecure))
+	}
+
+	// Verify the correct cookies were identified
+	foundNone := false
+	foundEmpty := false
+	for _, cookie := range insecure {
+		if cookie.Name == "session" && cookie.SameSite == "none" {
+			foundNone = true
+		}
+		if cookie.Name == "empty_cookie" && cookie.SameSite == "" {
+			foundEmpty = true
+		}
+	}
+
+	if !foundNone {
+		t.Error("Expected to find cookie with SameSite='none'")
+	}
+	if !foundEmpty {
+		t.Error("Expected to find cookie with empty SameSite")
+	}
+}
