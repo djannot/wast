@@ -2320,6 +2320,87 @@ func TestScanCommandFlags(t *testing.T) {
 			t.Errorf("Expected default active to be false, got %s", activeFlag.DefValue)
 		}
 	}
+
+	// Check verify flag
+	verifyFlag := cmd.Flag("verify")
+	if verifyFlag == nil {
+		t.Error("Expected 'verify' flag to be registered")
+	} else {
+		if verifyFlag.DefValue != "false" {
+			t.Errorf("Expected default verify to be false, got %s", verifyFlag.DefValue)
+		}
+	}
+}
+
+// TestScanWithVerifyFlag tests scan command with --verify flag
+func TestScanWithVerifyFlag(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	// Verify flag should work with active mode
+	cmd.SetArgs([]string{"http://localhost", "--active", "--verify"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Verify active testing message
+	if !strings.Contains(result.Message, "active testing enabled") {
+		t.Errorf("Expected message to indicate active testing, got: %s", result.Message)
+	}
+
+	// Verify PassiveOnly flag is false
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || passiveOnly {
+		t.Error("Expected passive_only to be false with --active flag")
+	}
+}
+
+// TestScanVerifyFlagAlone tests that --verify is accepted (even without findings to verify)
+func TestScanVerifyFlagAlone(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
+	// Verify flag without active mode (should not error, just won't verify anything)
+	cmd.SetArgs([]string{"http://localhost", "--verify"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("Command execution failed: %v", err)
+	}
+
+	var result output.CommandResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if !result.Success {
+		t.Error("Expected success to be true")
+	}
+
+	// Should be in safe mode (passive only)
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected data to be a map, got %T", result.Data)
+	}
+
+	passiveOnly, ok := data["passive_only"].(bool)
+	if !ok || !passiveOnly {
+		t.Error("Expected passive_only to be true without --active flag")
+	}
 }
 
 // TestAPISpecWithAllOptions tests spec file with all options combined

@@ -37,6 +37,7 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var timeout int
 	var safeMode bool
 	var active bool
+	var verify bool
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -61,6 +62,13 @@ Active Testing (--active flag):
 WARNING: Active testing sends potentially dangerous payloads to the target.
 Only use --active on systems you own or have explicit permission to test.
 
+Finding Verification (--verify flag):
+  When enabled with active testing, reduces false positives by:
+  - Re-testing findings with payload variants
+  - Updating confidence levels based on verification results
+  - Filtering out unverified findings
+  Note: Increases scan time due to additional verification requests.
+
 Output includes severity ratings, remediation guidance, and
 CWE/CVE references where applicable.
 
@@ -72,6 +80,7 @@ Examples:
   wast scan https://example.com                    # Safe mode (passive only)
   wast scan https://example.com --active           # Enable active testing
   wast scan https://example.com --safe-mode=false  # Same as --active
+  wast scan https://example.com --active --verify  # Active testing with verification
   wast scan https://example.com --output json      # JSON output for AI
   wast scan https://example.com --timeout 60       # Custom timeout
   wast scan https://example.com --rate-limit 1     # 1 request per second`,
@@ -220,6 +229,112 @@ Examples:
 				}()
 				wg.Wait()
 
+				// Verify findings if enabled
+				if verify {
+					verifyConfig := scanner.VerificationConfig{
+						Enabled:    true,
+						MaxRetries: 3,
+						Delay:      500 * time.Millisecond,
+					}
+
+					// Verify XSS findings
+					for i := range xssResult.Findings {
+						result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
+						if err == nil && result != nil {
+							xssResult.Findings[i].Verified = result.Verified
+							xssResult.Findings[i].VerificationAttempts = result.Attempts
+							// Update confidence based on verification
+							if result.Verified && result.Confidence > 0.8 {
+								xssResult.Findings[i].Confidence = "high"
+							} else if result.Verified && result.Confidence > 0.5 {
+								xssResult.Findings[i].Confidence = "medium"
+							} else if !result.Verified {
+								xssResult.Findings[i].Confidence = "low"
+							}
+						}
+					}
+
+					// Verify SQLi findings
+					for i := range sqliResult.Findings {
+						result, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], verifyConfig)
+						if err == nil && result != nil {
+							sqliResult.Findings[i].Verified = result.Verified
+							sqliResult.Findings[i].VerificationAttempts = result.Attempts
+							// Update confidence based on verification
+							if result.Verified && result.Confidence > 0.8 {
+								sqliResult.Findings[i].Confidence = "high"
+							} else if result.Verified && result.Confidence > 0.5 {
+								sqliResult.Findings[i].Confidence = "medium"
+							} else if !result.Verified {
+								sqliResult.Findings[i].Confidence = "low"
+							}
+						}
+					}
+
+					// Verify CSRF findings
+					for i := range csrfResult.Findings {
+						result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
+						if err == nil && result != nil {
+							csrfResult.Findings[i].Verified = result.Verified
+							csrfResult.Findings[i].VerificationAttempts = result.Attempts
+						}
+					}
+
+					// Verify SSRF findings
+					for i := range ssrfResult.Findings {
+						result, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], verifyConfig)
+						if err == nil && result != nil {
+							ssrfResult.Findings[i].Verified = result.Verified
+							ssrfResult.Findings[i].VerificationAttempts = result.Attempts
+							// Update confidence based on verification
+							if result.Verified && result.Confidence > 0.8 {
+								ssrfResult.Findings[i].Confidence = "high"
+							} else if result.Verified && result.Confidence > 0.5 {
+								ssrfResult.Findings[i].Confidence = "medium"
+							} else if !result.Verified {
+								ssrfResult.Findings[i].Confidence = "low"
+							}
+						}
+					}
+
+					// Filter out unverified findings when verification is enabled
+					verifiedXSSFindings := make([]scanner.XSSFinding, 0)
+					for _, finding := range xssResult.Findings {
+						if finding.Verified {
+							verifiedXSSFindings = append(verifiedXSSFindings, finding)
+						}
+					}
+					xssResult.Findings = verifiedXSSFindings
+					xssResult.Summary.VulnerabilitiesFound = len(verifiedXSSFindings)
+
+					verifiedSQLiFindings := make([]scanner.SQLiFinding, 0)
+					for _, finding := range sqliResult.Findings {
+						if finding.Verified {
+							verifiedSQLiFindings = append(verifiedSQLiFindings, finding)
+						}
+					}
+					sqliResult.Findings = verifiedSQLiFindings
+					sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
+
+					verifiedCSRFFindings := make([]scanner.CSRFFinding, 0)
+					for _, finding := range csrfResult.Findings {
+						if finding.Verified {
+							verifiedCSRFFindings = append(verifiedCSRFFindings, finding)
+						}
+					}
+					csrfResult.Findings = verifiedCSRFFindings
+					csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
+
+					verifiedSSRFFindings := make([]scanner.SSRFFinding, 0)
+					for _, finding := range ssrfResult.Findings {
+						if finding.Verified {
+							verifiedSSRFFindings = append(verifiedSSRFFindings, finding)
+						}
+					}
+					ssrfResult.Findings = verifiedSSRFFindings
+					ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
+				}
+
 				combinedResult.XSS = xssResult
 				combinedResult.SQLi = sqliResult
 				combinedResult.CSRF = csrfResult
@@ -279,6 +394,7 @@ Examples:
 	cmd.Flags().IntVar(&timeout, "timeout", 30, "HTTP request timeout in seconds")
 	cmd.Flags().BoolVar(&safeMode, "safe-mode", true, "Run in safe mode (passive checks only, no active vulnerability testing)")
 	cmd.Flags().BoolVar(&active, "active", false, "Enable active vulnerability testing (same as --safe-mode=false)")
+	cmd.Flags().BoolVar(&verify, "verify", false, "Enable finding verification to reduce false positives (requires --active)")
 
 	return cmd
 }
