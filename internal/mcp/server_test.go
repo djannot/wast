@@ -16,7 +16,7 @@ func TestNewServer(t *testing.T) {
 	}
 
 	// Verify tools are registered
-	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api"}
+	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept"}
 	for _, toolName := range expectedTools {
 		if _, ok := server.tools[toolName]; !ok {
 			t.Errorf("Expected tool %s to be registered", toolName)
@@ -67,8 +67,8 @@ func TestToolsListRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("Tools is not a list")
 	}
-	if len(toolsList) != 4 {
-		t.Errorf("Expected 4 tools, got %d", len(toolsList))
+	if len(toolsList) != 5 {
+		t.Errorf("Expected 5 tools, got %d", len(toolsList))
 	}
 }
 
@@ -656,5 +656,246 @@ func TestAPIToolAuthConfigConstruction(t *testing.T) {
 	_, err := tool.Execute(ctx, argsJSON)
 	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
 		t.Errorf("Execute should handle all auth parameters: %v", err)
+	}
+}
+
+func TestInterceptToolSchema(t *testing.T) {
+	tool := &InterceptTool{}
+
+	if tool.Name() != "wast_intercept" {
+		t.Errorf("Expected name wast_intercept, got %s", tool.Name())
+	}
+
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+
+	schema := tool.InputSchema()
+	if schema == nil {
+		t.Fatal("Schema should not be nil")
+	}
+
+	// Verify properties
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Check for expected properties
+	expectedProps := []string{"port", "duration", "save_file", "https_interception", "max_requests"}
+	for _, prop := range expectedProps {
+		if _, ok := props[prop]; !ok {
+			t.Errorf("Schema should have %s property", prop)
+		}
+	}
+
+	// Verify port default
+	if portProp, ok := props["port"].(map[string]interface{}); ok {
+		if defaultVal, ok := portProp["default"].(int); !ok || defaultVal != 8080 {
+			t.Error("port should default to 8080")
+		}
+	}
+
+	// Verify duration default
+	if durationProp, ok := props["duration"].(map[string]interface{}); ok {
+		if defaultVal, ok := durationProp["default"].(string); !ok || defaultVal != "60s" {
+			t.Error("duration should default to 60s")
+		}
+	}
+
+	// Verify https_interception default
+	if httpsProp, ok := props["https_interception"].(map[string]interface{}); ok {
+		if defaultVal, ok := httpsProp["default"].(bool); !ok || defaultVal != false {
+			t.Error("https_interception should default to false")
+		}
+	}
+}
+
+func TestInterceptToolExecuteDefaults(t *testing.T) {
+	tool := &InterceptTool{}
+
+	// Test with minimal arguments (should use defaults)
+	args := map[string]interface{}{}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// This will start a proxy for 60s by default, but we'll cancel after 2s
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// The result could be either a ProxyResult or an error map
+	// Let's verify it's not nil
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+func TestInterceptToolExecuteCustomPort(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":     9090,
+		"duration": "1s",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+func TestInterceptToolExecuteInvalidDuration(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"duration": "invalid-duration",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx := context.Background()
+	_, err := tool.Execute(ctx, argsJSON)
+
+	if err == nil {
+		t.Error("Expected error for invalid duration")
+	}
+	if !strings.Contains(err.Error(), "duration") {
+		t.Errorf("Error should mention duration, got: %v", err)
+	}
+}
+
+func TestInterceptToolExecuteWithSaveFile(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":      9091,
+		"duration":  "1s",
+		"save_file": "/tmp/test_traffic.json",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+func TestInterceptToolExecuteWithMaxRequests(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":         9092,
+		"duration":     "30s",
+		"max_requests": 10,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+func TestInterceptToolExecuteInvalidJSON(t *testing.T) {
+	tool := &InterceptTool{}
+
+	invalidJSON := []byte(`{"port": "not-a-number"}`)
+
+	ctx := context.Background()
+	_, err := tool.Execute(ctx, invalidJSON)
+
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Error should mention invalid arguments, got: %v", err)
+	}
+}
+
+func TestInterceptToolSchemaProperties(t *testing.T) {
+	tool := &InterceptTool{}
+	schema := tool.InputSchema()
+
+	// Verify schema structure
+	if schemaType, ok := schema["type"].(string); !ok || schemaType != "object" {
+		t.Error("Schema type should be 'object'")
+	}
+
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Test port property
+	if portProp, ok := props["port"].(map[string]interface{}); ok {
+		if portType, ok := portProp["type"].(string); !ok || portType != "integer" {
+			t.Error("port type should be 'integer'")
+		}
+		if desc, ok := portProp["description"].(string); !ok || desc == "" {
+			t.Error("port should have a description")
+		}
+	} else {
+		t.Error("Schema should have port property")
+	}
+
+	// Test duration property
+	if durationProp, ok := props["duration"].(map[string]interface{}); ok {
+		if durationType, ok := durationProp["type"].(string); !ok || durationType != "string" {
+			t.Error("duration type should be 'string'")
+		}
+	} else {
+		t.Error("Schema should have duration property")
+	}
+
+	// Test save_file property
+	if saveFileProp, ok := props["save_file"].(map[string]interface{}); ok {
+		if saveFileType, ok := saveFileProp["type"].(string); !ok || saveFileType != "string" {
+			t.Error("save_file type should be 'string'")
+		}
+	} else {
+		t.Error("Schema should have save_file property")
+	}
+
+	// Test https_interception property
+	if httpsProp, ok := props["https_interception"].(map[string]interface{}); ok {
+		if httpsType, ok := httpsProp["type"].(string); !ok || httpsType != "boolean" {
+			t.Error("https_interception type should be 'boolean'")
+		}
+	} else {
+		t.Error("Schema should have https_interception property")
+	}
+
+	// Test max_requests property
+	if maxReqProp, ok := props["max_requests"].(map[string]interface{}); ok {
+		if maxReqType, ok := maxReqProp["type"].(string); !ok || maxReqType != "integer" {
+			t.Error("max_requests type should be 'integer'")
+		}
+	} else {
+		t.Error("Schema should have max_requests property")
 	}
 }

@@ -73,6 +73,7 @@ func (s *Server) registerTools() {
 	s.tools["wast_scan"] = &ScanTool{}
 	s.tools["wast_crawl"] = &CrawlTool{}
 	s.tools["wast_api"] = &APITool{}
+	s.tools["wast_intercept"] = &InterceptTool{}
 }
 
 // Run starts the MCP server and processes requests.
@@ -606,6 +607,81 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 
 	// Execute API command logic
 	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig)
+
+	return result, nil
+}
+
+// InterceptTool implements the wast_intercept MCP tool.
+type InterceptTool struct{}
+
+func (t *InterceptTool) Name() string {
+	return "wast_intercept"
+}
+
+func (t *InterceptTool) Description() string {
+	return "Start a proxy server to intercept and analyze HTTP/HTTPS traffic. The proxy captures requests and responses for security testing and analysis."
+}
+
+func (t *InterceptTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"port": map[string]interface{}{
+				"type":        "integer",
+				"description": "Port to listen on for the proxy",
+				"default":     8080,
+			},
+			"duration": map[string]interface{}{
+				"type":        "string",
+				"description": "Duration to capture traffic (e.g., '30s', '5m')",
+				"default":     "60s",
+			},
+			"save_file": map[string]interface{}{
+				"type":        "string",
+				"description": "Path to save intercepted traffic as JSON",
+			},
+			"https_interception": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Enable HTTPS traffic interception (requires CA setup)",
+				"default":     false,
+			},
+			"max_requests": map[string]interface{}{
+				"type":        "integer",
+				"description": "Stop after capturing N requests (alternative to duration)",
+			},
+		},
+	}
+}
+
+func (t *InterceptTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args struct {
+		Port              int    `json:"port"`
+		Duration          string `json:"duration"`
+		SaveFile          string `json:"save_file"`
+		HTTPSInterception bool   `json:"https_interception"`
+		MaxRequests       int    `json:"max_requests"`
+	}
+
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	// Set defaults
+	if args.Port <= 0 {
+		args.Port = 8080
+	}
+	if args.Duration == "" {
+		args.Duration = "60s"
+	}
+
+	// Parse duration
+	duration, err := time.ParseDuration(args.Duration)
+	if err != nil {
+		return nil, fmt.Errorf("invalid duration: %w", err)
+	}
+
+	// Execute intercept command logic
+	result := executeIntercept(ctx, args.Port, duration, args.SaveFile, args.HTTPSInterception, args.MaxRequests)
 
 	return result, nil
 }
