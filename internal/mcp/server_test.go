@@ -18,7 +18,7 @@ func TestNewServer(t *testing.T) {
 	}
 
 	// Verify tools are registered
-	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept"}
+	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers"}
 	for _, toolName := range expectedTools {
 		if _, ok := server.tools[toolName]; !ok {
 			t.Errorf("Expected tool %s to be registered", toolName)
@@ -1798,6 +1798,219 @@ func TestInterceptToolDurationDefault(t *testing.T) {
 	}
 
 	// Should succeed with default duration
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestHeadersToolSchema tests the HeadersTool schema validation
+func TestHeadersToolSchema(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+
+	// Test tool name
+	if tool.Name() != "wast_headers" {
+		t.Errorf("Expected name wast_headers, got %s", tool.Name())
+	}
+
+	// Test description is non-empty
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+
+	schema := tool.InputSchema()
+	if schema == nil {
+		t.Fatal("Schema should not be nil")
+	}
+
+	// Verify required properties
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Verify target property exists
+	if _, ok := props["target"]; !ok {
+		t.Error("Schema should have target property")
+	}
+
+	// Verify timeout property exists
+	if timeoutProp, ok := props["timeout"].(map[string]interface{}); ok {
+		if defaultVal, ok := timeoutProp["default"].(int); !ok || defaultVal != 30 {
+			t.Error("timeout should default to 30")
+		}
+	} else {
+		t.Error("Schema should have timeout property")
+	}
+
+	// Verify bearer_token property exists
+	if _, ok := props["bearer_token"]; !ok {
+		t.Error("Schema should have bearer_token property")
+	}
+
+	// Verify basic_auth property exists
+	if _, ok := props["basic_auth"]; !ok {
+		t.Error("Schema should have basic_auth property")
+	}
+
+	// Verify auth_header property exists
+	if _, ok := props["auth_header"]; !ok {
+		t.Error("Schema should have auth_header property")
+	}
+
+	// Verify cookies property exists
+	if _, ok := props["cookies"]; !ok {
+		t.Error("Schema should have cookies property")
+	}
+
+	// Verify requests_per_second property exists
+	if rpsProp, ok := props["requests_per_second"].(map[string]interface{}); ok {
+		if defaultVal, ok := rpsProp["default"].(int); !ok || defaultVal != 0 {
+			t.Error("requests_per_second should default to 0")
+		}
+	} else {
+		t.Error("Schema should have requests_per_second property")
+	}
+
+	// Verify target is required
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatal("required should be a string array")
+	}
+
+	if len(required) != 1 || required[0] != "target" {
+		t.Error("target should be required")
+	}
+}
+
+// TestHeadersToolExecuteMissingTarget tests error handling when target is missing
+func TestHeadersToolExecuteMissingTarget(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+
+	args := map[string]interface{}{}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx := context.Background()
+	_, err := tool.Execute(ctx, argsJSON)
+
+	if err == nil {
+		t.Error("Expected error when target is missing")
+	}
+	if !strings.Contains(err.Error(), "target") {
+		t.Errorf("Error should mention target, got: %v", err)
+	}
+}
+
+// TestHeadersToolExecuteDefaults tests execution with minimal arguments
+func TestHeadersToolExecuteDefaults(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+
+	args := map[string]interface{}{
+		"target": "https://example.com",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify result is not nil
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestHeadersToolWithAuthParameters tests auth parameters parsing
+func TestHeadersToolWithAuthParameters(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+
+	// Verify schema includes auth parameters
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	authParams := []string{"bearer_token", "basic_auth", "auth_header", "cookies"}
+	for _, param := range authParams {
+		if _, ok := props[param]; !ok {
+			t.Errorf("Schema should have %s property", param)
+		}
+	}
+
+	// Test execution with auth parameters
+	args := map[string]interface{}{
+		"target":       "https://example.com",
+		"bearer_token": "test-token-123",
+		"basic_auth":   "user:pass",
+		"cookies":      []string{"session=abc123", "user_id=456"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse auth parameters correctly: %v", err)
+	}
+}
+
+// TestHeadersToolRateLimitingSchema tests rate limiting schema properties
+func TestHeadersToolRateLimitingSchema(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Verify requests_per_second exists and defaults to 0
+	if rpsParam, ok := props["requests_per_second"].(map[string]interface{}); ok {
+		if rpsType, ok := rpsParam["type"].(string); !ok || rpsType != "number" {
+			t.Error("requests_per_second type should be 'number'")
+		}
+		if defaultVal, ok := rpsParam["default"].(int); !ok || defaultVal != 0 {
+			t.Error("requests_per_second should default to 0")
+		}
+		if desc, ok := rpsParam["description"].(string); !ok || desc == "" {
+			t.Error("requests_per_second should have a description")
+		}
+	} else {
+		t.Error("Schema should have requests_per_second property")
+	}
+}
+
+// TestHeadersToolTimeoutDefault tests timeout default handling
+func TestHeadersToolTimeoutDefault(t *testing.T) {
+	server := NewServer()
+	tool := &HeadersTool{server: server}
+
+	args := map[string]interface{}{
+		"target":  "https://example.com",
+		"timeout": -1, // Invalid timeout, should use default of 30
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default timeout
 	if result == nil {
 		t.Error("Result should not be nil")
 	}
