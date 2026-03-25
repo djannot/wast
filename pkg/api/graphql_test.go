@@ -172,13 +172,10 @@ func TestGraphQLSecurityResult_String(t *testing.T) {
 		URL:                  "https://api.example.com/graphql",
 		IntrospectionEnabled: true,
 		SchemaInfo: &GraphQLSchemaInfo{
-			TypeCount:         10,
-			QueryCount:        5,
-			MutationCount:     3,
-			SubscriptionCount: 2,
-			QueryTypeName:     "Query",
-			MutationTypeName:  "Mutation",
-			SubscriptionType:  "Subscription",
+			TypeCount:        10,
+			QueryTypeName:    "Query",
+			MutationTypeName: "Mutation",
+			SubscriptionType: "Subscription",
 		},
 		Findings: []GraphQLFinding{
 			{

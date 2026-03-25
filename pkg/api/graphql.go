@@ -20,13 +20,10 @@ type GraphQLSecurityResult struct {
 
 // GraphQLSchemaInfo contains extracted schema details from introspection.
 type GraphQLSchemaInfo struct {
-	TypeCount         int    `json:"type_count" yaml:"type_count"`
-	QueryCount        int    `json:"query_count" yaml:"query_count"`
-	MutationCount     int    `json:"mutation_count" yaml:"mutation_count"`
-	SubscriptionCount int    `json:"subscription_count" yaml:"subscription_count"`
-	QueryTypeName     string `json:"query_type_name,omitempty" yaml:"query_type_name,omitempty"`
-	MutationTypeName  string `json:"mutation_type_name,omitempty" yaml:"mutation_type_name,omitempty"`
-	SubscriptionType  string `json:"subscription_type,omitempty" yaml:"subscription_type,omitempty"`
+	TypeCount        int    `json:"type_count" yaml:"type_count"`
+	QueryTypeName    string `json:"query_type_name,omitempty" yaml:"query_type_name,omitempty"`
+	MutationTypeName string `json:"mutation_type_name,omitempty" yaml:"mutation_type_name,omitempty"`
+	SubscriptionType string `json:"subscription_type,omitempty" yaml:"subscription_type,omitempty"`
 }
 
 // GraphQLFinding represents a security finding related to GraphQL.
@@ -148,38 +145,19 @@ func (d *Discoverer) testGraphQLIntrospection(ctx context.Context, url string) (
 	// Extract query type name
 	if introspectionResp.Data.Schema.QueryType != nil {
 		schemaInfo.QueryTypeName = introspectionResp.Data.Schema.QueryType.Name
-		schemaInfo.QueryCount = d.countFieldsForType(introspectionResp.Data.Schema.Types, schemaInfo.QueryTypeName)
 	}
 
 	// Extract mutation type name
 	if introspectionResp.Data.Schema.MutationType != nil {
 		schemaInfo.MutationTypeName = introspectionResp.Data.Schema.MutationType.Name
-		schemaInfo.MutationCount = d.countFieldsForType(introspectionResp.Data.Schema.Types, schemaInfo.MutationTypeName)
 	}
 
 	// Extract subscription type name
 	if introspectionResp.Data.Schema.SubscriptionType != nil {
 		schemaInfo.SubscriptionType = introspectionResp.Data.Schema.SubscriptionType.Name
-		schemaInfo.SubscriptionCount = d.countFieldsForType(introspectionResp.Data.Schema.Types, schemaInfo.SubscriptionType)
 	}
 
 	return true, schemaInfo
-}
-
-// countFieldsForType counts the number of fields for a given type (used as a proxy for query/mutation count).
-// In a full introspection, we would need to query the fields of the type, but for now we use 1 if the type exists.
-func (d *Discoverer) countFieldsForType(types []struct {
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-}, typeName string) int {
-	// For basic implementation, return 1 if the type exists
-	// A full implementation would require a more detailed introspection query to get field counts
-	for _, t := range types {
-		if t.Name == typeName {
-			return 1
-		}
-	}
-	return 0
 }
 
 // String returns a human-readable representation of the GraphQL security result.
