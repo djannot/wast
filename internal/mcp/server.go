@@ -346,6 +346,25 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"description": "Enable active vulnerability testing (SQLi, XSS, CSRF). Defaults to false for safe mode.",
 				"default":     false,
 			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -353,9 +372,13 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 
 func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target  string `json:"target"`
-		Timeout int    `json:"timeout"`
-		Active  bool   `json:"active"`
+		Target      string   `json:"target"`
+		Timeout     int      `json:"timeout"`
+		Active      bool     `json:"active"`
+		BearerToken string   `json:"bearer_token"`
+		BasicAuth   string   `json:"basic_auth"`
+		AuthHeader  string   `json:"auth_header"`
+		Cookies     []string `json:"cookies"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -370,8 +393,13 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		args.Timeout = 30
 	}
 
-	// Create empty auth and rate limit configs
-	authConfig := &auth.AuthConfig{}
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute scan command logic
@@ -414,6 +442,25 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 				"description": "Respect robots.txt rules",
 				"default":     true,
 			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -421,10 +468,14 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 
 func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target        string `json:"target"`
-		Depth         int    `json:"depth"`
-		Timeout       string `json:"timeout"`
-		RespectRobots bool   `json:"respect_robots"`
+		Target        string   `json:"target"`
+		Depth         int      `json:"depth"`
+		Timeout       string   `json:"timeout"`
+		RespectRobots bool     `json:"respect_robots"`
+		BearerToken   string   `json:"bearer_token"`
+		BasicAuth     string   `json:"basic_auth"`
+		AuthHeader    string   `json:"auth_header"`
+		Cookies       []string `json:"cookies"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -449,8 +500,13 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		}
 	}
 
-	// Create empty auth and rate limit configs
-	authConfig := &auth.AuthConfig{}
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute crawl command logic
@@ -492,16 +548,39 @@ func (t *APITool) InputSchema() map[string]interface{} {
 				"description": "HTTP request timeout in seconds",
 				"default":     30,
 			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
 		},
 	}
 }
 
 func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target   string `json:"target"`
-		SpecFile string `json:"spec_file"`
-		DryRun   bool   `json:"dry_run"`
-		Timeout  int    `json:"timeout"`
+		Target      string   `json:"target"`
+		SpecFile    string   `json:"spec_file"`
+		DryRun      bool     `json:"dry_run"`
+		Timeout     int      `json:"timeout"`
+		BearerToken string   `json:"bearer_token"`
+		BasicAuth   string   `json:"basic_auth"`
+		AuthHeader  string   `json:"auth_header"`
+		Cookies     []string `json:"cookies"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -516,8 +595,13 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		args.Timeout = 30
 	}
 
-	// Create empty auth and rate limit configs
-	authConfig := &auth.AuthConfig{}
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
 	rateLimitConfig := ratelimit.Config{}
 
 	// Execute API command logic
