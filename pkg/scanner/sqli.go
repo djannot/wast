@@ -19,12 +19,13 @@ import (
 
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	client         HTTPClient
+	userAgent      string
+	timeout        time.Duration
+	authConfig     *auth.AuthConfig
+	rateLimiter    ratelimit.Limiter
+	tracer         trace.Tracer
+	timeBasedDelay time.Duration // Delay duration for time-based detection (default 5 seconds)
 }
 
 // SQLiScanResult represents the result of a SQL injection vulnerability scan.
@@ -67,6 +68,7 @@ type sqliPayload struct {
 	Description     string
 	ErrorPattern    *regexp.Regexp // Pattern to match in response for error-based detection
 	CompareBaseline bool           // Whether to compare with baseline response for boolean-based
+	ExpectedDelay   time.Duration  // Expected delay for time-based payloads
 }
 
 // Common SQL error patterns from various database systems.
@@ -181,6 +183,46 @@ var sqliPayloads = []sqliPayload{
 		Description:     "Numeric field SQL injection detected",
 		CompareBaseline: true,
 	},
+	// Time-based detection - MySQL SLEEP
+	{
+		Payload:       "' OR SLEEP(5)--",
+		Type:          "time-based",
+		Severity:      SeverityHigh,
+		Description:   "Time-based blind SQL injection detected using MySQL SLEEP function",
+		ExpectedDelay: 5 * time.Second,
+	},
+	// Time-based detection - MySQL BENCHMARK
+	{
+		Payload:       "' AND BENCHMARK(10000000,SHA1('test'))--",
+		Type:          "time-based",
+		Severity:      SeverityHigh,
+		Description:   "Time-based blind SQL injection detected using MySQL BENCHMARK function",
+		ExpectedDelay: 5 * time.Second,
+	},
+	// Time-based detection - PostgreSQL pg_sleep
+	{
+		Payload:       "'; SELECT pg_sleep(5)--",
+		Type:          "time-based",
+		Severity:      SeverityHigh,
+		Description:   "Time-based blind SQL injection detected using PostgreSQL pg_sleep function",
+		ExpectedDelay: 5 * time.Second,
+	},
+	// Time-based detection - Microsoft SQL Server WAITFOR DELAY
+	{
+		Payload:       "'; WAITFOR DELAY '00:00:05'--",
+		Type:          "time-based",
+		Severity:      SeverityHigh,
+		Description:   "Time-based blind SQL injection detected using SQL Server WAITFOR DELAY",
+		ExpectedDelay: 5 * time.Second,
+	},
+	// Time-based detection - SQLite heavy computation (no native sleep)
+	{
+		Payload:       "' AND (SELECT COUNT(*) FROM sqlite_master WHERE tbl_name LIKE '%' || randomblob(100000000))--",
+		Type:          "time-based",
+		Severity:      SeverityHigh,
+		Description:   "Time-based blind SQL injection detected using SQLite heavy computation",
+		ExpectedDelay: 3 * time.Second, // Lower threshold for computation-based delays
+	},
 }
 
 // SQLiOption is a function that configures a SQLiScanner.
@@ -235,11 +277,19 @@ func WithSQLiTracer(tracer trace.Tracer) SQLiOption {
 	}
 }
 
+// WithSQLiTimeBasedDelay sets the expected delay duration for time-based SQL injection detection.
+func WithSQLiTimeBasedDelay(d time.Duration) SQLiOption {
+	return func(s *SQLiScanner) {
+		s.timeBasedDelay = d
+	}
+}
+
 // NewSQLiScanner creates a new SQLiScanner with the given options.
 func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
 	s := &SQLiScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
+		userAgent:      "WAST/1.0 (Web Application Security Testing)",
+		timeout:        30 * time.Second,
+		timeBasedDelay: 5 * time.Second, // Default delay for time-based detection
 	}
 
 	for _, opt := range opts {
@@ -287,12 +337,14 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 		params.Set("product", "1")
 	}
 
-	// Get baseline responses for boolean-based detection
+	// Get baseline responses for boolean-based detection and baseline timing for time-based detection
 	baselineResponses := make(map[string]*baselineResponse)
+	baselineTiming := make(map[string]time.Duration)
 	for paramName := range params {
-		baseline := s.getBaseline(ctx, parsedURL, paramName)
+		baseline, duration := s.getBaselineWithTiming(ctx, parsedURL, paramName)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
+			baselineTiming[paramName] = duration
 		}
 	}
 
@@ -308,7 +360,11 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 			}
 
 			var finding *SQLiFinding
-			if payload.CompareBaseline {
+			if payload.Type == "time-based" {
+				// Time-based detection
+				baseline := baselineTiming[paramName]
+				finding = s.testTimeBased(ctx, parsedURL, paramName, payload, baseline)
+			} else if payload.CompareBaseline {
 				// Boolean-based detection
 				baseline := baselineResponses[paramName]
 				finding = s.testBooleanBased(ctx, parsedURL, paramName, payload, baseline)
@@ -351,6 +407,13 @@ type baselineResponse struct {
 
 // getBaseline makes a request with the original parameter value to establish a baseline.
 func (s *SQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, paramName string) *baselineResponse {
+	baseline, _ := s.getBaselineWithTiming(ctx, baseURL, paramName)
+	return baseline
+}
+
+// getBaselineWithTiming makes a request with the original parameter value to establish a baseline
+// and measures the request duration for time-based detection.
+func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.URL, paramName string) (*baselineResponse, time.Duration) {
 	// Create a copy of the URL with the original parameter value
 	testURL := *baseURL
 	q := testURL.Query()
@@ -366,7 +429,7 @@ func (s *SQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, paramNa
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 
 	req.Header.Set("User-Agent", s.userAgent)
@@ -377,25 +440,30 @@ func (s *SQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, paramNa
 		s.authConfig.ApplyToRequest(req)
 	}
 
-	// Send the request
+	// Measure request time
+	startTime := time.Now()
 	resp, err := s.client.Do(req)
+	duration := time.Since(startTime)
+
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer resp.Body.Close()
 
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 
-	return &baselineResponse{
+	baseline := &baselineResponse{
 		StatusCode:  resp.StatusCode,
 		BodyLength:  len(body),
 		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
 		ContainsKey: string(body),
 	}
+
+	return baseline, duration
 }
 
 // testErrorBased tests a single parameter with an error-based SQL injection payload.
@@ -672,6 +740,102 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	return nil
 }
 
+// testTimeBased tests a single parameter with a time-based SQL injection payload.
+// It measures request duration and compares with baseline and expected delay.
+func (s *SQLiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baselineDuration time.Duration) *SQLiFinding {
+	// Create a copy of the URL with the test payload
+	testURL := *baseURL
+	q := testURL.Query()
+	q.Set(paramName, payload.Payload)
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Measure request time
+	startTime := time.Now()
+	resp, err := s.client.Do(req)
+	requestDuration := time.Since(startTime)
+
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body to check for SQL errors (which would indicate even higher confidence)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// First check if there are SQL errors - this would be even stronger evidence
+	sqlErrorFound := false
+	var errorMatch string
+	for _, pattern := range sqlErrorPatterns {
+		if pattern.MatchString(bodyStr) {
+			sqlErrorFound = true
+			errorMatch = pattern.FindString(bodyStr)
+			break
+		}
+	}
+
+	// Determine the expected delay (use payload's expected delay or scanner's default)
+	expectedDelay := payload.ExpectedDelay
+	if expectedDelay == 0 {
+		expectedDelay = s.timeBasedDelay
+	}
+
+	// Calculate threshold: baseline + expected delay - tolerance
+	// We use a tolerance of 1 second to account for network jitter
+	tolerance := 1 * time.Second
+	minExpectedDuration := baselineDuration + expectedDelay - tolerance
+
+	// Check if the request took significantly longer than expected
+	if requestDuration >= minExpectedDuration {
+		confidence := "high"
+		evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based SQL injection",
+			requestDuration, baselineDuration, expectedDelay)
+
+		// If SQL error is also present, mention it in evidence
+		if sqlErrorFound {
+			evidenceMsg += fmt.Sprintf("; SQL error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
+			confidence = "high" // Both timing and error confirms vulnerability
+		}
+
+		return &SQLiFinding{
+			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidenceMsg,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+			Confidence:  confidence,
+		}
+	}
+
+	return nil
+}
+
 // extractEvidence extracts a snippet of the response containing the SQL error.
 func (s *SQLiScanner) extractEvidence(body, errorMatch string) string {
 	if errorMatch == "" {
@@ -818,6 +982,18 @@ func (s *SQLiScanner) VerifyFinding(ctx context.Context, finding *SQLiFinding, c
 		maxAttempts = 3
 	}
 
+	// Get baseline timing for time-based verification
+	var baselineDuration time.Duration
+	if finding.Type == "time-based" {
+		// For time-based, we need a clean baseline without the payload
+		// Create a clean URL with safe parameter value
+		cleanURL := *parsedURL
+		q := cleanURL.Query()
+		q.Set(finding.Parameter, "1") // Use safe default value
+		cleanURL.RawQuery = q.Encode()
+		_, baselineDuration = s.getBaselineWithTiming(ctx, &cleanURL, finding.Parameter)
+	}
+
 	// Test each variant using differential analysis
 	for i, variant := range variants {
 		if i >= maxAttempts {
@@ -838,41 +1014,79 @@ func (s *SQLiScanner) VerifyFinding(ctx context.Context, finding *SQLiFinding, c
 
 		totalAttempts++
 
-		// Test the variant
-		testResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, variant)
-		if err != nil {
-			continue
-		}
+		// For time-based SQLi, measure request duration
+		if finding.Type == "time-based" {
+			// Create test URL with variant
+			testURL := *parsedURL
+			q := testURL.Query()
+			q.Set(finding.Parameter, variant)
+			testURL.RawQuery = q.Encode()
 
-		// For error-based SQLi, check for SQL error patterns
-		if finding.Type == "error-based" {
-			foundError := false
-			for _, pattern := range sqlErrorPatterns {
-				if pattern.MatchString(testResp.Body) {
-					foundError = true
-					break
-				}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+			if err != nil {
+				continue
 			}
-			if foundError {
+
+			req.Header.Set("User-Agent", s.userAgent)
+			if s.authConfig != nil {
+				s.authConfig.ApplyToRequest(req)
+			}
+
+			// Measure request time
+			startTime := time.Now()
+			resp, err := s.client.Do(req)
+			requestDuration := time.Since(startTime)
+
+			if err != nil {
+				continue
+			}
+			resp.Body.Close()
+
+			// Check if request took significantly longer (expected delay is typically 5 seconds)
+			expectedDelay := s.timeBasedDelay
+			tolerance := 1 * time.Second
+			minExpectedDuration := baselineDuration + expectedDelay - tolerance
+
+			if requestDuration >= minExpectedDuration {
 				successCount++
 			}
-		} else if finding.Type == "boolean-based" {
-			// For boolean-based, use differential analysis
-			// Generate complementary payload
-			complementary := s.generateComplementaryPayload(variant)
-			if complementary != "" {
-				trueResp := testResp
-				falseResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, complementary)
-				if err != nil {
-					continue
-				}
+		} else {
+			// Test the variant for error-based and boolean-based
+			testResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, variant)
+			if err != nil {
+				continue
+			}
 
-				// Check if responses differ significantly
-				trueFalseDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
-				if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+			// For error-based SQLi, check for SQL error patterns
+			if finding.Type == "error-based" {
+				foundError := false
+				for _, pattern := range sqlErrorPatterns {
+					if pattern.MatchString(testResp.Body) {
+						foundError = true
+						break
+					}
+				}
+				if foundError {
 					successCount++
-				} else if trueResp.StatusCode != falseResp.StatusCode {
-					successCount++
+				}
+			} else if finding.Type == "boolean-based" {
+				// For boolean-based, use differential analysis
+				// Generate complementary payload
+				complementary := s.generateComplementaryPayload(variant)
+				if complementary != "" {
+					trueResp := testResp
+					falseResp, err := s.makeRequest(ctx, parsedURL, finding.Parameter, complementary)
+					if err != nil {
+						continue
+					}
+
+					// Check if responses differ significantly
+					trueFalseDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+					if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+						successCount++
+					} else if trueResp.StatusCode != falseResp.StatusCode {
+						successCount++
+					}
 				}
 			}
 		}
@@ -949,6 +1163,25 @@ func (s *SQLiScanner) generateSQLiPayloadVariants(originalPayload, findingType s
 	if strings.Contains(originalPayload, "UNION") {
 		variants = append(variants, strings.ReplaceAll(originalPayload, "UNION", "union"))
 		variants = append(variants, strings.ReplaceAll(originalPayload, "UNION", "UnIoN"))
+	}
+
+	// Time-based payload variations
+	if findingType == "time-based" {
+		// MySQL SLEEP variations
+		if strings.Contains(originalPayload, "SLEEP(5)") {
+			variants = append(variants, strings.ReplaceAll(originalPayload, "SLEEP(5)", "sleep(5)"))
+			variants = append(variants, strings.ReplaceAll(originalPayload, "SLEEP(5)", "SLEEP(6)"))
+		}
+		// PostgreSQL pg_sleep variations
+		if strings.Contains(originalPayload, "pg_sleep(5)") {
+			variants = append(variants, strings.ReplaceAll(originalPayload, "pg_sleep(5)", "pg_sleep(6)"))
+			variants = append(variants, strings.ReplaceAll(originalPayload, "pg_sleep(5)", "PG_SLEEP(5)"))
+		}
+		// SQL Server WAITFOR variations
+		if strings.Contains(originalPayload, "WAITFOR DELAY") {
+			variants = append(variants, strings.ReplaceAll(originalPayload, "WAITFOR DELAY", "waitfor delay"))
+			variants = append(variants, strings.ReplaceAll(originalPayload, "'00:00:05'", "'00:00:06'"))
+		}
 	}
 
 	return variants
