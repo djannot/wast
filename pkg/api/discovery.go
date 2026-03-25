@@ -18,13 +18,13 @@ import (
 
 // DiscoveryResult represents the result of API endpoint discovery.
 type DiscoveryResult struct {
-	Target              string                      `json:"target" yaml:"target"`
-	BaseURL             string                      `json:"base_url" yaml:"base_url"`
-	DiscoveredEndpoints []DiscoveredEndpoint        `json:"discovered_endpoints" yaml:"discovered_endpoints"`
-	APITypes            []string                    `json:"api_types" yaml:"api_types"`
-	GraphQLFindings     []*GraphQLSecurityResult    `json:"graphql_findings,omitempty" yaml:"graphql_findings,omitempty"`
-	Summary             DiscoverySummary            `json:"summary" yaml:"summary"`
-	Errors              []string                    `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Target              string                   `json:"target" yaml:"target"`
+	BaseURL             string                   `json:"base_url" yaml:"base_url"`
+	DiscoveredEndpoints []DiscoveredEndpoint     `json:"discovered_endpoints" yaml:"discovered_endpoints"`
+	APITypes            []string                 `json:"api_types" yaml:"api_types"`
+	GraphQLFindings     []*GraphQLSecurityResult `json:"graphql_findings,omitempty" yaml:"graphql_findings,omitempty"`
+	Summary             DiscoverySummary         `json:"summary" yaml:"summary"`
+	Errors              []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // DiscoveredEndpoint represents a discovered API documentation or endpoint.
