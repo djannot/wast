@@ -32,6 +32,7 @@ type CompleteScanResult struct {
 	XSS         *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
 	SQLi        *scanner.SQLiScanResult   `json:"sqli,omitempty" yaml:"sqli,omitempty"`
 	CSRF        *scanner.CSRFScanResult   `json:"csrf,omitempty" yaml:"csrf,omitempty"`
+	SSRF        *scanner.SSRFScanResult   `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
 	Errors      []string                  `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
@@ -80,6 +81,9 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 	csrfOpts := []scanner.CSRFOption{
 		scanner.WithCSRFTimeout(time.Duration(timeout) * time.Second),
 	}
+	ssrfOpts := []scanner.SSRFOption{
+		scanner.WithSSRFTimeout(time.Duration(timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if !authConfig.IsEmpty() {
@@ -87,6 +91,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		xssOpts = append(xssOpts, scanner.WithXSSAuth(authConfig))
 		sqliOpts = append(sqliOpts, scanner.WithSQLiAuth(authConfig))
 		csrfOpts = append(csrfOpts, scanner.WithCSRFAuth(authConfig))
+		ssrfOpts = append(ssrfOpts, scanner.WithSSRFAuth(authConfig))
 	}
 
 	// Add rate limiting if configured
@@ -95,6 +100,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		xssOpts = append(xssOpts, scanner.WithXSSRateLimitConfig(rateLimitConfig))
 		sqliOpts = append(sqliOpts, scanner.WithSQLiRateLimitConfig(rateLimitConfig))
 		csrfOpts = append(csrfOpts, scanner.WithCSRFRateLimitConfig(rateLimitConfig))
+		ssrfOpts = append(ssrfOpts, scanner.WithSSRFRateLimitConfig(rateLimitConfig))
 	}
 
 	// Create scanners
@@ -121,10 +127,12 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		xssScanner := scanner.NewXSSScanner(xssOpts...)
 		sqliScanner := scanner.NewSQLiScanner(sqliOpts...)
 		csrfScanner := scanner.NewCSRFScanner(csrfOpts...)
+		ssrfScanner := scanner.NewSSRFScanner(ssrfOpts...)
 
 		xssResult := xssScanner.Scan(ctx, target)
 		sqliResult := sqliScanner.Scan(ctx, target)
 		csrfResult := csrfScanner.Scan(ctx, target)
+		ssrfResult := ssrfScanner.Scan(ctx, target)
 
 		// Verify findings if enabled
 		if verifyFindings {
@@ -204,11 +212,38 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 			}
 			csrfResult.Findings = verifiedCSRFFindings
 			csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
+
+			// Verify SSRF findings
+			for i := range ssrfResult.Findings {
+				result, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					ssrfResult.Findings[i].Verified = result.Verified
+					ssrfResult.Findings[i].VerificationAttempts = result.Attempts
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						ssrfResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						ssrfResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						ssrfResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			verifiedSSRFFindings := make([]scanner.SSRFFinding, 0)
+			for _, finding := range ssrfResult.Findings {
+				if finding.Verified {
+					verifiedSSRFFindings = append(verifiedSSRFFindings, finding)
+				}
+			}
+			ssrfResult.Findings = verifiedSSRFFindings
+			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
 		}
 
 		combinedResult.XSS = xssResult
 		combinedResult.SQLi = sqliResult
 		combinedResult.CSRF = csrfResult
+		combinedResult.SSRF = ssrfResult
 
 		// Aggregate errors from active scans
 		if len(xssResult.Errors) > 0 {
@@ -220,6 +255,9 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		if len(csrfResult.Errors) > 0 {
 			combinedResult.Errors = append(combinedResult.Errors, csrfResult.Errors...)
 		}
+		if len(ssrfResult.Errors) > 0 {
+			combinedResult.Errors = append(combinedResult.Errors, ssrfResult.Errors...)
+		}
 	}
 
 	// Create unified result with correlation and risk scoring
@@ -230,6 +268,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		combinedResult.XSS,
 		combinedResult.SQLi,
 		combinedResult.CSRF,
+		combinedResult.SSRF,
 		combinedResult.Errors,
 	)
 

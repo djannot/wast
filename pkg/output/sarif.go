@@ -108,6 +108,7 @@ const (
 	RuleIDXSS          = "WAST-XSS-001"
 	RuleIDSQLi         = "WAST-SQLI-001"
 	RuleIDCSRF         = "WAST-CSRF-001"
+	RuleIDSSRF         = "WAST-SSRF-001"
 	RuleIDHeaderHSTS   = "WAST-HDR-001"
 	RuleIDHeaderCSP    = "WAST-HDR-002"
 	RuleIDHeaderXFrame = "WAST-HDR-003"
@@ -121,6 +122,7 @@ const (
 	CWEXSS     = "CWE-79"
 	CWESQLi    = "CWE-89"
 	CWECSRF    = "CWE-352"
+	CWESSRF    = "CWE-918"
 	CWEHeaders = "CWE-693"
 	CWECookie  = "CWE-614"
 	CWECORS    = "CWE-942"
@@ -204,6 +206,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 		processCSRFMap(csrf, &run)
 	}
 
+	// Process SSRF if present
+	if ssrf, ok := data["ssrf"].(map[string]interface{}); ok {
+		processSSRFMap(ssrf, &run)
+	}
+
 	report.Runs = append(report.Runs, run)
 	return report, nil
 }
@@ -276,6 +283,23 @@ func buildAllRules() []SARIFRule {
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWECSRF, "security", "csrf"},
+			},
+		},
+		{
+			ID:   RuleIDSSRF,
+			Name: "ServerSideRequestForgery",
+			ShortDescription: SARIFMessage{
+				Text: "Server-Side Request Forgery (SSRF) vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application allows user-controlled input to specify URLs for server-side requests, potentially enabling access to internal resources, cloud metadata endpoints, or local files.",
+			},
+			Help: SARIFMessage{
+				Text:     "Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges. Disable support for dangerous URL schemes.",
+				Markdown: "**Remediation:** Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x). Disable support for unnecessary URL schemes (file://, dict://, gopher://, etc.). Implement network segmentation to prevent access to internal services.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWESSRF, "security", "ssrf", "injection"},
 			},
 		},
 		{
@@ -468,6 +492,19 @@ func processCSRFMap(csrf map[string]interface{}, run *SARIFRun) {
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createCSRFResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processSSRFMap(ssrf map[string]interface{}, run *SARIFRun) {
+	if findings, ok := ssrf["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createSSRFResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -703,6 +740,43 @@ func createCSRFResult(finding map[string]interface{}) *SARIFResult {
 			"formAction": formAction,
 			"formMethod": formMethod,
 			"type":       csrfType,
+		},
+	}
+}
+
+func createSSRFResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	ssrfType := getStringValue(finding, "type")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDSSRF,
+		RuleIndex: getRuleIndex(RuleIDSSRF),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("SSRF vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**SSRF Vulnerability**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\n**Remediation:** %s", parameter, payload, description, evidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"type":       ssrfType,
+			"confidence": confidence,
 		},
 	}
 }

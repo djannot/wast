@@ -27,6 +27,7 @@ type CompleteScanResult struct {
 	XSS         *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
 	SQLi        *scanner.SQLiScanResult   `json:"sqli,omitempty" yaml:"sqli,omitempty"`
 	CSRF        *scanner.CSRFScanResult   `json:"csrf,omitempty" yaml:"csrf,omitempty"`
+	SSRF        *scanner.SSRFScanResult   `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
 	Errors      []string                  `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
@@ -98,6 +99,7 @@ Examples:
 						"xss_detection",
 						"sqli_detection",
 						"csrf_detection",
+						"ssrf_detection",
 					},
 					Capabilities: []string{
 						"http_security_headers",
@@ -111,6 +113,10 @@ Examples:
 						"csrf_token_detection",
 						"csrf_samesite_validation",
 						"csrf_form_analysis",
+						"ssrf_vulnerability_detection",
+						"ssrf_metadata_endpoint_testing",
+						"ssrf_private_network_testing",
+						"ssrf_protocol_smuggling_detection",
 						"severity_rating",
 						"remediation_guidance",
 						"safe_mode_support",
@@ -139,6 +145,9 @@ Examples:
 			csrfOpts := []scanner.CSRFOption{
 				scanner.WithCSRFTimeout(time.Duration(timeout) * time.Second),
 			}
+			ssrfOpts := []scanner.SSRFOption{
+				scanner.WithSSRFTimeout(time.Duration(timeout) * time.Second),
+			}
 
 			// Add authentication if configured
 			if !authConfig.IsEmpty() {
@@ -146,6 +155,7 @@ Examples:
 				xssOpts = append(xssOpts, scanner.WithXSSAuth(authConfig))
 				sqliOpts = append(sqliOpts, scanner.WithSQLiAuth(authConfig))
 				csrfOpts = append(csrfOpts, scanner.WithCSRFAuth(authConfig))
+				ssrfOpts = append(ssrfOpts, scanner.WithSSRFAuth(authConfig))
 			}
 
 			// Add rate limiting if configured
@@ -154,6 +164,7 @@ Examples:
 				xssOpts = append(xssOpts, scanner.WithXSSRateLimitConfig(rateLimitConfig))
 				sqliOpts = append(sqliOpts, scanner.WithSQLiRateLimitConfig(rateLimitConfig))
 				csrfOpts = append(csrfOpts, scanner.WithCSRFRateLimitConfig(rateLimitConfig))
+				ssrfOpts = append(ssrfOpts, scanner.WithSSRFRateLimitConfig(rateLimitConfig))
 			}
 
 			// Create scanners
@@ -181,14 +192,17 @@ Examples:
 				xssScanner := scanner.NewXSSScanner(xssOpts...)
 				sqliScanner := scanner.NewSQLiScanner(sqliOpts...)
 				csrfScanner := scanner.NewCSRFScanner(csrfOpts...)
+				ssrfScanner := scanner.NewSSRFScanner(ssrfOpts...)
 
 				xssResult := xssScanner.Scan(ctx, target)
 				sqliResult := sqliScanner.Scan(ctx, target)
 				csrfResult := csrfScanner.Scan(ctx, target)
+				ssrfResult := ssrfScanner.Scan(ctx, target)
 
 				combinedResult.XSS = xssResult
 				combinedResult.SQLi = sqliResult
 				combinedResult.CSRF = csrfResult
+				combinedResult.SSRF = ssrfResult
 
 				// Aggregate errors from active scans
 				if len(xssResult.Errors) > 0 {
@@ -200,6 +214,9 @@ Examples:
 				if len(csrfResult.Errors) > 0 {
 					combinedResult.Errors = append(combinedResult.Errors, csrfResult.Errors...)
 				}
+				if len(ssrfResult.Errors) > 0 {
+					combinedResult.Errors = append(combinedResult.Errors, ssrfResult.Errors...)
+				}
 			}
 
 			// Create unified result with correlation and risk scoring
@@ -210,6 +227,7 @@ Examples:
 				combinedResult.XSS,
 				combinedResult.SQLi,
 				combinedResult.CSRF,
+				combinedResult.SSRF,
 				combinedResult.Errors,
 			)
 
@@ -217,8 +235,8 @@ Examples:
 			// In safe mode, we consider it successful if we attempted the scan (headers scanner ran)
 			// In active mode, check all scanners for results
 			hasResults := headerResult.HasResults()
-			if !safeMode && combinedResult.XSS != nil && combinedResult.SQLi != nil && combinedResult.CSRF != nil {
-				hasResults = hasResults || combinedResult.XSS.HasResults() || combinedResult.SQLi.HasResults() || combinedResult.CSRF.HasResults()
+			if !safeMode && combinedResult.XSS != nil && combinedResult.SQLi != nil && combinedResult.CSRF != nil && combinedResult.SSRF != nil {
+				hasResults = hasResults || combinedResult.XSS.HasResults() || combinedResult.SQLi.HasResults() || combinedResult.CSRF.HasResults() || combinedResult.SSRF.HasResults()
 			}
 
 			// For safe mode, always return success as long as we attempted the scan
