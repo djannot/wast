@@ -284,3 +284,47 @@ func TestCertificateAuthority_GetPaths(t *testing.T) {
 		t.Errorf("Expected key path '%s', got '%s'", config.KeyPath, ca.GetKeyPath())
 	}
 }
+
+func TestCertificateAuthority_GetPrivateKey(t *testing.T) {
+	// Create temp directory for test
+	tmpDir, err := os.MkdirTemp("", "wast-ca-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	config := &CAConfig{
+		CertPath:      filepath.Join(tmpDir, "ca.crt"),
+		KeyPath:       filepath.Join(tmpDir, "ca.key"),
+		ValidityYears: 1,
+		KeyBits:       2048,
+	}
+
+	ca := NewCertificateAuthority(config)
+
+	// Before initialization, private key should be nil
+	if ca.GetPrivateKey() != nil {
+		t.Error("Expected private key to be nil before initialization")
+	}
+
+	// Initialize CA
+	if err := ca.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize CA: %v", err)
+	}
+
+	// After initialization, private key should exist
+	privateKey := ca.GetPrivateKey()
+	if privateKey == nil {
+		t.Fatal("Expected private key to be non-nil after initialization")
+	}
+
+	// Verify the private key is valid
+	if privateKey.N == nil {
+		t.Error("Private key N is nil")
+	}
+
+	// Verify key size
+	if privateKey.N.BitLen() != config.KeyBits {
+		t.Errorf("Expected key size %d bits, got %d bits", config.KeyBits, privateKey.N.BitLen())
+	}
+}
