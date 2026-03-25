@@ -47,6 +47,17 @@ func (c *DefaultHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return c.client.Do(req)
 }
 
+const (
+	// MaxSitemapsFromRobots limits the number of sitemaps fetched from robots.txt
+	MaxSitemapsFromRobots = 5
+
+	// MaxSitemapIndexDepth limits nesting of sitemap indexes
+	MaxSitemapIndexDepth = 1
+
+	// MaxSitemapsPerIndex limits sitemaps fetched from a single index
+	MaxSitemapsPerIndex = 5
+)
+
 // Crawler performs web crawling operations.
 type Crawler struct {
 	client        HTTPClient
@@ -434,10 +445,9 @@ func (c *Crawler) fetchRobots(ctx context.Context, baseURL *url.URL, result *Cra
 	sitemapURLs := make([]string, 0)
 
 	// Limit the number of sitemaps to fetch to avoid DoS
-	const maxSitemaps = 5
 	sitemapsToFetch := c.robotsData.Sitemaps
-	if len(sitemapsToFetch) > maxSitemaps {
-		sitemapsToFetch = sitemapsToFetch[:maxSitemaps]
+	if len(sitemapsToFetch) > MaxSitemapsFromRobots {
+		sitemapsToFetch = sitemapsToFetch[:MaxSitemapsFromRobots]
 	}
 
 	for _, sitemapURL := range sitemapsToFetch {
@@ -453,8 +463,7 @@ func (c *Crawler) fetchRobots(ctx context.Context, baseURL *url.URL, result *Cra
 // It handles both standard sitemaps and sitemap indexes.
 // For sitemap indexes, it recursively fetches referenced sitemaps (up to a limit).
 func (c *Crawler) fetchAndParseSitemap(ctx context.Context, sitemapURL string, baseURL *url.URL) []string {
-	const maxSitemapIndexDepth = 1 // Only follow one level of sitemap indexes
-	return c.fetchAndParseSitemapWithDepth(ctx, sitemapURL, baseURL, 0, maxSitemapIndexDepth)
+	return c.fetchAndParseSitemapWithDepth(ctx, sitemapURL, baseURL, 0, MaxSitemapIndexDepth)
 }
 
 func (c *Crawler) fetchAndParseSitemapWithDepth(ctx context.Context, sitemapURL string, baseURL *url.URL, currentDepth, maxDepth int) []string {
@@ -467,33 +476,21 @@ func (c *Crawler) fetchAndParseSitemapWithDepth(ctx context.Context, sitemapURL 
 		return allURLs
 	}
 
-	// Parse the sitemap
-	urls := ParseSitemap(strings.NewReader(content))
+	// Parse the sitemap to determine type and extract URLs
+	urlsetURLs, sitemapIndexURLs := ParseSitemapBoth(strings.NewReader(content))
 
-	// Check if these are sitemap URLs (sitemap index) or actual page URLs
-	// Sitemap URLs typically end with .xml or .xml.gz
-	isSitemapIndex := false
-	if len(urls) > 0 {
-		firstURL := urls[0]
-		if strings.HasSuffix(firstURL, ".xml") || strings.HasSuffix(firstURL, ".xml.gz") {
-			isSitemapIndex = true
-		}
-	}
-
-	if isSitemapIndex && currentDepth < maxDepth {
-		// This is a sitemap index, fetch the referenced sitemaps
-		const maxSitemapsInIndex = 5
-		for i, url := range urls {
-			if i >= maxSitemapsInIndex {
+	if len(sitemapIndexURLs) > 0 && currentDepth < maxDepth {
+		// This is a sitemap index - fetch the referenced sitemaps
+		for i, nestedURL := range sitemapIndexURLs {
+			if i >= MaxSitemapsPerIndex {
 				break
 			}
-			nestedURLs := c.fetchAndParseSitemapWithDepth(ctx, url, baseURL, currentDepth+1, maxDepth)
+			nestedURLs := c.fetchAndParseSitemapWithDepth(ctx, nestedURL, baseURL, currentDepth+1, maxDepth)
 			allURLs = append(allURLs, nestedURLs...)
 		}
 	} else {
-		// These are actual page URLs
-		// Filter to only include URLs from the same domain
-		for _, urlStr := range urls {
+		// Regular sitemap - filter URLs by domain
+		for _, urlStr := range urlsetURLs {
 			parsedURL, err := url.Parse(urlStr)
 			if err != nil {
 				continue

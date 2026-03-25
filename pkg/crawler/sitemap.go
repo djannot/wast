@@ -2,10 +2,10 @@
 package crawler
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/xml"
 	"io"
-	"strings"
 )
 
 // Sitemap XML structures for parsing standard sitemaps and sitemap indexes
@@ -40,63 +40,74 @@ const (
 // ParseSitemap parses sitemap XML content and returns a list of discovered URLs.
 // It supports both standard sitemaps (<urlset>) and sitemap index files (<sitemapindex>).
 // The function also handles gzip-compressed sitemap content automatically.
+// Returns (urlset URLs, sitemap index URLs) - one will be populated, the other empty.
 func ParseSitemap(content io.Reader) []string {
-	urls := make([]string, 0)
+	urlset, sitemapIndex := ParseSitemapBoth(content)
+	// Return whichever has content
+	if len(urlset) > 0 {
+		return urlset
+	}
+	return sitemapIndex
+}
+
+// ParseSitemapBoth parses sitemap XML and returns both types of URLs.
+// Returns (urlset URLs, sitemap index URLs).
+// This allows the caller to distinguish between regular sitemaps and sitemap indexes.
+func ParseSitemapBoth(content io.Reader) (urlsetURLs []string, sitemapIndexURLs []string) {
+	urlsetURLs = make([]string, 0)
+	sitemapIndexURLs = make([]string, 0)
 
 	// Read the content to check if it's gzip-compressed
 	data, err := io.ReadAll(content)
 	if err != nil {
-		return urls
+		return
 	}
 
-	// Create a new reader from the data
-	reader := strings.NewReader(string(data))
+	var decompressedData []byte
 
 	// Check if content is gzip-compressed (magic bytes: 0x1f 0x8b)
 	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		gzReader, err := gzip.NewReader(strings.NewReader(string(data)))
+		gzReader, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
-			return urls
+			return
 		}
 		defer gzReader.Close()
 
-		decompressed, err := io.ReadAll(gzReader)
+		decompressedData, err = io.ReadAll(gzReader)
 		if err != nil {
-			return urls
+			return
 		}
-		reader = strings.NewReader(string(decompressed))
+	} else {
+		decompressedData = data
 	}
 
 	// Try parsing as standard sitemap first
 	var urlset URLSet
-	decoder := xml.NewDecoder(reader)
-	if err := decoder.Decode(&urlset); err == nil && len(urlset.URLs) > 0 {
+	if err := xml.NewDecoder(bytes.NewReader(decompressedData)).Decode(&urlset); err == nil && len(urlset.URLs) > 0 {
 		for i, u := range urlset.URLs {
 			if i >= MaxSitemapURLs {
 				break
 			}
 			if u.Loc != "" {
-				urls = append(urls, u.Loc)
+				urlsetURLs = append(urlsetURLs, u.Loc)
 			}
 		}
-		return urls
+		return
 	}
 
-	// Reset reader and try parsing as sitemap index
-	reader.Seek(0, io.SeekStart)
+	// Try parsing as sitemap index
 	var sitemapIndex SitemapIndex
-	decoder = xml.NewDecoder(reader)
-	if err := decoder.Decode(&sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
+	if err := xml.NewDecoder(bytes.NewReader(decompressedData)).Decode(&sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
 		for i, s := range sitemapIndex.Sitemaps {
 			if i >= MaxSitemapURLs {
 				break
 			}
 			if s.Loc != "" {
-				urls = append(urls, s.Loc)
+				sitemapIndexURLs = append(sitemapIndexURLs, s.Loc)
 			}
 		}
-		return urls
+		return
 	}
 
-	return urls
+	return
 }

@@ -880,3 +880,228 @@ func TestCrawler_Crawl_ConcurrentWithRateLimiting(t *testing.T) {
 		t.Errorf("Expected at least 3 crawled URLs with rate limiting, got %d", result.Statistics.TotalURLs)
 	}
 }
+
+func TestCrawler_Crawl_WithSitemap(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// robots.txt with sitemap reference
+	mockClient.AddResponse("https://example.com/robots.txt", 200, `User-agent: *
+Disallow: /admin
+Sitemap: https://example.com/sitemap.xml`)
+
+	// sitemap.xml with URLs
+	mockClient.AddResponse("https://example.com/sitemap.xml", 200, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>https://example.com/page1</loc></url>
+	<url><loc>https://example.com/page2</loc></url>
+	<url><loc>https://example.com/page3</loc></url>
+</urlset>`)
+
+	// Home page
+	mockClient.AddResponse("https://example.com", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Home</title></head>
+		<body><h1>Home</h1></body>
+		</html>
+	`)
+
+	// Pages from sitemap
+	mockClient.AddResponse("https://example.com/page1", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Page 1</title></head>
+		<body><h1>Page 1</h1></body>
+		</html>
+	`)
+	mockClient.AddResponse("https://example.com/page2", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Page 2</title></head>
+		<body><h1>Page 2</h1></body>
+		</html>
+	`)
+	mockClient.AddResponse("https://example.com/page3", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Page 3</title></head>
+		<body><h1>Page 3</h1></body>
+		</html>
+	`)
+
+	crawler := NewCrawler(
+		WithHTTPClient(mockClient),
+		WithMaxDepth(2),
+		WithRespectRobots(true),
+	)
+
+	ctx := context.Background()
+	result := crawler.Crawl(ctx, "https://example.com")
+
+	// Verify sitemap URLs were discovered
+	if len(result.SitemapURLs) != 3 {
+		t.Errorf("Expected 3 sitemap URLs, got %d", len(result.SitemapURLs))
+	}
+
+	expectedSitemapURLs := []string{
+		"https://example.com/page1",
+		"https://example.com/page2",
+		"https://example.com/page3",
+	}
+
+	for _, expectedURL := range expectedSitemapURLs {
+		found := false
+		for _, url := range result.SitemapURLs {
+			if url == expectedURL {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected sitemap URL %s not found in result", expectedURL)
+		}
+	}
+
+	// Verify URLs from sitemap are actually crawled
+	if result.Statistics.TotalURLs < 4 { // Home + 3 sitemap pages
+		t.Errorf("Expected at least 4 crawled URLs, got %d", result.Statistics.TotalURLs)
+	}
+}
+
+func TestCrawler_Crawl_WithSitemapIndex(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// robots.txt with sitemap index reference
+	mockClient.AddResponse("https://example.com/robots.txt", 200, `User-agent: *
+Sitemap: https://example.com/sitemap-index.xml`)
+
+	// sitemap index
+	mockClient.AddResponse("https://example.com/sitemap-index.xml", 200, `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<sitemap><loc>https://example.com/sitemap1.xml</loc></sitemap>
+	<sitemap><loc>https://example.com/sitemap2.xml</loc></sitemap>
+</sitemapindex>`)
+
+	// nested sitemaps
+	mockClient.AddResponse("https://example.com/sitemap1.xml", 200, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>https://example.com/page1</loc></url>
+	<url><loc>https://example.com/page2</loc></url>
+</urlset>`)
+
+	mockClient.AddResponse("https://example.com/sitemap2.xml", 200, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>https://example.com/page3</loc></url>
+	<url><loc>https://example.com/page4</loc></url>
+</urlset>`)
+
+	// Home page
+	mockClient.AddResponse("https://example.com", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Home</title></head>
+		<body><h1>Home</h1></body>
+		</html>
+	`)
+
+	// Pages from sitemaps
+	for i := 1; i <= 4; i++ {
+		url := fmt.Sprintf("https://example.com/page%d", i)
+		mockClient.AddResponse(url, 200, fmt.Sprintf(`
+			<!DOCTYPE html>
+			<html>
+			<head><title>Page %d</title></head>
+			<body><h1>Page %d</h1></body>
+			</html>
+		`, i, i))
+	}
+
+	crawler := NewCrawler(
+		WithHTTPClient(mockClient),
+		WithMaxDepth(2),
+		WithRespectRobots(true),
+	)
+
+	ctx := context.Background()
+	result := crawler.Crawl(ctx, "https://example.com")
+
+	// Verify sitemap URLs were discovered from both nested sitemaps
+	if len(result.SitemapURLs) != 4 {
+		t.Errorf("Expected 4 sitemap URLs, got %d", len(result.SitemapURLs))
+	}
+
+	// Verify URLs from all sitemaps are crawled
+	if result.Statistics.TotalURLs < 5 { // Home + 4 sitemap pages
+		t.Errorf("Expected at least 5 crawled URLs, got %d", result.Statistics.TotalURLs)
+	}
+}
+
+func TestCrawler_Crawl_SitemapDomainFiltering(t *testing.T) {
+	mockClient := NewMockHTTPClient()
+
+	// robots.txt with sitemap reference
+	mockClient.AddResponse("https://example.com/robots.txt", 200, `User-agent: *
+Sitemap: https://example.com/sitemap.xml`)
+
+	// sitemap.xml with URLs from different domains
+	mockClient.AddResponse("https://example.com/sitemap.xml", 200, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>https://example.com/page1</loc></url>
+	<url><loc>https://external.com/page2</loc></url>
+	<url><loc>https://example.com/page3</loc></url>
+</urlset>`)
+
+	// Home page
+	mockClient.AddResponse("https://example.com", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Home</title></head>
+		<body><h1>Home</h1></body>
+		</html>
+	`)
+
+	// Same-domain pages
+	mockClient.AddResponse("https://example.com/page1", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Page 1</title></head>
+		<body><h1>Page 1</h1></body>
+		</html>
+	`)
+	mockClient.AddResponse("https://example.com/page3", 200, `
+		<!DOCTYPE html>
+		<html>
+		<head><title>Page 3</title></head>
+		<body><h1>Page 3</h1></body>
+		</html>
+	`)
+
+	crawler := NewCrawler(
+		WithHTTPClient(mockClient),
+		WithMaxDepth(2),
+		WithRespectRobots(true),
+	)
+
+	ctx := context.Background()
+	result := crawler.Crawl(ctx, "https://example.com")
+
+	// Verify only same-domain URLs are included in sitemap results
+	// Should be 2 URLs (page1 and page3), NOT page2 from external.com
+	if len(result.SitemapURLs) != 2 {
+		t.Errorf("Expected 2 sitemap URLs (domain filtered), got %d", len(result.SitemapURLs))
+	}
+
+	// Verify external URL is not in the sitemap results
+	for _, url := range result.SitemapURLs {
+		if strings.Contains(url, "external.com") {
+			t.Error("External domain URL should not be in sitemap results")
+		}
+	}
+
+	// Verify only same-domain pages are crawled
+	for _, url := range result.CrawledURLs {
+		if strings.Contains(url, "external.com") {
+			t.Error("External domain URL should not be crawled from sitemap")
+		}
+	}
+}
