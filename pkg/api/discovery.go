@@ -18,12 +18,13 @@ import (
 
 // DiscoveryResult represents the result of API endpoint discovery.
 type DiscoveryResult struct {
-	Target              string               `json:"target" yaml:"target"`
-	BaseURL             string               `json:"base_url" yaml:"base_url"`
-	DiscoveredEndpoints []DiscoveredEndpoint `json:"discovered_endpoints" yaml:"discovered_endpoints"`
-	APITypes            []string             `json:"api_types" yaml:"api_types"`
-	Summary             DiscoverySummary     `json:"summary" yaml:"summary"`
-	Errors              []string             `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Target              string                   `json:"target" yaml:"target"`
+	BaseURL             string                   `json:"base_url" yaml:"base_url"`
+	DiscoveredEndpoints []DiscoveredEndpoint     `json:"discovered_endpoints" yaml:"discovered_endpoints"`
+	APITypes            []string                 `json:"api_types" yaml:"api_types"`
+	GraphQLFindings     []*GraphQLSecurityResult `json:"graphql_findings,omitempty" yaml:"graphql_findings,omitempty"`
+	Summary             DiscoverySummary         `json:"summary" yaml:"summary"`
+	Errors              []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // DiscoveredEndpoint represents a discovered API documentation or endpoint.
@@ -76,6 +77,22 @@ func (r *DiscoveryResult) String() string {
 	sb.WriteString(fmt.Sprintf("  Endpoints Probed: %d\n", r.Summary.EndpointsProbed))
 	sb.WriteString(fmt.Sprintf("  Endpoints Found: %d\n", r.Summary.EndpointsFound))
 	sb.WriteString(fmt.Sprintf("  Specification Found: %v\n", r.Summary.SpecificationFound))
+
+	if len(r.GraphQLFindings) > 0 {
+		sb.WriteString("\nGraphQL Security Findings:\n")
+		for _, gqlResult := range r.GraphQLFindings {
+			sb.WriteString(fmt.Sprintf("  Endpoint: %s\n", gqlResult.URL))
+			sb.WriteString(fmt.Sprintf("  Introspection Enabled: %v\n", gqlResult.IntrospectionEnabled))
+			if gqlResult.SchemaInfo != nil {
+				sb.WriteString(fmt.Sprintf("  Schema Types: %d\n", gqlResult.SchemaInfo.TypeCount))
+			}
+			if len(gqlResult.Findings) > 0 {
+				for _, finding := range gqlResult.Findings {
+					sb.WriteString(fmt.Sprintf("    [%s] %s\n", strings.ToUpper(finding.Severity), finding.Description))
+				}
+			}
+		}
+	}
 
 	if len(r.Errors) > 0 {
 		sb.WriteString("\nErrors:\n")
@@ -219,6 +236,7 @@ func (d *Discoverer) Discover(ctx context.Context, target string) *DiscoveryResu
 		Target:              target,
 		DiscoveredEndpoints: make([]DiscoveredEndpoint, 0),
 		APITypes:            make([]string, 0),
+		GraphQLFindings:     make([]*GraphQLSecurityResult, 0),
 		Errors:              make([]string, 0),
 	}
 
@@ -255,7 +273,7 @@ func (d *Discoverer) Discover(ctx context.Context, target string) *DiscoveryResu
 		result.Summary.EndpointsProbed++
 
 		// Probe the endpoint
-		discovered := d.probeEndpoint(ctx, baseURL, ep)
+		discovered := d.probeEndpoint(ctx, baseURL, ep, result)
 		if discovered != nil {
 			result.DiscoveredEndpoints = append(result.DiscoveredEndpoints, *discovered)
 			result.Summary.EndpointsFound++
@@ -285,12 +303,12 @@ func (d *Discoverer) normalizeBaseURL(target string) (string, error) {
 }
 
 // probeEndpoint probes a specific endpoint and returns discovery info if found.
-func (d *Discoverer) probeEndpoint(ctx context.Context, baseURL string, ep endpointProbe) *DiscoveredEndpoint {
+func (d *Discoverer) probeEndpoint(ctx context.Context, baseURL string, ep endpointProbe, result *DiscoveryResult) *DiscoveredEndpoint {
 	fullURL := baseURL + ep.path
 
 	// For GraphQL endpoints, use POST with introspection query
 	if ep.endpointType == "graphql" {
-		return d.probeGraphQLEndpoint(ctx, fullURL, ep)
+		return d.probeGraphQLEndpoint(ctx, fullURL, ep, result)
 	}
 
 	// For other endpoints, use GET
@@ -347,7 +365,7 @@ func (d *Discoverer) probeEndpoint(ctx context.Context, baseURL string, ep endpo
 }
 
 // probeGraphQLEndpoint probes a GraphQL endpoint with an introspection query.
-func (d *Discoverer) probeGraphQLEndpoint(ctx context.Context, fullURL string, ep endpointProbe) *DiscoveredEndpoint {
+func (d *Discoverer) probeGraphQLEndpoint(ctx context.Context, fullURL string, ep endpointProbe, result *DiscoveryResult) *DiscoveredEndpoint {
 	// GraphQL introspection query
 	introspectionQuery := `{"query":"query { __schema { types { name } } }"}`
 
@@ -381,12 +399,23 @@ func (d *Discoverer) probeGraphQLEndpoint(ctx context.Context, fullURL string, e
 	// Check if response looks like a valid GraphQL response
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if d.isGraphQLResponse(body) {
+			// Perform GraphQL security testing
+			securityResult := d.TestGraphQLSecurity(ctx, fullURL)
+			if securityResult != nil {
+				result.GraphQLFindings = append(result.GraphQLFindings, securityResult)
+			}
+
+			description := "GraphQL endpoint detected"
+			if securityResult != nil && securityResult.IntrospectionEnabled {
+				description = "GraphQL endpoint with introspection enabled"
+			}
+
 			return &DiscoveredEndpoint{
 				URL:         fullURL,
 				Type:        ep.endpointType,
 				StatusCode:  resp.StatusCode,
 				ContentType: resp.Header.Get("Content-Type"),
-				Description: "GraphQL endpoint with introspection enabled",
+				Description: description,
 			}
 		}
 	}
