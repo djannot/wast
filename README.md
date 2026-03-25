@@ -20,6 +20,7 @@ WAST is a modern web application security testing tool designed for both AI agen
 | `wast intercept` | Traffic interception and analysis |
 | `wast scan` | Security vulnerability scanning |
 | `wast api` | API security testing |
+| `wast serve --mcp` | Start MCP server for AI agent integration |
 
 ## Installation
 
@@ -256,13 +257,69 @@ make deps
 
 WAST is designed with first-class support for AI agent integration. Key features:
 
-1. **Structured Output**: All commands support `--output json`, `--output yaml`, and `--output sarif` for machine-readable output
-2. **SARIF Compliance**: Full SARIF 2.1.0 support for seamless integration with security tools and platforms
-3. **Consistent Schema**: Output follows a consistent structure across all commands
-4. **Exit Codes**: Meaningful exit codes for success/failure detection
-5. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
+1. **MCP Server Mode**: Native Model Context Protocol (MCP) server for direct AI agent integration
+2. **Structured Output**: All commands support `--output json`, `--output yaml`, and `--output sarif` for machine-readable output
+3. **SARIF Compliance**: Full SARIF 2.1.0 support for seamless integration with security tools and platforms
+4. **Consistent Schema**: Output follows a consistent structure across all commands
+5. **Exit Codes**: Meaningful exit codes for success/failure detection
+6. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
 
-### Example AI Agent Usage
+### MCP Server Mode
+
+WAST includes a built-in MCP (Model Context Protocol) server that exposes security testing capabilities as standardized tools for AI assistants like Claude.
+
+**Starting the MCP Server:**
+
+```bash
+# Start MCP server
+wast serve --mcp
+
+# Or use the shorthand flag on the root command
+wast --mcp
+```
+
+**Available MCP Tools:**
+
+| Tool Name | Description | Parameters |
+|-----------|-------------|------------|
+| `wast_recon` | Reconnaissance and information gathering | `target`, `timeout`, `include_subdomains` |
+| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active` |
+| `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots` |
+| `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout` |
+
+**MCP Integration Example (Claude Desktop):**
+
+Add to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "wast": {
+      "command": "/path/to/wast",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+After restarting Claude Desktop, you can use natural language to invoke WAST tools:
+
+```
+User: "Can you scan example.com for security issues?"
+Claude: [Uses wast_scan tool with target="https://example.com"]
+
+User: "Perform reconnaissance on test.com and include subdomains"
+Claude: [Uses wast_recon tool with include_subdomains=true]
+```
+
+**MCP Protocol Details:**
+- Protocol: JSON-RPC 2.0 over stdio
+- Specification: [MCP Specification](https://spec.modelcontextprotocol.io/)
+- Safe by default: All tools respect WAST's safe mode defaults (e.g., scan tool defaults to `active=false`)
+
+### CLI Integration (Legacy)
+
+For AI agents that don't support MCP, WAST can still be used via CLI with structured output:
 
 ```bash
 # Get reconnaissance data as JSON
