@@ -29,7 +29,7 @@ wast --mcp --telemetry-endpoint localhost:4317
 
 ## MCP Tools Reference
 
-WAST provides 5 MCP tools for security testing. All tools respect WAST's safe mode defaults.
+WAST provides 6 MCP tools for security testing. All tools respect WAST's safe mode defaults.
 
 ### 1. wast_recon - Reconnaissance
 
@@ -394,6 +394,61 @@ Start a proxy server to intercept and analyze HTTP/HTTPS traffic.
 
 ---
 
+### 6. wast_headers - Security Header Analysis
+
+Perform passive-only security header analysis. Checks HTTP security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options), cookie security attributes, and CORS policy configuration. This is a lightweight alternative to wast_scan when you only need header analysis.
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `target` | string | Yes | - | Target URL to scan for security headers |
+| `timeout` | integer | No | 30 | HTTP request timeout in seconds |
+| `bearer_token` | string | No | - | Bearer token for Authorization header |
+| `basic_auth` | string | No | - | Basic auth credentials in format 'user:pass' |
+| `auth_header` | string | No | - | Custom auth header in format 'HeaderName: Value' |
+| `cookies` | array[string] | No | - | Cookies to include in requests (format: 'name=value') |
+| `requests_per_second` | number | No | 0 | Rate limit for requests per second (0 for unlimited) |
+
+*Note: Unlike `wast_scan`, `wast_crawl`, and `wast_api`, this tool does NOT support login flow parameters.*
+
+#### JSON-RPC Request Example
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "tools/call",
+  "params": {
+    "name": "wast_headers",
+    "arguments": {
+      "target": "https://example.com",
+      "timeout": 30,
+      "bearer_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  }
+}
+```
+
+#### Expected Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"target\":\"https://example.com\",\"headers\":[{\"name\":\"Strict-Transport-Security\",\"present\":true,\"value\":\"max-age=31536000; includeSubDomains\",\"severity\":\"info\",\"description\":\"HSTS header is present\"},{\"name\":\"X-Content-Type-Options\",\"present\":true,\"value\":\"nosniff\",\"severity\":\"info\",\"description\":\"X-Content-Type-Options header is present\"},{\"name\":\"X-Frame-Options\",\"present\":false,\"severity\":\"medium\",\"description\":\"X-Frame-Options header is missing\",\"remediation\":\"Add X-Frame-Options header with value DENY or SAMEORIGIN\"},{\"name\":\"Content-Security-Policy\",\"present\":false,\"severity\":\"high\",\"description\":\"Content-Security-Policy header is missing\",\"remediation\":\"Implement a Content-Security-Policy header\"}],\"cookies\":[{\"name\":\"session\",\"http_only\":true,\"secure\":true,\"same_site\":\"Strict\",\"issues\":[],\"severity\":\"info\"},{\"name\":\"tracking\",\"http_only\":false,\"secure\":false,\"same_site\":\"None\",\"issues\":[\"Missing HttpOnly flag\",\"Missing Secure flag\"],\"severity\":\"medium\",\"remediation\":\"Set HttpOnly and Secure flags on cookie\"}],\"cors\":[{\"header\":\"Access-Control-Allow-Origin\",\"value\":\"*\",\"present\":true,\"issues\":[\"Wildcard origin allows all domains\"],\"severity\":\"medium\",\"description\":\"CORS policy allows all origins\",\"remediation\":\"Restrict Access-Control-Allow-Origin to specific trusted domains\"}],\"summary\":{\"total_headers\":7,\"missing_headers\":2,\"total_cookies\":2,\"insecure_cookies\":1,\"cors_issues\":1,\"high_severity_count\":1,\"medium_severity_count\":2,\"low_severity_count\":0,\"info_count\":3}}"
+      }
+    ]
+  }
+}
+```
+
+---
+
 ## Error Handling
 
 ### Standard JSON-RPC Error Codes
@@ -477,7 +532,7 @@ All tools that perform HTTP requests support rate limiting via the `requests_per
 
 ## Authentication in MCP
 
-All HTTP-based tools (`wast_scan`, `wast_crawl`, `wast_api`) support authentication parameters. See [Authentication Guide](authentication.md) for detailed examples.
+All HTTP-based tools (`wast_scan`, `wast_crawl`, `wast_api`, `wast_headers`) support authentication parameters. See [Authentication Guide](authentication.md) for detailed examples.
 
 ### Quick Example
 
