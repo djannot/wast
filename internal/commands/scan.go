@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
@@ -194,10 +195,30 @@ Examples:
 				csrfScanner := scanner.NewCSRFScanner(csrfOpts...)
 				ssrfScanner := scanner.NewSSRFScanner(ssrfOpts...)
 
-				xssResult := xssScanner.Scan(ctx, target)
-				sqliResult := sqliScanner.Scan(ctx, target)
-				csrfResult := csrfScanner.Scan(ctx, target)
-				ssrfResult := ssrfScanner.Scan(ctx, target)
+				var wg sync.WaitGroup
+				var xssResult *scanner.XSSScanResult
+				var sqliResult *scanner.SQLiScanResult
+				var csrfResult *scanner.CSRFScanResult
+				var ssrfResult *scanner.SSRFScanResult
+
+				wg.Add(4)
+				go func() {
+					defer wg.Done()
+					xssResult = xssScanner.Scan(ctx, target)
+				}()
+				go func() {
+					defer wg.Done()
+					sqliResult = sqliScanner.Scan(ctx, target)
+				}()
+				go func() {
+					defer wg.Done()
+					csrfResult = csrfScanner.Scan(ctx, target)
+				}()
+				go func() {
+					defer wg.Done()
+					ssrfResult = ssrfScanner.Scan(ctx, target)
+				}()
+				wg.Wait()
 
 				combinedResult.XSS = xssResult
 				combinedResult.SQLi = sqliResult
