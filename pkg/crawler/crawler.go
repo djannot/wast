@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
@@ -55,6 +56,7 @@ type Crawler struct {
 	robotsData    *RobotsData
 	authConfig    *auth.AuthConfig
 	rateLimiter   ratelimit.Limiter
+	concurrency   int
 }
 
 // Option is a function that configures a Crawler.
@@ -116,6 +118,15 @@ func WithRateLimitConfig(cfg ratelimit.Config) Option {
 	}
 }
 
+// WithConcurrency sets the number of concurrent workers for crawling.
+func WithConcurrency(n int) Option {
+	return func(cr *Crawler) {
+		if n > 0 {
+			cr.concurrency = n
+		}
+	}
+}
+
 // NewCrawler creates a new Crawler with the given options.
 func NewCrawler(opts ...Option) *Crawler {
 	c := &Crawler{
@@ -123,6 +134,7 @@ func NewCrawler(opts ...Option) *Crawler {
 		timeout:       30 * time.Second,
 		maxDepth:      3,
 		respectRobots: true,
+		concurrency:   5, // Default to 5 workers
 	}
 
 	for _, opt := range opts {
@@ -173,127 +185,200 @@ func (c *Crawler) Crawl(ctx context.Context, targetURL string) *CrawlResult {
 		c.fetchRobots(ctx, baseURL, result)
 	}
 
-	// Initialize BFS queue and visited set
-	queue := []queueItem{{url: targetURL, depth: 0}}
+	// Initialize visited set and tracking maps with mutex protection
+	var mu sync.Mutex
 	visited := make(map[string]bool)
 	visited[normalizeURL(targetURL)] = true
-
-	// Track unique links to avoid duplicates in results
 	seenInternalLinks := make(map[string]bool)
 	seenExternalLinks := make(map[string]bool)
 
-	// BFS crawl
-	for len(queue) > 0 {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			result.Errors = append(result.Errors, "Crawl cancelled: "+ctx.Err().Error())
-			c.updateStatistics(result)
-			return result
-		default:
-		}
+	// Create work queue channel with large buffer to avoid blocking
+	workQueue := make(chan queueItem, 1000)
 
-		// Dequeue
-		item := queue[0]
-		queue = queue[1:]
+	// Create context for worker cancellation
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-		// Skip if beyond max depth
-		if item.depth > c.maxDepth {
-			continue
-		}
+	// WaitGroup to track active workers
+	var wg sync.WaitGroup
 
-		// Check robots.txt
-		if c.respectRobots && c.robotsData != nil {
-			parsedURL, _ := url.Parse(item.url)
-			if parsedURL != nil && !c.robotsData.IsAllowed(parsedURL.Path) {
-				continue
-			}
-		}
+	// Track active items being processed
+	var activeItems sync.WaitGroup
 
-		// Fetch the page
-		pageContent, err := c.fetchPage(ctx, item.url)
-		if err != nil {
-			result.Errors = append(result.Errors, "Failed to fetch "+item.url+": "+err.Error())
-			continue
-		}
+	// Start worker pool
+	for i := 0; i < c.concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.worker(workerCtx, workQueue, baseURL, &mu, visited, seenInternalLinks, seenExternalLinks, result, &activeItems)
+		}()
+	}
 
-		result.CrawledURLs = append(result.CrawledURLs, item.url)
+	// Enqueue initial URL
+	activeItems.Add(1)
+	workQueue <- queueItem{url: targetURL, depth: 0}
 
-		// Update max depth reached
-		if item.depth > result.Statistics.MaxDepthReached {
-			result.Statistics.MaxDepthReached = item.depth
-		}
+	// Monitor for completion - close queue when no more work
+	go func() {
+		activeItems.Wait()
+		close(workQueue)
+	}()
 
-		// Parse HTML and extract information
-		links, forms, resources := c.parseHTML(pageContent, item.url, baseURL)
+	// Wait for all workers to complete
+	wg.Wait()
 
-		// Process links
-		for _, link := range links {
-			linkURL, err := url.Parse(link.URL)
-			if err != nil {
-				continue
-			}
-
-			// Resolve relative URLs
-			resolvedURL := baseURL.ResolveReference(linkURL)
-			link.URL = resolvedURL.String()
-
-			// Check if internal or external
-			if isSameDomain(baseURL, resolvedURL) {
-				link.External = false
-				link.Depth = item.depth + 1
-
-				normalizedURL := normalizeURL(link.URL)
-				if !seenInternalLinks[normalizedURL] {
-					seenInternalLinks[normalizedURL] = true
-					result.InternalLinks = append(result.InternalLinks, link)
-				}
-
-				// Add to queue if not visited and within depth
-				if !visited[normalizedURL] && item.depth < c.maxDepth {
-					visited[normalizedURL] = true
-					queue = append(queue, queueItem{url: link.URL, depth: item.depth + 1})
-				}
-			} else {
-				link.External = true
-				link.Depth = item.depth
-
-				if !seenExternalLinks[link.URL] {
-					seenExternalLinks[link.URL] = true
-					result.ExternalLinks = append(result.ExternalLinks, link)
-				}
-			}
-		}
-
-		// Add forms
-		for _, form := range forms {
-			form.Page = item.url
-			// Resolve form action URL
-			if form.Action != "" && !strings.HasPrefix(form.Action, "http") {
-				actionURL, err := url.Parse(form.Action)
-				if err == nil {
-					form.Action = baseURL.ResolveReference(actionURL).String()
-				}
-			}
-			result.Forms = append(result.Forms, form)
-		}
-
-		// Add resources
-		for _, res := range resources {
-			res.Page = item.url
-			// Resolve resource URL
-			if !strings.HasPrefix(res.URL, "http") {
-				resURL, err := url.Parse(res.URL)
-				if err == nil {
-					res.URL = baseURL.ResolveReference(resURL).String()
-				}
-			}
-			result.Resources = append(result.Resources, res)
-		}
+	// Check if context was cancelled
+	if ctx.Err() != nil {
+		mu.Lock()
+		result.Errors = append(result.Errors, "Crawl cancelled: "+ctx.Err().Error())
+		mu.Unlock()
 	}
 
 	c.updateStatistics(result)
 	return result
+}
+
+// worker processes items from the work queue concurrently.
+func (c *Crawler) worker(ctx context.Context, workQueue chan queueItem, baseURL *url.URL,
+	mu *sync.Mutex, visited, seenInternalLinks, seenExternalLinks map[string]bool, result *CrawlResult, activeItems *sync.WaitGroup) {
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item, ok := <-workQueue:
+			if !ok {
+				return
+			}
+
+			// Process this item
+			c.processItem(ctx, item, baseURL, mu, visited, seenInternalLinks, seenExternalLinks, result, activeItems, workQueue)
+		}
+	}
+}
+
+// processItem processes a single crawl item.
+func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.URL,
+	mu *sync.Mutex, visited, seenInternalLinks, seenExternalLinks map[string]bool, result *CrawlResult, activeItems *sync.WaitGroup, workQueue chan queueItem) {
+
+	// Mark this item as done when finished
+	defer activeItems.Done()
+
+	// Skip if beyond max depth
+	if item.depth > c.maxDepth {
+		return
+	}
+
+	// Check robots.txt
+	if c.respectRobots && c.robotsData != nil {
+		parsedURL, _ := url.Parse(item.url)
+		if parsedURL != nil && !c.robotsData.IsAllowed(parsedURL.Path) {
+			return
+		}
+	}
+
+	// Fetch the page
+	pageContent, err := c.fetchPage(ctx, item.url)
+	if err != nil {
+		mu.Lock()
+		result.Errors = append(result.Errors, "Failed to fetch "+item.url+": "+err.Error())
+		mu.Unlock()
+		return
+	}
+
+	mu.Lock()
+	result.CrawledURLs = append(result.CrawledURLs, item.url)
+	if item.depth > result.Statistics.MaxDepthReached {
+		result.Statistics.MaxDepthReached = item.depth
+	}
+	mu.Unlock()
+
+	// Parse HTML and extract information
+	links, forms, resources := c.parseHTML(pageContent, item.url, baseURL)
+
+	// Process links
+	for _, link := range links {
+		linkURL, err := url.Parse(link.URL)
+		if err != nil {
+			continue
+		}
+
+		// Resolve relative URLs
+		resolvedURL := baseURL.ResolveReference(linkURL)
+		link.URL = resolvedURL.String()
+
+		// Check if internal or external
+		if isSameDomain(baseURL, resolvedURL) {
+			link.External = false
+			link.Depth = item.depth + 1
+
+			normalizedURL := normalizeURL(link.URL)
+
+			mu.Lock()
+			shouldAddLink := !seenInternalLinks[normalizedURL]
+			if shouldAddLink {
+				seenInternalLinks[normalizedURL] = true
+				result.InternalLinks = append(result.InternalLinks, link)
+			}
+
+			// Add to queue if not visited and within depth
+			shouldEnqueue := !visited[normalizedURL] && item.depth < c.maxDepth
+			if shouldEnqueue {
+				visited[normalizedURL] = true
+			}
+			mu.Unlock()
+
+			if shouldEnqueue {
+				activeItems.Add(1)
+				select {
+				case workQueue <- queueItem{url: link.URL, depth: item.depth + 1}:
+				case <-ctx.Done():
+					activeItems.Done()
+					return
+				}
+			}
+		} else {
+			link.External = true
+			link.Depth = item.depth
+
+			mu.Lock()
+			if !seenExternalLinks[link.URL] {
+				seenExternalLinks[link.URL] = true
+				result.ExternalLinks = append(result.ExternalLinks, link)
+			}
+			mu.Unlock()
+		}
+	}
+
+	// Add forms
+	mu.Lock()
+	for _, form := range forms {
+		form.Page = item.url
+		// Resolve form action URL
+		if form.Action != "" && !strings.HasPrefix(form.Action, "http") {
+			actionURL, err := url.Parse(form.Action)
+			if err == nil {
+				form.Action = baseURL.ResolveReference(actionURL).String()
+			}
+		}
+		result.Forms = append(result.Forms, form)
+	}
+	mu.Unlock()
+
+	// Add resources
+	mu.Lock()
+	for _, res := range resources {
+		res.Page = item.url
+		// Resolve resource URL
+		if !strings.HasPrefix(res.URL, "http") {
+			resURL, err := url.Parse(res.URL)
+			if err == nil {
+				res.URL = baseURL.ResolveReference(resURL).String()
+			}
+		}
+		result.Resources = append(result.Resources, res)
+	}
+	mu.Unlock()
 }
 
 // fetchRobots fetches and parses robots.txt for the target domain.

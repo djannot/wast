@@ -455,6 +455,11 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 				"description": "Respect robots.txt rules",
 				"default":     true,
 			},
+			"concurrency": map[string]interface{}{
+				"type":        "integer",
+				"description": "Number of concurrent workers for crawling",
+				"default":     5,
+			},
 			"bearer_token": map[string]interface{}{
 				"type":        "string",
 				"description": "Bearer token for Authorization header",
@@ -490,6 +495,7 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		Depth             int      `json:"depth"`
 		Timeout           string   `json:"timeout"`
 		RespectRobots     bool     `json:"respect_robots"`
+		Concurrency       int      `json:"concurrency"`
 		BearerToken       string   `json:"bearer_token"`
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
@@ -507,6 +513,10 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 
 	if args.Depth == 0 {
 		args.Depth = 3
+	}
+
+	if args.Concurrency == 0 {
+		args.Concurrency = 5
 	}
 
 	// Parse timeout
@@ -529,7 +539,7 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute crawl command logic
-	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, authConfig, rateLimitConfig)
+	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig)
 
 	return result, nil
 }

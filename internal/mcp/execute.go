@@ -297,13 +297,14 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 }
 
 // executeCrawl performs web crawling on a target URL.
-func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
+func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
 	// Create crawler with configured options
 	opts := []crawler.Option{
 		crawler.WithMaxDepth(depth),
 		crawler.WithTimeout(timeout),
 		crawler.WithUserAgent("WAST/1.0 (Web Application Security Testing)"),
 		crawler.WithRespectRobots(respectRobots),
+		crawler.WithConcurrency(concurrency),
 	}
 
 	// Add authentication if configured

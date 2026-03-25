@@ -15,10 +15,11 @@ import (
 // NewCrawlCmd creates and returns the crawl command.
 func NewCrawlCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var (
-		depth     int
-		timeout   time.Duration
-		userAgent string
-		noRobots  bool
+		depth       int
+		timeout     time.Duration
+		userAgent   string
+		noRobots    bool
+		concurrency int
 	)
 
 	cmd := &cobra.Command{
@@ -86,6 +87,7 @@ Examples:
 				crawler.WithTimeout(timeout),
 				crawler.WithUserAgent(userAgent),
 				crawler.WithRespectRobots(!noRobots),
+				crawler.WithConcurrency(concurrency),
 			}
 
 			// Add authentication if configured
@@ -126,6 +128,7 @@ Examples:
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for HTTP requests")
 	cmd.Flags().StringVar(&userAgent, "user-agent", "WAST/1.0 (Web Application Security Testing)", "User agent string for requests")
 	cmd.Flags().BoolVar(&noRobots, "no-robots", false, "Ignore robots.txt rules")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for crawling")
 
 	return cmd
 }
