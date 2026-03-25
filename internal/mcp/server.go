@@ -81,6 +81,7 @@ func (s *Server) registerTools() {
 	s.tools["wast_crawl"] = &CrawlTool{server: s}
 	s.tools["wast_api"] = &APITool{server: s}
 	s.tools["wast_intercept"] = &InterceptTool{server: s}
+	s.tools["wast_headers"] = &HeadersTool{server: s}
 }
 
 // Run starts the MCP server and processes requests.
@@ -898,6 +899,100 @@ func (t *InterceptTool) Execute(ctx context.Context, params json.RawMessage) (in
 
 	// Execute intercept command logic
 	result := executeIntercept(ctx, args.Port, duration, args.SaveFile, args.HTTPSInterception, args.MaxRequests, t.server.tracer)
+
+	return result, nil
+}
+
+// HeadersTool implements the wast_headers MCP tool.
+type HeadersTool struct {
+	server *Server
+}
+
+func (t *HeadersTool) Name() string {
+	return "wast_headers"
+}
+
+func (t *HeadersTool) Description() string {
+	return "Perform passive-only security header analysis. Checks HTTP security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options), cookie security attributes, and CORS policy configuration. This is a lightweight alternative to wast_scan when you only need header analysis."
+}
+
+func (t *HeadersTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"target": map[string]interface{}{
+				"type":        "string",
+				"description": "Target URL to scan for security headers",
+			},
+			"timeout": map[string]interface{}{
+				"type":        "integer",
+				"description": "HTTP request timeout in seconds",
+				"default":     30,
+			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
+		},
+		"required": []string{"target"},
+	}
+}
+
+func (t *HeadersTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args struct {
+		Target            string   `json:"target"`
+		Timeout           int      `json:"timeout"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
+	}
+
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	if args.Target == "" {
+		return nil, fmt.Errorf("target is required")
+	}
+
+	if args.Timeout <= 0 {
+		args.Timeout = 30
+	}
+
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
+
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
+
+	// Execute headers scan logic
+	result := executeHeaders(ctx, args.Target, args.Timeout, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }

@@ -384,6 +384,7 @@ wast --mcp
 | `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
+| `wast_headers` | Passive-only security header analysis | `target`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |
 
 **MCP Integration Example (Claude Desktop):**
 

@@ -704,3 +704,191 @@ func TestReconResultJSONMarshaling(t *testing.T) {
 		t.Errorf("Status mismatch after marshal/unmarshal")
 	}
 }
+
+// TestExecuteHeaders tests the executeHeaders function
+func TestExecuteHeaders(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		timeout    int
+		wantTarget string
+	}{
+		{
+			name:       "basic headers scan",
+			target:     "https://example.com",
+			timeout:    30,
+			wantTarget: "https://example.com",
+		},
+		{
+			name:       "headers scan with short timeout",
+			target:     "https://test.com",
+			timeout:    5,
+			wantTarget: "https://test.com",
+		},
+		{
+			name:       "headers scan with long timeout",
+			target:     "https://example.org",
+			timeout:    60,
+			wantTarget: "https://example.org",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			authConfig := &auth.AuthConfig{}
+			rateLimitConfig := ratelimit.Config{}
+
+			result := executeHeaders(ctx, tt.target, tt.timeout, authConfig, rateLimitConfig, nil)
+
+			// Verify result is not nil
+			if result == nil {
+				t.Fatal("executeHeaders returned nil")
+			}
+
+			// Verify result structure
+			headerResult, ok := result.(*scanner.HeaderScanResult)
+			if !ok {
+				t.Fatalf("Expected *scanner.HeaderScanResult type, got %T", result)
+			}
+
+			if headerResult.Target != tt.wantTarget {
+				t.Errorf("Expected target %s, got %s", tt.wantTarget, headerResult.Target)
+			}
+
+			// Headers should be checked
+			if headerResult.Headers == nil {
+				t.Error("Headers should not be nil")
+			}
+
+			// Cookies should be initialized
+			if headerResult.Cookies == nil {
+				t.Error("Cookies should not be nil")
+			}
+
+			// CORS should be initialized
+			if headerResult.CORS == nil {
+				t.Error("CORS should not be nil")
+			}
+
+			// Summary should be populated (may be 0 if request failed)
+			// Just verify the structure exists
+			_ = headerResult.Summary
+		})
+	}
+}
+
+// TestExecuteHeadersWithAuth tests executeHeaders with authentication
+func TestExecuteHeadersWithAuth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-token",
+		BasicAuth:   "user:pass",
+		Cookies:     []string{"session=abc123"},
+	}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeHeaders(ctx, "https://example.com", 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeHeaders with auth returned nil")
+	}
+
+	headerResult, ok := result.(*scanner.HeaderScanResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.HeaderScanResult type, got %T", result)
+	}
+
+	if headerResult.Target != "https://example.com" {
+		t.Errorf("Expected target https://example.com, got %s", headerResult.Target)
+	}
+}
+
+// TestExecuteHeadersWithRateLimit tests executeHeaders with rate limiting
+func TestExecuteHeadersWithRateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{
+		RequestsPerSecond: 5.0,
+	}
+
+	result := executeHeaders(ctx, "https://example.com", 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeHeaders with rate limit returned nil")
+	}
+
+	headerResult, ok := result.(*scanner.HeaderScanResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.HeaderScanResult type, got %T", result)
+	}
+
+	if headerResult.Target != "https://example.com" {
+		t.Errorf("Expected target https://example.com, got %s", headerResult.Target)
+	}
+}
+
+// TestExecuteHeadersContextCancellation tests context cancellation in executeHeaders
+func TestExecuteHeadersContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeHeaders(ctx, "https://example.com", 30, authConfig, rateLimitConfig, nil)
+
+	// Result should still be returned even if context is canceled
+	if result == nil {
+		t.Fatal("executeHeaders should return a result even with canceled context")
+	}
+
+	headerResult, ok := result.(*scanner.HeaderScanResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.HeaderScanResult type, got %T", result)
+	}
+
+	// Basic structure should be populated
+	if headerResult.Target != "https://example.com" {
+		t.Errorf("Expected target https://example.com, got %s", headerResult.Target)
+	}
+}
+
+// TestHeaderScanResultJSONMarshaling tests JSON marshaling of header scan results
+func TestHeaderScanResultJSONMarshaling(t *testing.T) {
+	headerResult := scanner.HeaderScanResult{
+		Target:  "https://example.com",
+		Headers: []scanner.HeaderFinding{},
+		Cookies: []scanner.CookieFinding{},
+		CORS:    []scanner.CORSFinding{},
+		Summary: scanner.ScanSummary{
+			TotalHeaders: 7,
+			MissingHeaders: 2,
+		},
+		Errors: []string{},
+	}
+
+	data, err := json.Marshal(headerResult)
+	if err != nil {
+		t.Fatalf("Failed to marshal HeaderScanResult: %v", err)
+	}
+
+	var unmarshaled scanner.HeaderScanResult
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal HeaderScanResult: %v", err)
+	}
+
+	if unmarshaled.Target != headerResult.Target {
+		t.Errorf("Target mismatch after marshal/unmarshal")
+	}
+
+	if unmarshaled.Summary.TotalHeaders != headerResult.Summary.TotalHeaders {
+		t.Errorf("TotalHeaders mismatch after marshal/unmarshal")
+	}
+}
