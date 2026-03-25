@@ -10,6 +10,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -346,7 +347,7 @@ func (s *HTTPHeadersScanner) Scan(ctx context.Context, targetURL string) *Header
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
 		var span trace.Span
-		ctx, span = s.tracer.Start(ctx, "wast.scanner.headers")
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanHeaders)
 		defer span.End()
 	}
 

@@ -112,6 +112,7 @@ func runMCPServer() {
 	// Initialize telemetry if configured
 	var telemetryProvider *telemetry.Provider
 	telemetryConfig := telemetry.ConfigFromEnv()
+	telemetryConfig.ServiceVersion = version
 
 	// Override with CLI flag if provided
 	if telemetryEndpoint != "" {

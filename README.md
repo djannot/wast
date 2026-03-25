@@ -208,6 +208,13 @@ export WAST_OTEL_ENDPOINT=localhost:4317
 wast --mcp
 ```
 
+**Security Note**: By default, WAST uses TLS encryption for telemetry data transmission. For local development with tools like Jaeger, you can disable TLS by setting:
+```bash
+export WAST_OTEL_INSECURE=true
+```
+
+⚠️ **Warning**: Only use `WAST_OTEL_INSECURE=true` in local development environments. In production, always use secure TLS connections to protect sensitive scan data.
+
 #### Example: Running with Jaeger
 
 ```bash
@@ -217,8 +224,9 @@ docker run -d --name jaeger \
   -p 16686:16686 \
   jaegertracing/all-in-one:latest
 
-# Set telemetry endpoint
+# Set telemetry endpoint (insecure mode for local development)
 export WAST_OTEL_ENDPOINT=localhost:4317
+export WAST_OTEL_INSECURE=true
 
 # Run WAST in MCP mode with telemetry
 wast --mcp

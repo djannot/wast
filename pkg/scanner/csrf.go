@@ -13,6 +13,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/html"
 )
@@ -155,7 +156,7 @@ func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResul
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
 		var span trace.Span
-		ctx, span = s.tracer.Start(ctx, "wast.scanner.csrf")
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanCSRF)
 		defer span.End()
 	}
 

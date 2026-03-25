@@ -13,6 +13,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -258,7 +259,7 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
 		var span trace.Span
-		ctx, span = s.tracer.Start(ctx, "wast.scanner.sqli")
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSQLi)
 		defer span.End()
 	}
 

@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"time"
@@ -14,6 +15,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -56,6 +58,8 @@ type Config struct {
 	ServiceName string
 	// ServiceVersion is the version of the service
 	ServiceVersion string
+	// Insecure disables TLS for the gRPC connection (for local development only)
+	Insecure bool
 }
 
 // Provider wraps the OpenTelemetry tracer provider and provides cleanup.
@@ -84,9 +88,17 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// Configure transport credentials (default to TLS)
+	var transportCreds credentials.TransportCredentials
+	if config.Insecure {
+		transportCreds = insecure.NewCredentials()
+	} else {
+		transportCreds = credentials.NewTLS(&tls.Config{})
+	}
+
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(config.Endpoint),
-		otlptracegrpc.WithDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		otlptracegrpc.WithDialOption(grpc.WithTransportCredentials(transportCreds)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
@@ -136,7 +148,7 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 }
 
 // ConfigFromEnv creates a Config from environment variables.
-// It reads WAST_OTEL_ENDPOINT and WAST_OTEL_SERVICE_NAME.
+// It reads WAST_OTEL_ENDPOINT, WAST_OTEL_SERVICE_NAME, and WAST_OTEL_INSECURE.
 func ConfigFromEnv() Config {
 	endpoint := os.Getenv("WAST_OTEL_ENDPOINT")
 	serviceName := os.Getenv("WAST_OTEL_SERVICE_NAME")
@@ -144,10 +156,14 @@ func ConfigFromEnv() Config {
 		serviceName = "wast"
 	}
 
+	// Check if insecure mode is enabled (for local development)
+	insecure := os.Getenv("WAST_OTEL_INSECURE") == "true"
+
 	return Config{
 		Enabled:     endpoint != "",
 		Endpoint:    endpoint,
 		ServiceName: serviceName,
+		Insecure:    insecure,
 	}
 }
 

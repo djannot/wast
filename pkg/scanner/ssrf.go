@@ -14,6 +14,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -275,7 +276,7 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
 		var span trace.Span
-		ctx, span = s.tracer.Start(ctx, "wast.scanner.ssrf")
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSSRF)
 		defer span.End()
 	}
 
