@@ -323,6 +323,11 @@ All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`)
 - `basic_auth` (string): Basic auth credentials in format 'user:pass'
 - `auth_header` (string): Custom auth header in format 'HeaderName: Value'
 - `cookies` (array of strings): Cookies to include in requests (format: 'name=value')
+- `login_url` (string): Login endpoint URL for automated authentication
+- `login_user` (string): Username for automated login
+- `login_pass` (string): Password for automated login
+- `login_user_field` (string): Form field name for username (default: 'username')
+- `login_pass_field` (string): Form field name for password (default: 'password')
 
 **Authentication Examples:**
 
@@ -357,7 +362,70 @@ All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`)
   "bearer_token": "token123",
   "cookies": ["session=xyz789"]
 }
+
+// Automated login flow (form-based)
+{
+  "target": "https://app.example.com/dashboard",
+  "login_url": "https://app.example.com/login",
+  "login_user": "testuser",
+  "login_pass": "password123"
+}
+
+// Automated login with custom field names
+{
+  "target": "https://app.example.com/admin",
+  "login_url": "https://app.example.com/auth/login",
+  "login_user": "admin@example.com",
+  "login_pass": "secretpass",
+  "login_user_field": "email",
+  "login_pass_field": "pwd"
+}
 ```
+
+**Automated Login Flow:**
+
+WAST supports automated login flows for testing session-based web applications. Instead of manually extracting cookies, WAST can authenticate by submitting credentials to a login endpoint and automatically capturing session cookies.
+
+This feature is useful for:
+- Testing authenticated areas of web applications
+- AI agents testing real-world applications autonomously
+- Automated security testing in CI/CD pipelines
+
+**CLI Examples:**
+
+```bash
+# Basic login flow (form-based authentication)
+wast crawl https://app.example.com/dashboard \
+  --login-url https://app.example.com/login \
+  --login-user testuser \
+  --login-pass password123
+
+# Login with custom field names
+wast scan https://app.example.com/admin \
+  --login-url https://app.example.com/auth/login \
+  --login-user admin@example.com \
+  --login-pass secretpass \
+  --login-user-field email \
+  --login-pass-field pwd
+
+# API testing with login flow
+wast api https://api.example.com \
+  --login-url https://api.example.com/auth/login \
+  --login-user apiuser \
+  --login-pass apipass
+```
+
+**How it works:**
+1. WAST submits credentials to the specified login endpoint via POST request
+2. The server responds with session cookies (and potentially redirects)
+3. WAST captures these cookies automatically
+4. Subsequent requests include the captured session cookies
+5. WAST detects login failures (wrong status codes, error messages in response)
+
+**Supported login types:**
+- Form-based authentication (default, Content-Type: application/x-www-form-urlencoded)
+- JSON API authentication (Content-Type: application/json)
+- Redirects after successful login (302/303 status codes)
 
 **MCP Protocol Details:**
 - Protocol: JSON-RPC 2.0 over stdio
