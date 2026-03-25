@@ -13,6 +13,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // LoginConfig holds configuration for automated login flow.
@@ -164,6 +165,10 @@ func (c *AuthConfig) Summary() string {
 		parts = append(parts, fmt.Sprintf("cookies:[%s]", strings.Join(cookieNames, ",")))
 	}
 
+	if c.Login != nil && c.Login.LoginURL != "" {
+		parts = append(parts, fmt.Sprintf("login:%s:***", c.Login.Username))
+	}
+
 	return strings.Join(parts, ", ")
 }
 
@@ -183,6 +188,11 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 
 	if c.Login.Username == "" || c.Login.Password == "" {
 		return fmt.Errorf("username and password are required for login")
+	}
+
+	// Validate login URL
+	if _, err := url.Parse(c.Login.LoginURL); err != nil {
+		return fmt.Errorf("invalid login URL: %w", err)
 	}
 
 	// Set default field names if not provided
@@ -208,7 +218,8 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 	}
 
 	client := &http.Client{
-		Jar: jar,
+		Jar:     jar,
+		Timeout: 30 * time.Second, // Add reasonable timeout to prevent hanging
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// Allow up to 10 redirects (handles 302/303 redirects after login)
 			if len(via) >= 10 {
@@ -268,8 +279,9 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	// Read response body for error detection
-	body, err := io.ReadAll(resp.Body)
+	// Read response body for error detection with size limit to prevent memory exhaustion
+	const maxBodySize = 1024 * 1024 // 1MB limit
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
 		return fmt.Errorf("failed to read login response: %w", err)
 	}

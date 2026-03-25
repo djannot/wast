@@ -381,7 +381,7 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 			},
 			"login_pass": map[string]interface{}{
 				"type":        "string",
-				"description": "Password for automated login",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
 			},
 			"login_user_field": map[string]interface{}{
 				"type":        "string",
@@ -532,7 +532,7 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 			},
 			"login_pass": map[string]interface{}{
 				"type":        "string",
-				"description": "Password for automated login",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
 			},
 			"login_user_field": map[string]interface{}{
 				"type":        "string",
@@ -692,7 +692,7 @@ func (t *APITool) InputSchema() map[string]interface{} {
 			},
 			"login_pass": map[string]interface{}{
 				"type":        "string",
-				"description": "Password for automated login",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
 			},
 			"login_user_field": map[string]interface{}{
 				"type":        "string",

@@ -152,7 +152,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&loginUser, "login-user", "",
 		"Username for automated login")
 	rootCmd.PersistentFlags().StringVar(&loginPass, "login-pass", "",
-		"Password for automated login")
+		"Password for automated login (or set WAST_LOGIN_PASS env var)")
 	rootCmd.PersistentFlags().StringVar(&loginUserField, "login-user-field", "username",
 		"Form field name for username (default: username)")
 	rootCmd.PersistentFlags().StringVar(&loginPassField, "login-pass-field", "password",
@@ -189,10 +189,16 @@ func getAuthConfig() *auth.AuthConfig {
 
 	// Add login configuration if login URL is provided
 	if loginURL != "" {
+		// Prefer environment variable for password to avoid shell history exposure
+		password := loginPass
+		if password == "" {
+			password = os.Getenv("WAST_LOGIN_PASS")
+		}
+
 		config.Login = &auth.LoginConfig{
 			LoginURL:      loginURL,
 			Username:      loginUser,
-			Password:      loginPass,
+			Password:      password,
 			UsernameField: loginUserField,
 			PasswordField: loginPassField,
 		}

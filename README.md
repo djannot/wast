@@ -395,24 +395,31 @@ This feature is useful for:
 
 ```bash
 # Basic login flow (form-based authentication)
+# Recommended: Use environment variable for password
+export WAST_LOGIN_PASS="password123"
+wast crawl https://app.example.com/dashboard \
+  --login-url https://app.example.com/login \
+  --login-user testuser
+
+# Alternative: Pass password directly (NOT RECOMMENDED - exposes in shell history)
 wast crawl https://app.example.com/dashboard \
   --login-url https://app.example.com/login \
   --login-user testuser \
   --login-pass password123
 
 # Login with custom field names
+export WAST_LOGIN_PASS="secretpass"
 wast scan https://app.example.com/admin \
   --login-url https://app.example.com/auth/login \
   --login-user admin@example.com \
-  --login-pass secretpass \
   --login-user-field email \
   --login-pass-field pwd
 
 # API testing with login flow
+export WAST_LOGIN_PASS="apipass"
 wast api https://api.example.com \
   --login-url https://api.example.com/auth/login \
-  --login-user apiuser \
-  --login-pass apipass
+  --login-user apiuser
 ```
 
 **How it works:**
@@ -426,6 +433,36 @@ wast api https://api.example.com \
 - Form-based authentication (default, Content-Type: application/x-www-form-urlencoded)
 - JSON API authentication (Content-Type: application/json)
 - Redirects after successful login (302/303 status codes)
+
+**Security Best Practices:**
+
+⚠️ **IMPORTANT:** Passing credentials via command-line flags exposes them in shell history and process listings. Follow these security best practices:
+
+**Recommended: Use Environment Variables**
+```bash
+# Set password via environment variable to avoid shell history exposure
+export WAST_LOGIN_PASS="your_password_here"
+
+# Run WAST without exposing password in command line
+wast crawl https://app.example.com/dashboard \
+  --login-url https://app.example.com/login \
+  --login-user testuser
+
+# Clear the environment variable when done
+unset WAST_LOGIN_PASS
+```
+
+**Alternative: Use MCP Protocol with Secure Credential Management**
+- When using MCP (Model Context Protocol), credentials are passed as parameters
+- MCP parameters may be logged by clients/servers
+- Consider implementing secure credential storage in your MCP client
+
+**Additional Security Considerations:**
+- Only use automated login for testing/development environments
+- Never hardcode credentials in scripts or configuration files
+- Use unique test accounts with minimal privileges
+- Rotate credentials regularly
+- Monitor for unauthorized access attempts
 
 **MCP Protocol Details:**
 - Protocol: JSON-RPC 2.0 over stdio
