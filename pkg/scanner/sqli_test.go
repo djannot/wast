@@ -21,10 +21,30 @@ type mockSQLiHTTPClient struct {
 	differentialResponse bool
 	trueResponse         string
 	falseResponse        string
+	simulateTimeDelay    bool         // Whether to simulate time-based SQL injection
+	delayDuration        time.Duration // Duration to delay for time-based payloads
 }
 
 func (m *mockSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	m.requests = append(m.requests, req)
+
+	// Simulate time delay for time-based SQL injection payloads
+	if m.simulateTimeDelay {
+		query := req.URL.Query()
+		for _, val := range query {
+			for _, v := range val {
+				// Check for time-based SQL injection payloads (case-insensitive)
+				vLower := strings.ToLower(v)
+				if strings.Contains(vLower, "sleep") || strings.Contains(vLower, "pg_sleep") ||
+					strings.Contains(vLower, "waitfor") || strings.Contains(vLower, "benchmark") ||
+					strings.Contains(vLower, "randomblob") {
+					// Simulate the delay
+					time.Sleep(m.delayDuration)
+					break
+				}
+			}
+		}
+	}
 
 	// Return a response based on the URL or a default response
 	if resp, ok := m.responses[req.URL.String()]; ok {
@@ -1054,5 +1074,208 @@ func TestSQLiScanner_GeneratePayloadVariants(t *testing.T) {
 				t.Errorf("Expected first variant to be original payload, got %s", variants[0])
 			}
 		})
+	}
+}
+
+func TestSQLiScanner_Scan_TimeBasedMySQL(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	mock.simulateTimeDelay = true
+	mock.delayDuration = 5 * time.Second
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/user?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect time-based SQL injection
+	foundTimeBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "time-based" {
+			foundTimeBased = true
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for time-based detection, got %s", finding.Confidence)
+			}
+			if !strings.Contains(finding.Evidence, "Request took") {
+				t.Errorf("Expected evidence to mention request duration, got %s", finding.Evidence)
+			}
+			break
+		}
+	}
+
+	if !foundTimeBased {
+		t.Error("Expected to find time-based SQL injection vulnerability")
+	}
+}
+
+func TestSQLiScanner_Scan_TimeBasedPostgreSQL(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	mock.simulateTimeDelay = true
+	mock.delayDuration = 5 * time.Second
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/product?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect time-based SQL injection
+	foundTimeBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "time-based" && strings.Contains(finding.Payload, "pg_sleep") {
+			foundTimeBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			break
+		}
+	}
+
+	if !foundTimeBased {
+		t.Error("Expected to find PostgreSQL time-based SQL injection vulnerability")
+	}
+}
+
+func TestSQLiScanner_Scan_TimeBasedSQLServer(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	mock.simulateTimeDelay = true
+	mock.delayDuration = 5 * time.Second
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/data?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect time-based SQL injection
+	foundTimeBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "time-based" && strings.Contains(finding.Payload, "WAITFOR") {
+			foundTimeBased = true
+			if finding.Description == "" {
+				t.Error("Expected description to be set")
+			}
+			break
+		}
+	}
+
+	if !foundTimeBased {
+		t.Error("Expected to find SQL Server time-based SQL injection vulnerability")
+	}
+}
+
+func TestSQLiScanner_Scan_NoTimeBasedVulnerability(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	// Do not simulate time delay - responses are fast
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/secure?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT detect time-based SQL injection when responses are fast
+	foundTimeBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "time-based" {
+			foundTimeBased = true
+			break
+		}
+	}
+
+	if foundTimeBased {
+		t.Error("Should not detect time-based SQLi when responses are fast")
+	}
+}
+
+func TestSQLiScanner_TimeBasedWithCustomDelay(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	mock.simulateTimeDelay = true
+	mock.delayDuration = 3 * time.Second
+
+	customDelay := 3 * time.Second
+	scanner := NewSQLiScanner(
+		WithSQLiHTTPClient(mock),
+		WithSQLiTimeBasedDelay(customDelay),
+	)
+
+	if scanner.timeBasedDelay != customDelay {
+		t.Errorf("Expected time-based delay %v, got %v", customDelay, scanner.timeBasedDelay)
+	}
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect time-based SQL injection with custom delay
+	foundTimeBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "time-based" {
+			foundTimeBased = true
+			break
+		}
+	}
+
+	if !foundTimeBased {
+		t.Error("Expected to find time-based SQL injection with custom delay")
+	}
+}
+
+func TestSQLiScanner_VerifyFinding_TimeBased(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+	mock.simulateTimeDelay = true
+	mock.delayDuration = 5 * time.Second
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	finding := &SQLiFinding{
+		URL:       "https://example.com/item?id=1%27+OR+SLEEP%285%29--",
+		Parameter: "id",
+		Payload:   "' OR SLEEP(5)--",
+		Type:      "time-based",
+	}
+
+	config := VerificationConfig{
+		Enabled:    true,
+		MaxRetries: 3,
+		Delay:      10 * time.Millisecond,
+	}
+
+	ctx := context.Background()
+	result, err := scanner.VerifyFinding(ctx, finding, config)
+
+	if err != nil {
+		t.Fatalf("VerifyFinding returned error: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("VerifyFinding returned nil result")
+	}
+
+	if !result.Verified {
+		t.Errorf("Expected time-based finding to be verified, got explanation: %s", result.Explanation)
+	}
+
+	if result.Confidence < 0.5 {
+		t.Errorf("Expected Confidence >= 0.5, got %.2f", result.Confidence)
+	}
+
+	if result.Attempts <= 0 {
+		t.Errorf("Expected Attempts > 0, got %d", result.Attempts)
 	}
 }
