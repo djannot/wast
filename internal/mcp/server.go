@@ -371,6 +371,11 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -378,14 +383,15 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 
 func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target      string   `json:"target"`
-		Timeout     int      `json:"timeout"`
-		Active      bool     `json:"active"`
-		Verify      bool     `json:"verify"`
-		BearerToken string   `json:"bearer_token"`
-		BasicAuth   string   `json:"basic_auth"`
-		AuthHeader  string   `json:"auth_header"`
-		Cookies     []string `json:"cookies"`
+		Target            string   `json:"target"`
+		Timeout           int      `json:"timeout"`
+		Active            bool     `json:"active"`
+		Verify            bool     `json:"verify"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -407,7 +413,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
-	rateLimitConfig := ratelimit.Config{}
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute scan command logic
 	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, authConfig, rateLimitConfig)
@@ -468,6 +474,11 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -475,14 +486,15 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 
 func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target        string   `json:"target"`
-		Depth         int      `json:"depth"`
-		Timeout       string   `json:"timeout"`
-		RespectRobots bool     `json:"respect_robots"`
-		BearerToken   string   `json:"bearer_token"`
-		BasicAuth     string   `json:"basic_auth"`
-		AuthHeader    string   `json:"auth_header"`
-		Cookies       []string `json:"cookies"`
+		Target            string   `json:"target"`
+		Depth             int      `json:"depth"`
+		Timeout           string   `json:"timeout"`
+		RespectRobots     bool     `json:"respect_robots"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -514,7 +526,7 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
-	rateLimitConfig := ratelimit.Config{}
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute crawl command logic
 	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, authConfig, rateLimitConfig)
@@ -574,20 +586,26 @@ func (t *APITool) InputSchema() map[string]interface{} {
 					"type": "string",
 				},
 			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
 		},
 	}
 }
 
 func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target      string   `json:"target"`
-		SpecFile    string   `json:"spec_file"`
-		DryRun      bool     `json:"dry_run"`
-		Timeout     int      `json:"timeout"`
-		BearerToken string   `json:"bearer_token"`
-		BasicAuth   string   `json:"basic_auth"`
-		AuthHeader  string   `json:"auth_header"`
-		Cookies     []string `json:"cookies"`
+		Target            string   `json:"target"`
+		SpecFile          string   `json:"spec_file"`
+		DryRun            bool     `json:"dry_run"`
+		Timeout           int      `json:"timeout"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -609,7 +627,7 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		AuthHeader:  args.AuthHeader,
 		Cookies:     args.Cookies,
 	}
-	rateLimitConfig := ratelimit.Config{}
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute API command logic
 	result := executeAPI(ctx, args.Target, args.SpecFile, args.DryRun, args.Timeout, authConfig, rateLimitConfig)
