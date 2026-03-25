@@ -31,6 +31,7 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var discover bool
 	var crawlDepth int
 	var concurrency int
+	var scanConcurrency int
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -165,9 +166,10 @@ Examples:
 						RateLimitConfig: rateLimitConfig,
 						Tracer:          nil, // CLI doesn't use tracing
 					},
-					CrawlDepth:  crawlDepth,
-					Concurrency: concurrency,
-					Discover:    true,
+					CrawlDepth:      crawlDepth,
+					Concurrency:     concurrency,
+					ScanConcurrency: scanConcurrency,
+					Discover:        true,
 				}
 				unifiedResult, stats = scanner.ExecuteDiscoveryScan(ctx, discoveryCfg)
 			} else {
@@ -222,7 +224,8 @@ Examples:
 	cmd.Flags().BoolVar(&verify, "verify", false, "Enable finding verification to reduce false positives (requires --active)")
 	cmd.Flags().BoolVar(&discover, "discover", false, "First crawl the target to discover forms and endpoints, then scan all discovered attack surfaces")
 	cmd.Flags().IntVar(&crawlDepth, "depth", 2, "Maximum crawl depth for discovery mode (used with --discover)")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for crawling (used with --discover)")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for the crawl phase (used with --discover)")
+	cmd.Flags().IntVar(&scanConcurrency, "scan-concurrency", 5, "Number of concurrent workers for scanning discovered targets (used with --discover)")
 
 	return cmd
 }

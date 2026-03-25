@@ -23,9 +23,10 @@ type DiscoveredTarget struct {
 // DiscoveryScanConfig extends ScanConfig with discovery-specific options.
 type DiscoveryScanConfig struct {
 	ScanConfig
-	CrawlDepth  int  // Maximum depth for crawling (default: 2)
-	Concurrency int  // Number of concurrent workers for crawling (default: 5)
-	Discover    bool // Enable discovery mode
+	CrawlDepth      int  // Maximum depth for crawling (default: 2)
+	Concurrency     int  // Number of concurrent workers for crawling (default: 5)
+	ScanConcurrency int  // Number of concurrent workers for scanning discovered targets (default: 5)
+	Discover        bool // Enable discovery mode
 }
 
 // ExecuteDiscoveryScan performs crawl-then-scan workflow.
@@ -38,6 +39,9 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 5
+	}
+	if cfg.ScanConcurrency <= 0 {
+		cfg.ScanConcurrency = 5
 	}
 
 	// Create crawler with configured options
@@ -76,7 +80,7 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 	targets := extractDiscoveredTargets(cfg.Target, crawlResult)
 
 	// Scan all discovered targets
-	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets)
+	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency)
 }
 
 // extractDiscoveredTargets extracts scannable targets from crawl results.
@@ -156,7 +160,7 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 }
 
 // scanDiscoveredTargets scans all discovered targets and aggregates results.
-func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget) (*UnifiedScanResult, *ScanStats) {
+func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget, scanConcurrency int) (*UnifiedScanResult, *ScanStats) {
 	// If no targets discovered, fall back to scanning the base target
 	if len(targets) == 0 {
 		return ExecuteScan(ctx, cfg)
@@ -242,44 +246,84 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		allSSRFFindings := make([]SSRFFinding, 0)
 		var mu sync.Mutex
 
-		// Scan each discovered target
+		// Create buffered channel for target distribution
+		targetQueue := make(chan DiscoveredTarget, len(targets))
+
+		// Create context for workers
+		workerCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		// WaitGroup to track active workers
+		var wg sync.WaitGroup
+
+		// Start worker pool for concurrent scanning
+		for i := 0; i < scanConcurrency; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for target := range targetQueue {
+					// Check context cancellation
+					select {
+					case <-workerCtx.Done():
+						return
+					default:
+					}
+
+					// Scan this target with its discovered parameters
+					xssFindings := scanTargetForXSS(workerCtx, xssScanner, target)
+					sqliFindings := scanTargetForSQLi(workerCtx, sqliScanner, target)
+					csrfFindings := scanTargetForCSRF(workerCtx, csrfScanner, target)
+					ssrfFindings := scanTargetForSSRF(workerCtx, ssrfScanner, target)
+
+					// Add source information to findings
+					for i := range xssFindings {
+						xssFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xssFindings[i].Evidence)
+					}
+					for i := range sqliFindings {
+						sqliFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliFindings[i].Evidence)
+					}
+					for i := range csrfFindings {
+						csrfFindings[i].FormAction = target.URL
+					}
+					for i := range ssrfFindings {
+						ssrfFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfFindings[i].Evidence)
+					}
+
+					// Thread-safe aggregation of findings
+					mu.Lock()
+					allXSSFindings = append(allXSSFindings, xssFindings...)
+					allSQLiFindings = append(allSQLiFindings, sqliFindings...)
+					allCSRFFindings = append(allCSRFFindings, csrfFindings...)
+					allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
+					mu.Unlock()
+				}
+			}()
+		}
+
+		// Enqueue all targets
 		for _, target := range targets {
-			// Check context cancellation
 			select {
 			case <-ctx.Done():
 				intermediateResult.Errors = append(intermediateResult.Errors, "Scan cancelled")
-				break
-			default:
+				close(targetQueue)
+				wg.Wait()
+				goto skipVerification
+			case targetQueue <- target:
 			}
+		}
+		close(targetQueue)
 
-			// Scan this target with its discovered parameters
-			xssFindings := scanTargetForXSS(ctx, xssScanner, target)
-			sqliFindings := scanTargetForSQLi(ctx, sqliScanner, target)
-			csrfFindings := scanTargetForCSRF(ctx, csrfScanner, target)
-			ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, target)
+		// Wait for all workers to complete
+		wg.Wait()
 
-			// Add source information to findings
-			for i := range xssFindings {
-				xssFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xssFindings[i].Evidence)
-			}
-			for i := range sqliFindings {
-				sqliFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliFindings[i].Evidence)
-			}
-			for i := range csrfFindings {
-				csrfFindings[i].FormAction = target.URL
-			}
-			for i := range ssrfFindings {
-				ssrfFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfFindings[i].Evidence)
-			}
-
+		// Check if context was cancelled during scanning
+		if ctx.Err() != nil {
 			mu.Lock()
-			allXSSFindings = append(allXSSFindings, xssFindings...)
-			allSQLiFindings = append(allSQLiFindings, sqliFindings...)
-			allCSRFFindings = append(allCSRFFindings, csrfFindings...)
-			allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
+			intermediateResult.Errors = append(intermediateResult.Errors, "Scan cancelled: "+ctx.Err().Error())
 			mu.Unlock()
 		}
 
+	skipVerification:
 		// Create result structures
 		xssResult := &XSSScanResult{
 			Target:   cfg.Target,
