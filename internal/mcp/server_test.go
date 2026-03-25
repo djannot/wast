@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/djannot/wast/pkg/scanner"
 )
 
 func TestNewServer(t *testing.T) {
@@ -1636,9 +1638,9 @@ func TestScanToolTimeoutDefault(t *testing.T) {
 	}
 
 	// Should succeed with default timeout
-	scanResult, ok := result.(CompleteScanResult)
+	scanResult, ok := result.(*scanner.UnifiedScanResult)
 	if !ok {
-		t.Fatal("Result should be a CompleteScanResult")
+		t.Fatal("Result should be a *scanner.UnifiedScanResult")
 	}
 
 	if scanResult.Target != "https://example.com" {
