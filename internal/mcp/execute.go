@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/djannot/wast/pkg/api"
@@ -26,17 +25,9 @@ type ReconResult struct {
 	TLS     *tls.TLSResult `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
-// CompleteScanResult represents the combined results of all security scans.
-type CompleteScanResult struct {
-	Target      string                    `json:"target" yaml:"target"`
-	PassiveOnly bool                      `json:"passive_only" yaml:"passive_only"`
-	Headers     *scanner.HeaderScanResult `json:"headers,omitempty" yaml:"headers,omitempty"`
-	XSS         *scanner.XSSScanResult    `json:"xss,omitempty" yaml:"xss,omitempty"`
-	SQLi        *scanner.SQLiScanResult   `json:"sqli,omitempty" yaml:"sqli,omitempty"`
-	CSRF        *scanner.CSRFScanResult   `json:"csrf,omitempty" yaml:"csrf,omitempty"`
-	SSRF        *scanner.SSRFScanResult   `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
-	Errors      []string                  `json:"errors,omitempty" yaml:"errors,omitempty"`
-}
+// CompleteScanResult is deprecated. Use scanner.IntermediateScanResult instead.
+// Kept for backward compatibility.
+type CompleteScanResult = scanner.IntermediateScanResult
 
 // executeRecon performs reconnaissance on a target domain.
 func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool, tracer trace.Tracer) interface{} {
@@ -84,238 +75,19 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		defer span.End()
 	}
 
-	// Create scanner options
-	headerOpts := []scanner.Option{
-		scanner.WithTimeout(time.Duration(timeout) * time.Second),
-	}
-	xssOpts := []scanner.XSSOption{
-		scanner.WithXSSTimeout(time.Duration(timeout) * time.Second),
-	}
-	sqliOpts := []scanner.SQLiOption{
-		scanner.WithSQLiTimeout(time.Duration(timeout) * time.Second),
-	}
-	csrfOpts := []scanner.CSRFOption{
-		scanner.WithCSRFTimeout(time.Duration(timeout) * time.Second),
-	}
-	ssrfOpts := []scanner.SSRFOption{
-		scanner.WithSSRFTimeout(time.Duration(timeout) * time.Second),
+	// Create scan configuration
+	scanCfg := scanner.ScanConfig{
+		Target:          target,
+		Timeout:         timeout,
+		SafeMode:        safeMode,
+		VerifyFindings:  verifyFindings,
+		AuthConfig:      authConfig,
+		RateLimitConfig: rateLimitConfig,
+		Tracer:          tracer,
 	}
 
-	// Add authentication if configured
-	if !authConfig.IsEmpty() {
-		headerOpts = append(headerOpts, scanner.WithAuth(authConfig))
-		xssOpts = append(xssOpts, scanner.WithXSSAuth(authConfig))
-		sqliOpts = append(sqliOpts, scanner.WithSQLiAuth(authConfig))
-		csrfOpts = append(csrfOpts, scanner.WithCSRFAuth(authConfig))
-		ssrfOpts = append(ssrfOpts, scanner.WithSSRFAuth(authConfig))
-	}
-
-	// Add rate limiting if configured
-	if rateLimitConfig.IsEnabled() {
-		headerOpts = append(headerOpts, scanner.WithRateLimitConfig(rateLimitConfig))
-		xssOpts = append(xssOpts, scanner.WithXSSRateLimitConfig(rateLimitConfig))
-		sqliOpts = append(sqliOpts, scanner.WithSQLiRateLimitConfig(rateLimitConfig))
-		csrfOpts = append(csrfOpts, scanner.WithCSRFRateLimitConfig(rateLimitConfig))
-		ssrfOpts = append(ssrfOpts, scanner.WithSSRFRateLimitConfig(rateLimitConfig))
-	}
-
-	// Add tracer if configured
-	if tracer != nil {
-		headerOpts = append(headerOpts, scanner.WithTracer(tracer))
-		xssOpts = append(xssOpts, scanner.WithXSSTracer(tracer))
-		sqliOpts = append(sqliOpts, scanner.WithSQLiTracer(tracer))
-		csrfOpts = append(csrfOpts, scanner.WithCSRFTracer(tracer))
-		ssrfOpts = append(ssrfOpts, scanner.WithSSRFTracer(tracer))
-	}
-
-	// Create scanners
-	headerScanner := scanner.NewHTTPHeadersScanner(headerOpts...)
-
-	// Perform the scans
-	headerResult := headerScanner.Scan(ctx, target)
-
-	// Initialize result structure
-	combinedResult := CompleteScanResult{
-		Target:      target,
-		PassiveOnly: safeMode,
-		Headers:     headerResult,
-		Errors:      make([]string, 0),
-	}
-
-	// Aggregate errors from header scan
-	if len(headerResult.Errors) > 0 {
-		combinedResult.Errors = append(combinedResult.Errors, headerResult.Errors...)
-	}
-
-	// Only perform active scans if safe mode is disabled
-	if !safeMode {
-		xssScanner := scanner.NewXSSScanner(xssOpts...)
-		sqliScanner := scanner.NewSQLiScanner(sqliOpts...)
-		csrfScanner := scanner.NewCSRFScanner(csrfOpts...)
-		ssrfScanner := scanner.NewSSRFScanner(ssrfOpts...)
-
-		var wg sync.WaitGroup
-		var xssResult *scanner.XSSScanResult
-		var sqliResult *scanner.SQLiScanResult
-		var csrfResult *scanner.CSRFScanResult
-		var ssrfResult *scanner.SSRFScanResult
-
-		wg.Add(4)
-		go func() {
-			defer wg.Done()
-			xssResult = xssScanner.Scan(ctx, target)
-		}()
-		go func() {
-			defer wg.Done()
-			sqliResult = sqliScanner.Scan(ctx, target)
-		}()
-		go func() {
-			defer wg.Done()
-			csrfResult = csrfScanner.Scan(ctx, target)
-		}()
-		go func() {
-			defer wg.Done()
-			ssrfResult = ssrfScanner.Scan(ctx, target)
-		}()
-		wg.Wait()
-
-		// Verify findings if enabled
-		if verifyFindings {
-			verifyConfig := scanner.VerificationConfig{
-				Enabled:    true,
-				MaxRetries: 3,
-				Delay:      500 * time.Millisecond,
-			}
-
-			// Verify XSS findings
-			for i := range xssResult.Findings {
-				result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					xssResult.Findings[i].Verified = result.Verified
-					xssResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						xssResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						xssResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						xssResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify SQLi findings
-			for i := range sqliResult.Findings {
-				result, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					sqliResult.Findings[i].Verified = result.Verified
-					sqliResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						sqliResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						sqliResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						sqliResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify CSRF findings
-			for i := range csrfResult.Findings {
-				result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					csrfResult.Findings[i].Verified = result.Verified
-					csrfResult.Findings[i].VerificationAttempts = result.Attempts
-				}
-			}
-
-			// Filter out unverified findings if verification was enabled
-			verifiedXSSFindings := make([]scanner.XSSFinding, 0)
-			for _, finding := range xssResult.Findings {
-				if finding.Verified {
-					verifiedXSSFindings = append(verifiedXSSFindings, finding)
-				}
-			}
-			xssResult.Findings = verifiedXSSFindings
-			xssResult.Summary.VulnerabilitiesFound = len(verifiedXSSFindings)
-
-			verifiedSQLiFindings := make([]scanner.SQLiFinding, 0)
-			for _, finding := range sqliResult.Findings {
-				if finding.Verified {
-					verifiedSQLiFindings = append(verifiedSQLiFindings, finding)
-				}
-			}
-			sqliResult.Findings = verifiedSQLiFindings
-			sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
-
-			verifiedCSRFFindings := make([]scanner.CSRFFinding, 0)
-			for _, finding := range csrfResult.Findings {
-				if finding.Verified {
-					verifiedCSRFFindings = append(verifiedCSRFFindings, finding)
-				}
-			}
-			csrfResult.Findings = verifiedCSRFFindings
-			csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
-
-			// Verify SSRF findings
-			for i := range ssrfResult.Findings {
-				result, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					ssrfResult.Findings[i].Verified = result.Verified
-					ssrfResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						ssrfResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						ssrfResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						ssrfResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			verifiedSSRFFindings := make([]scanner.SSRFFinding, 0)
-			for _, finding := range ssrfResult.Findings {
-				if finding.Verified {
-					verifiedSSRFFindings = append(verifiedSSRFFindings, finding)
-				}
-			}
-			ssrfResult.Findings = verifiedSSRFFindings
-			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
-		}
-
-		combinedResult.XSS = xssResult
-		combinedResult.SQLi = sqliResult
-		combinedResult.CSRF = csrfResult
-		combinedResult.SSRF = ssrfResult
-
-		// Aggregate errors from active scans
-		if len(xssResult.Errors) > 0 {
-			combinedResult.Errors = append(combinedResult.Errors, xssResult.Errors...)
-		}
-		if len(sqliResult.Errors) > 0 {
-			combinedResult.Errors = append(combinedResult.Errors, sqliResult.Errors...)
-		}
-		if len(csrfResult.Errors) > 0 {
-			combinedResult.Errors = append(combinedResult.Errors, csrfResult.Errors...)
-		}
-		if len(ssrfResult.Errors) > 0 {
-			combinedResult.Errors = append(combinedResult.Errors, ssrfResult.Errors...)
-		}
-	}
-
-	// Create unified result with correlation and risk scoring
-	unifiedResult := scanner.NewUnifiedScanResult(
-		target,
-		safeMode,
-		headerResult,
-		combinedResult.XSS,
-		combinedResult.SQLi,
-		combinedResult.CSRF,
-		combinedResult.SSRF,
-		combinedResult.Errors,
-	)
+	// Execute the scan using the shared executor
+	unifiedResult, _ := scanner.ExecuteScan(ctx, scanCfg)
 
 	return unifiedResult
 }
