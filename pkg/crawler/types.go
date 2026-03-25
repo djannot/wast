@@ -47,6 +47,7 @@ type CrawlResult struct {
 	Forms          []FormInfo     `json:"forms,omitempty" yaml:"forms,omitempty"`
 	Resources      []ResourceInfo `json:"resources,omitempty" yaml:"resources,omitempty"`
 	RobotsDisallow []string       `json:"robots_disallow,omitempty" yaml:"robots_disallow,omitempty"`
+	SitemapURLs    []string       `json:"sitemap_urls,omitempty" yaml:"sitemap_urls,omitempty"`
 	Errors         []string       `json:"errors,omitempty" yaml:"errors,omitempty"`
 	Statistics     CrawlStats     `json:"statistics" yaml:"statistics"`
 }
@@ -116,6 +117,13 @@ func (r *CrawlResult) String() string {
 		sb.WriteString("\nRobots.txt Disallowed Paths:\n")
 		for _, path := range r.RobotsDisallow {
 			sb.WriteString(fmt.Sprintf("  - %s\n", path))
+		}
+	}
+
+	if len(r.SitemapURLs) > 0 {
+		sb.WriteString("\nSitemap URLs:\n")
+		for _, url := range r.SitemapURLs {
+			sb.WriteString(fmt.Sprintf("  - %s\n", url))
 		}
 	}
 
