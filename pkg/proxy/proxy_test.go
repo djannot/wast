@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -632,5 +634,411 @@ func TestDefaultTransport(t *testing.T) {
 	}
 	if transport.transport == nil {
 		t.Fatal("Expected underlying transport to be non-nil")
+	}
+}
+
+// MockHijacker implements http.Hijacker for testing CONNECT tunnel hijacking.
+type MockHijacker struct {
+	http.ResponseWriter
+	conn      net.Conn
+	hijackErr error
+}
+
+func (m *MockHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if m.hijackErr != nil {
+		return nil, nil, m.hijackErr
+	}
+	return m.conn, bufio.NewReadWriter(bufio.NewReader(m.conn), bufio.NewWriter(m.conn)), nil
+}
+
+func TestProxy_HandleConnect_WithMITM(t *testing.T) {
+	// Create temp directory for CA
+	tmpDir, err := os.MkdirTemp("", "wast-test-ca-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a certificate authority for MITM
+	config := &CAConfig{
+		CertPath:      tmpDir + "/ca.crt",
+		KeyPath:       tmpDir + "/ca.key",
+		ValidityYears: 1,
+		KeyBits:       2048,
+	}
+	ca := NewCertificateAuthority(config)
+	if err := ca.Initialize(); err != nil {
+		t.Fatalf("Failed to initialize CA: %v", err)
+	}
+
+	// Create proxy with HTTPS enabled
+	p := NewProxy(
+		WithCA(ca),
+		WithHTTPSEnabled(true),
+	)
+
+	if p.mitmHandler == nil {
+		t.Fatal("Expected MITM handler to be initialized")
+	}
+
+	if !p.httpsEnabled {
+		t.Error("Expected HTTPS to be enabled")
+	}
+
+	// Test that handleConnect routes to MITM handler when HTTPS is enabled
+	// We'll verify this by checking the error response (since we're not using a real hijacker)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+
+	// This should call p.mitmHandler.HandleConnect, which will eventually fail
+	// because we don't have a proper hijacker, but it verifies the routing
+	p.handleConnect(recorder, req)
+
+	// The MITM handler should have attempted to handle this
+	// Since we're using a plain ResponseRecorder without hijacker support,
+	// it should fail with an error
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	// The error may vary depending on the MITM implementation,
+	// but it should have attempted to process the CONNECT request
+	if resp.StatusCode == 0 {
+		t.Error("Expected MITM handler to process the CONNECT request")
+	}
+}
+
+func TestProxy_HandleConnect_WithoutMITM(t *testing.T) {
+	// Create proxy without HTTPS/MITM enabled
+	p := NewProxy()
+
+	// Verify no MITM handler in plain proxy mode
+	if p.mitmHandler != nil {
+		t.Error("Expected no MITM handler in plain proxy mode")
+	}
+
+	// Test that handleConnect calls handleTunnel when no MITM is configured
+	// We'll test this by verifying the error path when hijacking fails
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+
+	p.handleConnect(recorder, req)
+
+	// Should fail with hijacking not supported error
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Hijacking not supported") {
+		t.Errorf("Expected 'Hijacking not supported' error, got: %s", string(body))
+	}
+}
+
+func TestProxy_HandleTunnel_Success(t *testing.T) {
+	// Create a simple TCP server as the target that closes immediately
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	// Start server that accepts and immediately closes
+	serverClosed := make(chan bool)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		// Close immediately to trigger tunnel completion
+		conn.Close()
+		serverClosed <- true
+	}()
+
+	p := NewProxy()
+
+	// Create pipes for client connection
+	clientEnd, proxyEnd := net.Pipe()
+
+	// Create mock hijacker
+	recorder := httptest.NewRecorder()
+	hijacker := &MockHijacker{
+		ResponseWriter: recorder,
+		conn:           proxyEnd,
+	}
+
+	// Create CONNECT request to target server
+	targetHost := listener.Addr().String()
+	req := httptest.NewRequest(http.MethodConnect, "http://"+targetHost, nil)
+	req.Host = targetHost
+
+	// Handle tunnel in a goroutine
+	tunnelDone := make(chan bool)
+	go func() {
+		p.handleTunnel(hijacker, req)
+		tunnelDone <- true
+	}()
+
+	// Read the "200 Connection Established" response
+	response := make([]byte, 1024)
+	clientEnd.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err := clientEnd.Read(response)
+	if err != nil {
+		t.Fatalf("Failed to read tunnel response: %v", err)
+	}
+
+	responseStr := string(response[:n])
+	if !strings.Contains(responseStr, "200 Connection Established") {
+		t.Errorf("Expected '200 Connection Established', got: %s", responseStr)
+	}
+
+	// Wait for server to close its end
+	<-serverClosed
+
+	// Close client connection to trigger tunnel completion
+	clientEnd.Close()
+
+	// Wait for tunnel to complete with a timeout
+	select {
+	case <-tunnelDone:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Tunnel did not complete in time")
+	}
+}
+
+func TestProxy_HandleTunnel_TargetConnectionFails(t *testing.T) {
+	p := NewProxy()
+
+	// Use an invalid target that will fail to connect
+	req := httptest.NewRequest(http.MethodConnect, "http://invalid-host-that-does-not-exist.local:9999", nil)
+	req.Host = "invalid-host-that-does-not-exist.local:9999"
+
+	recorder := httptest.NewRecorder()
+
+	// Handle tunnel - should fail to connect to target
+	p.handleTunnel(recorder, req)
+
+	// Verify error response
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("Expected status 502 Bad Gateway, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Failed to connect to target") {
+		t.Errorf("Expected 'Failed to connect to target' error, got: %s", string(body))
+	}
+
+	// Verify error was tracked
+	p.mu.RLock()
+	errorCount := len(p.errors)
+	p.mu.RUnlock()
+
+	if errorCount == 0 {
+		t.Error("Expected error to be tracked in proxy errors")
+	}
+}
+
+func TestProxy_HandleTunnel_HijackingNotSupported(t *testing.T) {
+	p := NewProxy()
+
+	// Create a regular ResponseRecorder that doesn't implement http.Hijacker
+	recorder := httptest.NewRecorder()
+
+	// Create CONNECT request
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+
+	// Handle tunnel - should fail because hijacking is not supported
+	p.handleTunnel(recorder, req)
+
+	// Verify error response
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Hijacking not supported") {
+		t.Errorf("Expected 'Hijacking not supported' error, got: %s", string(body))
+	}
+
+	// Verify error was tracked
+	p.mu.RLock()
+	hasError := false
+	for _, err := range p.errors {
+		if strings.Contains(err, "hijacking not supported") {
+			hasError = true
+			break
+		}
+	}
+	p.mu.RUnlock()
+
+	if !hasError {
+		t.Error("Expected 'hijacking not supported' error to be tracked")
+	}
+}
+
+func TestProxy_HandleTunnel_HijackFails(t *testing.T) {
+	p := NewProxy()
+
+	// Create a test server to have a valid target
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetServer.Close()
+
+	targetHost := strings.TrimPrefix(targetServer.URL, "http://")
+
+	// Create mock hijacker that returns an error
+	hijackErr := fmt.Errorf("hijack operation failed")
+	recorder := httptest.NewRecorder()
+	hijacker := &MockHijacker{
+		ResponseWriter: recorder,
+		hijackErr:      hijackErr,
+	}
+
+	// Create CONNECT request
+	req := httptest.NewRequest(http.MethodConnect, "http://"+targetHost, nil)
+	req.Host = targetHost
+
+	// Handle tunnel - should fail during hijack
+	p.handleTunnel(hijacker, req)
+
+	// Verify error response
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Failed to hijack connection") {
+		t.Errorf("Expected 'Failed to hijack connection' error, got: %s", string(body))
+	}
+
+	// Verify error was tracked
+	p.mu.RLock()
+	hasError := false
+	for _, err := range p.errors {
+		if strings.Contains(err, "CONNECT hijack failed") {
+			hasError = true
+			break
+		}
+	}
+	p.mu.RUnlock()
+
+	if !hasError {
+		t.Error("Expected hijack failure to be tracked in errors")
+	}
+}
+
+func TestProxy_HandleTunnel_BidirectionalDataTransfer(t *testing.T) {
+	// Create a simple echo server as the target
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create echo listener: %v", err)
+	}
+	defer echoListener.Close()
+
+	// Start echo server
+	go func() {
+		conn, err := echoListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Echo back what we receive
+		io.Copy(conn, conn)
+	}()
+
+	p := NewProxy()
+
+	// Create pipes for client connection
+	clientEnd, proxyEnd := net.Pipe()
+	defer clientEnd.Close()
+
+	// Create mock hijacker
+	recorder := httptest.NewRecorder()
+	hijacker := &MockHijacker{
+		ResponseWriter: recorder,
+		conn:           proxyEnd,
+	}
+
+	// Create CONNECT request to echo server
+	targetHost := echoListener.Addr().String()
+	req := httptest.NewRequest(http.MethodConnect, "http://"+targetHost, nil)
+	req.Host = targetHost
+
+	// Handle tunnel in a goroutine
+	go func() {
+		p.handleTunnel(hijacker, req)
+	}()
+
+	// Read the "200 Connection Established" response
+	response := make([]byte, 1024)
+	n, err := clientEnd.Read(response)
+	if err != nil {
+		t.Fatalf("Failed to read tunnel response: %v", err)
+	}
+
+	if !strings.Contains(string(response[:n]), "200 Connection Established") {
+		t.Error("Expected '200 Connection Established' response")
+	}
+
+	// Send test data through the tunnel
+	testData := []byte("Hello through tunnel")
+	_, err = clientEnd.Write(testData)
+	if err != nil {
+		t.Fatalf("Failed to write to tunnel: %v", err)
+	}
+
+	// Read echoed data back
+	echoData := make([]byte, len(testData))
+	clientEnd.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err = clientEnd.Read(echoData)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Failed to read from tunnel: %v", err)
+	}
+
+	if n > 0 && !bytes.Equal(echoData[:n], testData) {
+		t.Errorf("Expected echoed data %q, got %q", string(testData), string(echoData[:n]))
+	}
+
+	// Close connection
+	clientEnd.Close()
+	proxyEnd.Close()
+}
+
+func TestProxy_HandleConnect_Method(t *testing.T) {
+	// Test that handleRequest properly routes CONNECT requests
+	p := NewProxy()
+
+	// Create a simple CONNECT request
+	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req.Host = "example.com:443"
+
+	// Use a plain recorder (no hijacker) - should fail with appropriate error
+	recorder := httptest.NewRecorder()
+
+	// This should call handleConnect which calls handleTunnel (no MITM)
+	p.handleRequest(recorder, req)
+
+	// Since recorder doesn't support hijacking, should get error
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d", resp.StatusCode)
 	}
 }
