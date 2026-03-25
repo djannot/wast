@@ -2,12 +2,14 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/djannot/wast/pkg/api"
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/dns"
+	"github.com/djannot/wast/pkg/proxy"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/djannot/wast/pkg/tls"
@@ -231,6 +233,92 @@ func executeAPI(ctx context.Context, target string, specFile string, dryRun bool
 	// Create discoverer and run discovery
 	discoverer := api.NewDiscoverer(opts...)
 	result := discoverer.Discover(ctx, target)
+
+	return result
+}
+
+// executeIntercept performs traffic interception on the specified port.
+func executeIntercept(ctx context.Context, port int, duration time.Duration, saveFile string, httpsInterception bool, maxRequests int) interface{} {
+	// Create a context with timeout based on duration
+	timeoutCtx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
+
+	// Build proxy options
+	opts := []proxy.Option{
+		proxy.WithPort(port),
+	}
+
+	// Add save file if specified
+	if saveFile != "" {
+		opts = append(opts, proxy.WithSaveFile(saveFile))
+	}
+
+	// Handle HTTPS interception if requested
+	if httpsInterception {
+		// Initialize or load CA for HTTPS interception
+		config := proxy.DefaultCAConfig()
+		ca := proxy.NewCertificateAuthority(config)
+
+		// Check if CA exists, initialize if not
+		if !ca.IsInitialized() {
+			if err := ca.Initialize(); err != nil {
+				// Return error result if CA initialization fails
+				return map[string]interface{}{
+					"error":         fmt.Sprintf("Failed to initialize CA for HTTPS interception: %v", err),
+					"port":          port,
+					"https_enabled": false,
+					"message":       "HTTPS interception disabled due to CA initialization failure. Run 'wast intercept --init-ca' to set up HTTPS interception manually.",
+				}
+			}
+		} else {
+			// Load existing CA
+			if err := ca.Load(); err != nil {
+				// Return error result if CA loading fails
+				return map[string]interface{}{
+					"error":         fmt.Sprintf("Failed to load CA certificate: %v", err),
+					"port":          port,
+					"https_enabled": false,
+					"message":       "HTTPS interception disabled due to CA loading failure.",
+				}
+			}
+		}
+
+		opts = append(opts, proxy.WithCA(ca))
+	}
+
+	// Create the proxy
+	p := proxy.NewProxy(opts...)
+
+	// If max_requests is specified, we need to monitor traffic and cancel when reached
+	if maxRequests > 0 {
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-timeoutCtx.Done():
+					return
+				case <-ticker.C:
+					stats := p.GetStats()
+					if stats.TotalRequests >= maxRequests {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	// Start the proxy
+	result, err := p.Start(timeoutCtx)
+	if err != nil {
+		// Return error information
+		return map[string]interface{}{
+			"error": fmt.Sprintf("Proxy error: %v", err),
+			"port":  port,
+		}
+	}
 
 	return result
 }
