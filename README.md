@@ -271,20 +271,36 @@ wast/
 │       ├── main.go           # Entry point
 │       └── root.go           # Root command definition
 ├── internal/
-│   └── commands/
-│       ├── recon.go          # Reconnaissance command
-│       ├── crawl.go          # Crawling command
-│       ├── intercept.go      # Traffic interception command
-│       ├── scan.go           # Security scanning command
-│       └── api.go            # API testing command
-├── pkg/
-│   └── output/
-│       └── formatter.go      # JSON/YAML/text output formatting
-├── docs/
+│   ├── commands/             # CLI command implementations
+│   │   ├── recon.go          # Reconnaissance command
+│   │   ├── crawl.go          # Crawling command
+│   │   ├── intercept.go      # Traffic interception command
+│   │   ├── scan.go           # Security scanning command
+│   │   ├── api.go            # API testing command
+│   │   └── serve.go          # MCP server command
+│   └── mcp/                  # MCP protocol implementation
+│       └── server.go         # MCP server and tools
+├── pkg/                      # Public packages
+│   ├── auth/                 # Authentication configuration
+│   ├── crawler/              # Web crawling functionality
+│   ├── dns/                  # DNS enumeration
+│   ├── scanner/              # Vulnerability scanning
+│   ├── api/                  # API testing
+│   ├── proxy/                # Traffic interception proxy
+│   ├── tls/                  # TLS analysis
+│   ├── output/               # Output formatting (JSON/YAML/SARIF)
+│   └── ratelimit/            # Rate limiting
+├── docs/                     # Comprehensive documentation
+│   ├── getting-started.md    # Quick start guide for humans and AI agents
+│   ├── mcp-integration.md    # MCP protocol documentation with examples
+│   ├── cli-reference.md      # Complete CLI command reference
+│   ├── authentication.md     # Authentication methods guide
+│   └── safe-mode.md          # Safe vs active mode explanation
 ├── Makefile
 ├── go.mod
 ├── go.sum
 ├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
