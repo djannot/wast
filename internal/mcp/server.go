@@ -375,7 +375,12 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 			},
 			"concurrency": map[string]interface{}{
 				"type":        "integer",
-				"description": "Number of concurrent workers for crawling (used with discover=true)",
+				"description": "Number of concurrent workers for the crawl phase (used with discover=true)",
+				"default":     5,
+			},
+			"scan_concurrency": map[string]interface{}{
+				"type":        "integer",
+				"description": "Number of concurrent workers for scanning discovered targets (used with discover=true)",
 				"default":     5,
 			},
 			"bearer_token": map[string]interface{}{
@@ -438,6 +443,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		Discover          bool     `json:"discover"`
 		Depth             int      `json:"depth"`
 		Concurrency       int      `json:"concurrency"`
+		ScanConcurrency   int      `json:"scan_concurrency"`
 		BearerToken       string   `json:"bearer_token"`
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
@@ -470,6 +476,10 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		args.Concurrency = 5
 	}
 
+	if args.ScanConcurrency <= 0 {
+		args.ScanConcurrency = 5
+	}
+
 	// Construct auth config from arguments
 	authConfig := &auth.AuthConfig{
 		BearerToken: args.BearerToken,
@@ -496,7 +506,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }
