@@ -1,0 +1,488 @@
+// Package scanner provides security scanning functionality for web applications.
+package scanner
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/djannot/wast/pkg/crawler"
+)
+
+// DiscoveredTarget represents a discovered endpoint to scan.
+type DiscoveredTarget struct {
+	URL        string            // The URL to scan
+	Method     string            // HTTP method (GET, POST, etc.)
+	Parameters map[string]string // Parameters to test (field name -> default value)
+	Source     string            // Where this target was discovered (e.g., "form on /page", "link query params")
+}
+
+// DiscoveryScanConfig extends ScanConfig with discovery-specific options.
+type DiscoveryScanConfig struct {
+	ScanConfig
+	CrawlDepth  int  // Maximum depth for crawling (default: 2)
+	Concurrency int  // Number of concurrent workers for crawling (default: 5)
+	Discover    bool // Enable discovery mode
+}
+
+// ExecuteDiscoveryScan performs crawl-then-scan workflow.
+// It first crawls the target to discover forms and links with query parameters,
+// then scans all discovered endpoints.
+func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*UnifiedScanResult, *ScanStats) {
+	// Set default crawl depth if not specified
+	if cfg.CrawlDepth <= 0 {
+		cfg.CrawlDepth = 2
+	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 5
+	}
+
+	// Create crawler with configured options
+	crawlerOpts := []crawler.Option{
+		crawler.WithMaxDepth(cfg.CrawlDepth),
+		crawler.WithTimeout(time.Duration(cfg.Timeout) * time.Second),
+		crawler.WithUserAgent("WAST/1.0 (Web Application Security Testing)"),
+		crawler.WithRespectRobots(true),
+		crawler.WithConcurrency(cfg.Concurrency),
+	}
+
+	// Add authentication if configured
+	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
+		crawlerOpts = append(crawlerOpts, crawler.WithAuth(cfg.AuthConfig))
+	}
+
+	// Add rate limiting if configured
+	if cfg.RateLimitConfig.IsEnabled() {
+		crawlerOpts = append(crawlerOpts, crawler.WithRateLimitConfig(cfg.RateLimitConfig))
+	}
+
+	// Add tracer if configured
+	if cfg.Tracer != nil {
+		crawlerOpts = append(crawlerOpts, crawler.WithTracer(cfg.Tracer))
+	}
+
+	c := crawler.NewCrawler(crawlerOpts...)
+
+	// Perform the crawl
+	crawlCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.Timeout*cfg.CrawlDepth+60)*time.Second)
+	defer cancel()
+
+	crawlResult := c.Crawl(crawlCtx, cfg.Target)
+
+	// Extract discovered targets from crawl results
+	targets := extractDiscoveredTargets(cfg.Target, crawlResult)
+
+	// Scan all discovered targets
+	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets)
+}
+
+// extractDiscoveredTargets extracts scannable targets from crawl results.
+func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []DiscoveredTarget {
+	targets := make([]DiscoveredTarget, 0)
+	seen := make(map[string]bool)
+
+	// Extract from forms
+	for _, form := range result.Forms {
+		// Skip empty form actions
+		if form.Action == "" {
+			continue
+		}
+
+		// Build parameters from form fields
+		params := make(map[string]string)
+		for _, field := range form.Fields {
+			// Skip password, file, and hidden fields
+			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" {
+				continue
+			}
+			if field.Name != "" {
+				params[field.Name] = field.Value
+			}
+		}
+
+		// Only add if there are testable parameters
+		if len(params) > 0 {
+			key := fmt.Sprintf("%s:%s", form.Action, form.Method)
+			if !seen[key] {
+				seen[key] = true
+				targets = append(targets, DiscoveredTarget{
+					URL:        form.Action,
+					Method:     form.Method,
+					Parameters: params,
+					Source:     fmt.Sprintf("form on %s", form.Page),
+				})
+			}
+		}
+	}
+
+	// Extract from internal links with query parameters
+	for _, link := range result.InternalLinks {
+		parsedURL, err := url.Parse(link.URL)
+		if err != nil {
+			continue
+		}
+
+		queryParams := parsedURL.Query()
+		if len(queryParams) == 0 {
+			continue
+		}
+
+		// Build parameters map from query string
+		params := make(map[string]string)
+		for paramName, values := range queryParams {
+			if len(values) > 0 {
+				params[paramName] = values[0]
+			} else {
+				params[paramName] = ""
+			}
+		}
+
+		key := fmt.Sprintf("%s:GET", link.URL)
+		if !seen[key] {
+			seen[key] = true
+			targets = append(targets, DiscoveredTarget{
+				URL:        link.URL,
+				Method:     "GET",
+				Parameters: params,
+				Source:     "internal link with query parameters",
+			})
+		}
+	}
+
+	return targets
+}
+
+// scanDiscoveredTargets scans all discovered targets and aggregates results.
+func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget) (*UnifiedScanResult, *ScanStats) {
+	// If no targets discovered, fall back to scanning the base target
+	if len(targets) == 0 {
+		return ExecuteScan(ctx, cfg)
+	}
+
+	// Create scanner options
+	headerOpts := []Option{
+		WithTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	xssOpts := []XSSOption{
+		WithXSSTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	sqliOpts := []SQLiOption{
+		WithSQLiTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	csrfOpts := []CSRFOption{
+		WithCSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	ssrfOpts := []SSRFOption{
+		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+
+	// Add authentication if configured
+	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
+		headerOpts = append(headerOpts, WithAuth(cfg.AuthConfig))
+		xssOpts = append(xssOpts, WithXSSAuth(cfg.AuthConfig))
+		sqliOpts = append(sqliOpts, WithSQLiAuth(cfg.AuthConfig))
+		csrfOpts = append(csrfOpts, WithCSRFAuth(cfg.AuthConfig))
+		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
+	}
+
+	// Add rate limiting if configured
+	if cfg.RateLimitConfig.IsEnabled() {
+		headerOpts = append(headerOpts, WithRateLimitConfig(cfg.RateLimitConfig))
+		xssOpts = append(xssOpts, WithXSSRateLimitConfig(cfg.RateLimitConfig))
+		sqliOpts = append(sqliOpts, WithSQLiRateLimitConfig(cfg.RateLimitConfig))
+		csrfOpts = append(csrfOpts, WithCSRFRateLimitConfig(cfg.RateLimitConfig))
+		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
+	}
+
+	// Add tracer if configured (for MCP)
+	if cfg.Tracer != nil {
+		headerOpts = append(headerOpts, WithTracer(cfg.Tracer))
+		xssOpts = append(xssOpts, WithXSSTracer(cfg.Tracer))
+		sqliOpts = append(sqliOpts, WithSQLiTracer(cfg.Tracer))
+		csrfOpts = append(csrfOpts, WithCSRFTracer(cfg.Tracer))
+		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
+	}
+
+	// Create scanners
+	headerScanner := NewHTTPHeadersScanner(headerOpts...)
+
+	// Perform header scan on base target only (not on every discovered URL)
+	headerResult := headerScanner.Scan(ctx, cfg.Target)
+
+	// Initialize aggregated result
+	intermediateResult := IntermediateScanResult{
+		Target:      cfg.Target,
+		PassiveOnly: cfg.SafeMode,
+		Headers:     headerResult,
+		Errors:      make([]string, 0),
+	}
+
+	// Aggregate errors from header scan
+	if len(headerResult.Errors) > 0 {
+		intermediateResult.Errors = append(intermediateResult.Errors, headerResult.Errors...)
+	}
+
+	// Initialize stats
+	stats := &ScanStats{}
+
+	// Only perform active scans if safe mode is disabled
+	if !cfg.SafeMode {
+		xssScanner := NewXSSScanner(xssOpts...)
+		sqliScanner := NewSQLiScanner(sqliOpts...)
+		csrfScanner := NewCSRFScanner(csrfOpts...)
+		ssrfScanner := NewSSRFScanner(ssrfOpts...)
+
+		// Aggregate findings from all targets
+		allXSSFindings := make([]XSSFinding, 0)
+		allSQLiFindings := make([]SQLiFinding, 0)
+		allCSRFFindings := make([]CSRFFinding, 0)
+		allSSRFFindings := make([]SSRFFinding, 0)
+		var mu sync.Mutex
+
+		// Scan each discovered target
+		for _, target := range targets {
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				intermediateResult.Errors = append(intermediateResult.Errors, "Scan cancelled")
+				break
+			default:
+			}
+
+			// Scan this target with its discovered parameters
+			xssFindings := scanTargetForXSS(ctx, xssScanner, target)
+			sqliFindings := scanTargetForSQLi(ctx, sqliScanner, target)
+			csrfFindings := scanTargetForCSRF(ctx, csrfScanner, target)
+			ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, target)
+
+			// Add source information to findings
+			for i := range xssFindings {
+				xssFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xssFindings[i].Evidence)
+			}
+			for i := range sqliFindings {
+				sqliFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliFindings[i].Evidence)
+			}
+			for i := range csrfFindings {
+				csrfFindings[i].FormAction = target.URL
+			}
+			for i := range ssrfFindings {
+				ssrfFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfFindings[i].Evidence)
+			}
+
+			mu.Lock()
+			allXSSFindings = append(allXSSFindings, xssFindings...)
+			allSQLiFindings = append(allSQLiFindings, sqliFindings...)
+			allCSRFFindings = append(allCSRFFindings, csrfFindings...)
+			allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
+			mu.Unlock()
+		}
+
+		// Create result structures
+		xssResult := &XSSScanResult{
+			Target:   cfg.Target,
+			Findings: allXSSFindings,
+			Summary: XSSSummary{
+				VulnerabilitiesFound: len(allXSSFindings),
+			},
+			Errors: []string{},
+		}
+
+		sqliResult := &SQLiScanResult{
+			Target:   cfg.Target,
+			Findings: allSQLiFindings,
+			Summary: SQLiSummary{
+				VulnerabilitiesFound: len(allSQLiFindings),
+			},
+			Errors: []string{},
+		}
+
+		csrfResult := &CSRFScanResult{
+			Target:   cfg.Target,
+			Findings: allCSRFFindings,
+			Summary: CSRFSummary{
+				VulnerableForms: len(allCSRFFindings),
+			},
+			Errors: []string{},
+		}
+
+		ssrfResult := &SSRFScanResult{
+			Target:   cfg.Target,
+			Findings: allSSRFFindings,
+			Summary: SSRFSummary{
+				VulnerabilitiesFound: len(allSSRFFindings),
+			},
+			Errors: []string{},
+		}
+
+		// Verify findings if enabled
+		if cfg.VerifyFindings {
+			verifyConfig := VerificationConfig{
+				Enabled:    true,
+				MaxRetries: 3,
+				Delay:      500 * time.Millisecond,
+			}
+
+			// Track findings before verification
+			stats.TotalXSSFindings = len(xssResult.Findings)
+			stats.TotalSQLiFindings = len(sqliResult.Findings)
+			stats.TotalCSRFFindings = len(csrfResult.Findings)
+			stats.TotalSSRFFindings = len(ssrfResult.Findings)
+
+			// Verify findings (similar to ExecuteScan)
+			// Verify XSS findings
+			for i := range xssResult.Findings {
+				result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					xssResult.Findings[i].Verified = result.Verified
+					xssResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						xssResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						xssResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						xssResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify SQLi findings
+			for i := range sqliResult.Findings {
+				result, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					sqliResult.Findings[i].Verified = result.Verified
+					sqliResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						sqliResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						sqliResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						sqliResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify CSRF findings
+			for i := range csrfResult.Findings {
+				result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					csrfResult.Findings[i].Verified = result.Verified
+					csrfResult.Findings[i].VerificationAttempts = result.Attempts
+				}
+			}
+
+			// Verify SSRF findings
+			for i := range ssrfResult.Findings {
+				result, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					ssrfResult.Findings[i].Verified = result.Verified
+					ssrfResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						ssrfResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						ssrfResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						ssrfResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Filter out unverified findings
+			verifiedXSSFindings := make([]XSSFinding, 0)
+			for _, finding := range xssResult.Findings {
+				if finding.Verified {
+					verifiedXSSFindings = append(verifiedXSSFindings, finding)
+				}
+			}
+			xssResult.Findings = verifiedXSSFindings
+			xssResult.Summary.VulnerabilitiesFound = len(verifiedXSSFindings)
+
+			verifiedSQLiFindings := make([]SQLiFinding, 0)
+			for _, finding := range sqliResult.Findings {
+				if finding.Verified {
+					verifiedSQLiFindings = append(verifiedSQLiFindings, finding)
+				}
+			}
+			sqliResult.Findings = verifiedSQLiFindings
+			sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
+
+			verifiedCSRFFindings := make([]CSRFFinding, 0)
+			for _, finding := range csrfResult.Findings {
+				if finding.Verified {
+					verifiedCSRFFindings = append(verifiedCSRFFindings, finding)
+				}
+			}
+			csrfResult.Findings = verifiedCSRFFindings
+			csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
+
+			verifiedSSRFFindings := make([]SSRFFinding, 0)
+			for _, finding := range ssrfResult.Findings {
+				if finding.Verified {
+					verifiedSSRFFindings = append(verifiedSSRFFindings, finding)
+				}
+			}
+			ssrfResult.Findings = verifiedSSRFFindings
+			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
+		}
+
+		intermediateResult.XSS = xssResult
+		intermediateResult.SQLi = sqliResult
+		intermediateResult.CSRF = csrfResult
+		intermediateResult.SSRF = ssrfResult
+	}
+
+	// Create unified result
+	unifiedResult := NewUnifiedScanResult(
+		cfg.Target,
+		cfg.SafeMode,
+		intermediateResult.Headers,
+		intermediateResult.XSS,
+		intermediateResult.SQLi,
+		intermediateResult.CSRF,
+		intermediateResult.SSRF,
+		intermediateResult.Errors,
+	)
+
+	return unifiedResult, stats
+}
+
+// scanTargetForXSS scans a single discovered target for XSS vulnerabilities.
+func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) []XSSFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}
+
+// scanTargetForSQLi scans a single discovered target for SQL injection vulnerabilities.
+func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) []SQLiFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}
+
+// scanTargetForCSRF scans a single discovered target for CSRF vulnerabilities.
+func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target DiscoveredTarget) []CSRFFinding {
+	// Only scan POST forms for CSRF
+	if !strings.EqualFold(target.Method, "POST") {
+		return []CSRFFinding{}
+	}
+
+	// Parse URL to get the page that contains the form
+	parsedURL, err := url.Parse(target.URL)
+	if err != nil {
+		return []CSRFFinding{}
+	}
+
+	// Scan the page containing the form
+	result := scanner.Scan(ctx, fmt.Sprintf("%s://%s%s", parsedURL.Scheme, parsedURL.Host, parsedURL.Path))
+	return result.Findings
+}
+
+// scanTargetForSSRF scans a single discovered target for SSRF vulnerabilities.
+func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) []SSRFFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}

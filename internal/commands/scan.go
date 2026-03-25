@@ -28,6 +28,9 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var safeMode bool
 	var active bool
 	var verify bool
+	var discover bool
+	var crawlDepth int
+	var concurrency int
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -76,7 +79,8 @@ Examples:
   wast scan https://example.com --active --verify  # Active testing with verification
   wast scan https://example.com --output json      # JSON output for AI
   wast scan https://example.com --timeout 60       # Custom timeout
-  wast scan https://example.com --rate-limit 1     # 1 request per second`,
+  wast scan https://example.com --rate-limit 1     # 1 request per second
+  wast scan https://example.com --discover --active # Crawl then scan discovered endpoints`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
@@ -145,18 +149,40 @@ Examples:
 
 			// Create scan configuration
 			ctx := context.Background()
-			scanCfg := scanner.ScanConfig{
-				Target:          target,
-				Timeout:         timeout,
-				SafeMode:        safeMode,
-				VerifyFindings:  verify,
-				AuthConfig:      authConfig,
-				RateLimitConfig: rateLimitConfig,
-				Tracer:          nil, // CLI doesn't use tracing
-			}
 
-			// Execute the scan using the shared executor
-			unifiedResult, stats := scanner.ExecuteScan(ctx, scanCfg)
+			var unifiedResult *scanner.UnifiedScanResult
+			var stats *scanner.ScanStats
+
+			// If discovery mode is enabled, use discovery scan
+			if discover {
+				discoveryCfg := scanner.DiscoveryScanConfig{
+					ScanConfig: scanner.ScanConfig{
+						Target:          target,
+						Timeout:         timeout,
+						SafeMode:        safeMode,
+						VerifyFindings:  verify,
+						AuthConfig:      authConfig,
+						RateLimitConfig: rateLimitConfig,
+						Tracer:          nil, // CLI doesn't use tracing
+					},
+					CrawlDepth:  crawlDepth,
+					Concurrency: concurrency,
+					Discover:    true,
+				}
+				unifiedResult, stats = scanner.ExecuteDiscoveryScan(ctx, discoveryCfg)
+			} else {
+				scanCfg := scanner.ScanConfig{
+					Target:          target,
+					Timeout:         timeout,
+					SafeMode:        safeMode,
+					VerifyFindings:  verify,
+					AuthConfig:      authConfig,
+					RateLimitConfig: rateLimitConfig,
+					Tracer:          nil, // CLI doesn't use tracing
+				}
+				// Execute the scan using the shared executor
+				unifiedResult, stats = scanner.ExecuteScan(ctx, scanCfg)
+			}
 
 			// Report filtered findings count (in text mode only)
 			if verify && formatter.Format() == output.FormatText {
@@ -194,6 +220,9 @@ Examples:
 	cmd.Flags().BoolVar(&safeMode, "safe-mode", true, "Run in safe mode (passive checks only, no active vulnerability testing)")
 	cmd.Flags().BoolVar(&active, "active", false, "Enable active vulnerability testing (same as --safe-mode=false)")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Enable finding verification to reduce false positives (requires --active)")
+	cmd.Flags().BoolVar(&discover, "discover", false, "First crawl the target to discover forms and endpoints, then scan all discovered attack surfaces")
+	cmd.Flags().IntVar(&crawlDepth, "depth", 2, "Maximum crawl depth for discovery mode (used with --discover)")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for crawling (used with --discover)")
 
 	return cmd
 }

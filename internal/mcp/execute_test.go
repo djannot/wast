@@ -172,7 +172,7 @@ func TestExecuteScan(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, authConfig, rateLimitConfig, nil)
+			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, false, 2, 5, authConfig, rateLimitConfig, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -242,7 +242,7 @@ func TestExecuteScanWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig, nil)
+	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with auth returned nil")
@@ -268,7 +268,7 @@ func TestExecuteScanWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 5.0,
 	}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, authConfig, rateLimitConfig, nil)
+	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, authConfig, rateLimitConfig, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with rate limit returned nil")

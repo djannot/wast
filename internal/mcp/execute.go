@@ -67,12 +67,32 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
 		ctx, span = tracer.Start(ctx, "wast.scan")
 		defer span.End()
+	}
+
+	// If discovery mode is enabled, use discovery scan
+	if discover {
+		discoveryCfg := scanner.DiscoveryScanConfig{
+			ScanConfig: scanner.ScanConfig{
+				Target:          target,
+				Timeout:         timeout,
+				SafeMode:        safeMode,
+				VerifyFindings:  verifyFindings,
+				AuthConfig:      authConfig,
+				RateLimitConfig: rateLimitConfig,
+				Tracer:          tracer,
+			},
+			CrawlDepth:  depth,
+			Concurrency: concurrency,
+			Discover:    true,
+		}
+		unifiedResult, _ := scanner.ExecuteDiscoveryScan(ctx, discoveryCfg)
+		return unifiedResult
 	}
 
 	// Create scan configuration
