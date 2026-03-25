@@ -283,9 +283,9 @@ wast --mcp
 | Tool Name | Description | Parameters |
 |-----------|-------------|------------|
 | `wast_recon` | Reconnaissance and information gathering | `target`, `timeout`, `include_subdomains` |
-| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active` |
-| `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots` |
-| `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout` |
+| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
+| `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
+| `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 
 **MCP Integration Example (Claude Desktop):**
 
@@ -310,6 +310,53 @@ Claude: [Uses wast_scan tool with target="https://example.com"]
 
 User: "Perform reconnaissance on test.com and include subdomains"
 Claude: [Uses wast_recon tool with include_subdomains=true]
+
+User: "Scan api.example.com with bearer token authentication"
+Claude: [Uses wast_scan tool with bearer_token="your-token-here"]
+```
+
+**Authentication Parameters:**
+
+All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`) support authentication parameters for testing protected endpoints:
+
+- `bearer_token` (string): Bearer token for Authorization header
+- `basic_auth` (string): Basic auth credentials in format 'user:pass'
+- `auth_header` (string): Custom auth header in format 'HeaderName: Value'
+- `cookies` (array of strings): Cookies to include in requests (format: 'name=value')
+
+**Authentication Examples:**
+
+```javascript
+// Bearer token authentication
+{
+  "target": "https://api.example.com",
+  "bearer_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+// Basic authentication
+{
+  "target": "https://example.com/admin",
+  "basic_auth": "admin:secretpassword"
+}
+
+// Custom header authentication
+{
+  "target": "https://api.example.com",
+  "auth_header": "X-API-Key: abc123xyz789"
+}
+
+// Cookie-based authentication
+{
+  "target": "https://app.example.com",
+  "cookies": ["session=abc123", "user_id=456"]
+}
+
+// Multiple authentication methods (combined)
+{
+  "target": "https://api.example.com",
+  "bearer_token": "token123",
+  "cookies": ["session=xyz789"]
+}
 ```
 
 **MCP Protocol Details:**

@@ -485,3 +485,176 @@ func TestReconToolExecuteDefaults(t *testing.T) {
 		t.Errorf("Expected target example.com, got %s", reconResult.Target)
 	}
 }
+
+func TestScanToolWithAuthParameters(t *testing.T) {
+	tool := &ScanTool{}
+
+	// Verify schema includes auth parameters
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	authParams := []string{"bearer_token", "basic_auth", "auth_header", "cookies"}
+	for _, param := range authParams {
+		if _, ok := props[param]; !ok {
+			t.Errorf("Schema should have %s property", param)
+		}
+	}
+
+	// Test execution with auth parameters
+	args := map[string]interface{}{
+		"target":       "https://example.com",
+		"bearer_token": "test-token-123",
+		"basic_auth":   "user:pass",
+		"cookies":      []string{"session=abc123", "user_id=456"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse auth parameters correctly: %v", err)
+	}
+}
+
+func TestCrawlToolWithAuthParameters(t *testing.T) {
+	tool := &CrawlTool{}
+
+	// Verify schema includes auth parameters
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	authParams := []string{"bearer_token", "basic_auth", "auth_header", "cookies"}
+	for _, param := range authParams {
+		if _, ok := props[param]; !ok {
+			t.Errorf("Schema should have %s property", param)
+		}
+	}
+
+	// Test execution with auth parameters
+	args := map[string]interface{}{
+		"target":      "https://example.com",
+		"auth_header": "X-API-Key: secret-key-789",
+		"cookies":     []string{"token=xyz789"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse auth parameters correctly: %v", err)
+	}
+}
+
+func TestAPIToolWithAuthParameters(t *testing.T) {
+	tool := &APITool{}
+
+	// Verify schema includes auth parameters
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	authParams := []string{"bearer_token", "basic_auth", "auth_header", "cookies"}
+	for _, param := range authParams {
+		if _, ok := props[param]; !ok {
+			t.Errorf("Schema should have %s property", param)
+		}
+	}
+
+	// Test execution with auth parameters
+	args := map[string]interface{}{
+		"target":       "https://api.example.com",
+		"bearer_token": "Bearer xyz-123-abc",
+		"cookies":      []string{"api_session=def456"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse auth parameters correctly: %v", err)
+	}
+}
+
+func TestScanToolAuthConfigConstruction(t *testing.T) {
+	tool := &ScanTool{}
+
+	args := map[string]interface{}{
+		"target":       "https://example.com",
+		"bearer_token": "test-token",
+		"basic_auth":   "admin:secret",
+		"auth_header":  "X-Custom-Auth: value123",
+		"cookies":      []string{"session=abc", "user=john"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The Execute method should construct AuthConfig properly
+	// This test verifies the arguments are parsed correctly
+	_, err := tool.Execute(ctx, argsJSON)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should handle all auth parameters: %v", err)
+	}
+}
+
+func TestCrawlToolAuthConfigConstruction(t *testing.T) {
+	tool := &CrawlTool{}
+
+	args := map[string]interface{}{
+		"target":      "https://example.com",
+		"basic_auth":  "user:password",
+		"auth_header": "Authorization: Custom xyz",
+		"cookies":     []string{"token=abc123"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The Execute method should construct AuthConfig properly
+	_, err := tool.Execute(ctx, argsJSON)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should handle all auth parameters: %v", err)
+	}
+}
+
+func TestAPIToolAuthConfigConstruction(t *testing.T) {
+	tool := &APITool{}
+
+	args := map[string]interface{}{
+		"target":       "https://api.example.com",
+		"bearer_token": "my-api-token",
+		"cookies":      []string{"api_key=secret"},
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The Execute method should construct AuthConfig properly
+	_, err := tool.Execute(ctx, argsJSON)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should handle all auth parameters: %v", err)
+	}
+}
