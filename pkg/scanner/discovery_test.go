@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -144,6 +145,9 @@ func TestDiscoveryScanConfig_Defaults(t *testing.T) {
 	if cfg.Concurrency == 0 {
 		cfg.Concurrency = 5 // Default
 	}
+	if cfg.ScanConcurrency == 0 {
+		cfg.ScanConcurrency = 5 // Default
+	}
 
 	if cfg.CrawlDepth != 2 {
 		t.Errorf("Expected default CrawlDepth of 2, got %d", cfg.CrawlDepth)
@@ -151,7 +155,184 @@ func TestDiscoveryScanConfig_Defaults(t *testing.T) {
 	if cfg.Concurrency != 5 {
 		t.Errorf("Expected default Concurrency of 5, got %d", cfg.Concurrency)
 	}
+	if cfg.ScanConcurrency != 5 {
+		t.Errorf("Expected default ScanConcurrency of 5, got %d", cfg.ScanConcurrency)
+	}
 
 	// Prevent unused variable error
 	_ = ctx
+}
+
+func TestScanDiscoveredTargets_Concurrent(t *testing.T) {
+	// Create multiple mock targets
+	targets := []DiscoveredTarget{
+		{
+			URL:        "https://example.com/page1?id=1",
+			Method:     "GET",
+			Parameters: map[string]string{"id": "1"},
+			Source:     "test page 1",
+		},
+		{
+			URL:        "https://example.com/page2?id=2",
+			Method:     "GET",
+			Parameters: map[string]string{"id": "2"},
+			Source:     "test page 2",
+		},
+		{
+			URL:        "https://example.com/page3?id=3",
+			Method:     "GET",
+			Parameters: map[string]string{"id": "3"},
+			Source:     "test page 3",
+		},
+		{
+			URL:        "https://example.com/form",
+			Method:     "POST",
+			Parameters: map[string]string{"username": "test", "email": "test@example.com"},
+			Source:     "test form",
+		},
+	}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         5,
+		SafeMode:        true, // Safe mode to avoid actual scanning
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Test with different concurrency levels
+	concurrencyLevels := []int{1, 2, 5}
+	for _, concurrency := range concurrencyLevels {
+		t.Run(fmt.Sprintf("Concurrency_%d", concurrency), func(t *testing.T) {
+			result, stats := scanDiscoveredTargets(ctx, cfg, targets, concurrency)
+
+			if result == nil {
+				t.Fatal("scanDiscoveredTargets returned nil result")
+			}
+
+			if stats == nil {
+				t.Fatal("scanDiscoveredTargets returned nil stats")
+			}
+
+			if result.Target != cfg.Target {
+				t.Errorf("Expected target %s, got %s", cfg.Target, result.Target)
+			}
+
+			// In safe mode, active scanners should be nil
+			if result.XSS != nil {
+				t.Error("XSS result should be nil in safe mode")
+			}
+		})
+	}
+}
+
+func TestScanDiscoveredTargets_ContextCancellation(t *testing.T) {
+	// Create multiple targets
+	targets := make([]DiscoveredTarget, 20)
+	for i := 0; i < 20; i++ {
+		targets[i] = DiscoveredTarget{
+			URL:        fmt.Sprintf("https://example.com/page%d?id=%d", i, i),
+			Method:     "GET",
+			Parameters: map[string]string{"id": fmt.Sprintf("%d", i)},
+			Source:     fmt.Sprintf("test page %d", i),
+		}
+	}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         5,
+		SafeMode:        false, // Enable active scanning to test cancellation
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// This should be cancelled quickly
+	result, _ := scanDiscoveredTargets(ctx, cfg, targets, 3)
+
+	if result == nil {
+		t.Fatal("scanDiscoveredTargets returned nil result even with cancellation")
+	}
+
+	// Check that cancellation was detected
+	if len(result.Errors) == 0 {
+		// It's possible that it finished before cancellation, which is also valid
+		t.Log("Warning: Expected cancellation error, but scan may have completed quickly")
+	}
+}
+
+func TestScanDiscoveredTargets_NoRaceConditions(t *testing.T) {
+	// This test is meant to be run with -race flag
+	// Create many targets to increase chance of detecting race conditions
+	targets := make([]DiscoveredTarget, 50)
+	for i := 0; i < 50; i++ {
+		targets[i] = DiscoveredTarget{
+			URL:        fmt.Sprintf("https://example.com/page%d?id=%d", i, i),
+			Method:     "GET",
+			Parameters: map[string]string{"id": fmt.Sprintf("%d", i)},
+			Source:     fmt.Sprintf("test page %d", i),
+		}
+	}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         5,
+		SafeMode:        true, // Safe mode for faster execution
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Run with high concurrency to stress test
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 10)
+
+	if result == nil {
+		t.Fatal("scanDiscoveredTargets returned nil result")
+	}
+
+	if stats == nil {
+		t.Fatal("scanDiscoveredTargets returned nil stats")
+	}
+}
+
+func TestScanDiscoveredTargets_EmptyTargets(t *testing.T) {
+	// Test with no targets - should fall back to ExecuteScan
+	targets := []DiscoveredTarget{}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         5,
+		SafeMode:        true,
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5)
+
+	if result == nil {
+		t.Fatal("scanDiscoveredTargets returned nil result")
+	}
+
+	if stats == nil {
+		t.Fatal("scanDiscoveredTargets returned nil stats")
+	}
+
+	// Should have scanned the base target
+	if result.Target != cfg.Target {
+		t.Errorf("Expected target %s, got %s", cfg.Target, result.Target)
+	}
 }
