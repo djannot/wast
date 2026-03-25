@@ -1249,3 +1249,194 @@ func TestXSSScanner_DOMXSSRemediation(t *testing.T) {
 		}
 	}
 }
+
+// mockXSSHTTPClientWithBody is a mock that can return specific body content
+type mockXSSHTTPClientWithBody struct {
+	mockResponses map[string]string
+}
+
+func (m *mockXSSHTTPClientWithBody) Do(req *http.Request) (*http.Response, error) {
+	// Extract the query parameter value and echo it back in the response
+	// This simulates a reflected XSS vulnerability
+	queryParams := req.URL.Query()
+	payload := ""
+	for _, values := range queryParams {
+		for _, v := range values {
+			payload = v
+			break
+		}
+		if payload != "" {
+			break
+		}
+	}
+
+	// Get the template body
+	bodyStr := ""
+	if body, ok := m.mockResponses["default"]; ok {
+		bodyStr = body
+	} else {
+		for _, body := range m.mockResponses {
+			bodyStr = body
+			break
+		}
+	}
+
+	// For XSS verification, reflect the payload back in the response
+	// Replace any existing XSS payload with the variant being tested
+	if payload != "" {
+		// Match common patterns and replace with the variant
+		if strings.Contains(bodyStr, "<img src=x onerror=alert('XSS')>") {
+			bodyStr = strings.ReplaceAll(bodyStr, "<img src=x onerror=alert('XSS')>", payload)
+		} else if strings.Contains(bodyStr, "&lt;img") {
+			// Keep encoded for false positive test
+		} else {
+			// Just append the payload to simulate reflection
+			bodyStr = strings.ReplaceAll(bodyStr, "</body>", payload+"</body>")
+		}
+	}
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(bodyStr)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestXSSScanner_VerifyFinding(t *testing.T) {
+	tests := []struct {
+		name            string
+		finding         *XSSFinding
+		mockResponses   map[string]string
+		expectedVerif   bool
+		expectedMinConf float64
+	}{
+		{
+			name: "verified reflected XSS - simple case",
+			finding: &XSSFinding{
+				URL:       "https://example.com/search?q=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E",
+				Parameter: "q",
+				Payload:   "<img src=x onerror=alert('XSS')>",
+				Type:      "reflected",
+			},
+			mockResponses: map[string]string{
+				"default": "<html><body><img src=x onerror=alert('XSS')></body></html>",
+			},
+			expectedVerif:   true,
+			expectedMinConf: 0.5,
+		},
+		{
+			name: "false positive - encoded response",
+			finding: &XSSFinding{
+				URL:       "https://example.com/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E",
+				Parameter: "q",
+				Payload:   "<script>alert('XSS')</script>",
+				Type:      "reflected",
+			},
+			mockResponses: map[string]string{
+				"default": "<html><body>&lt;script&gt;alert('XSS')&lt;/script&gt;</body></html>",
+			},
+			expectedVerif:   false,
+			expectedMinConf: 0.0,
+		},
+		{
+			name: "DOM-based XSS (always verified through static analysis)",
+			finding: &XSSFinding{
+				URL:       "https://example.com/",
+				Parameter: "DOM-based",
+				Payload:   "Sink: innerHTML, Sources: location.hash",
+				Type:      "dom",
+			},
+			mockResponses:   map[string]string{},
+			expectedVerif:   true,
+			expectedMinConf: 0.7,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockXSSHTTPClientWithBody{
+				mockResponses: tt.mockResponses,
+			}
+
+			scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+			config := VerificationConfig{
+				Enabled:    true,
+				MaxRetries: 3,
+				Delay:      10 * time.Millisecond,
+			}
+
+			ctx := context.Background()
+			result, err := scanner.VerifyFinding(ctx, tt.finding, config)
+
+			if err != nil {
+				t.Fatalf("VerifyFinding returned error: %v", err)
+			}
+
+			if result == nil {
+				t.Fatal("VerifyFinding returned nil result")
+			}
+
+			if result.Verified != tt.expectedVerif {
+				t.Errorf("Expected Verified=%v, got %v", tt.expectedVerif, result.Verified)
+			}
+
+			if result.Confidence < tt.expectedMinConf {
+				t.Errorf("Expected Confidence >= %.2f, got %.2f", tt.expectedMinConf, result.Confidence)
+			}
+
+			if result.Attempts <= 0 {
+				t.Errorf("Expected Attempts > 0, got %d", result.Attempts)
+			}
+		})
+	}
+}
+
+func TestXSSScanner_GeneratePayloadVariants(t *testing.T) {
+	scanner := NewXSSScanner()
+
+	tests := []struct {
+		name             string
+		payload          string
+		expectedMinCount int
+	}{
+		{
+			name:             "script tag payload",
+			payload:          "<script>alert('XSS')</script>",
+			expectedMinCount: 2,
+		},
+		{
+			name:             "img onerror payload",
+			payload:          "<img src=x onerror=alert('XSS')>",
+			expectedMinCount: 2,
+		},
+		{
+			name:             "svg onload payload",
+			payload:          "<svg/onload=alert('XSS')>",
+			expectedMinCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			variants := scanner.generatePayloadVariants(tt.payload)
+
+			if len(variants) < tt.expectedMinCount {
+				t.Errorf("Expected at least %d variants, got %d", tt.expectedMinCount, len(variants))
+			}
+
+			// First variant should be the original
+			if variants[0] != tt.payload {
+				t.Errorf("Expected first variant to be original payload, got %s", variants[0])
+			}
+
+			// Check for uniqueness
+			seen := make(map[string]bool)
+			for _, v := range variants {
+				if seen[v] {
+					t.Errorf("Duplicate variant found: %s", v)
+				}
+				seen[v] = true
+			}
+		})
+	}
+}

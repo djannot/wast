@@ -34,15 +34,17 @@ type XSSScanResult struct {
 
 // XSSFinding represents a single XSS vulnerability finding.
 type XSSFinding struct {
-	URL         string `json:"url" yaml:"url"`
-	Parameter   string `json:"parameter" yaml:"parameter"`
-	Payload     string `json:"payload" yaml:"payload"`
-	Evidence    string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Severity    string `json:"severity" yaml:"severity"`
-	Type        string `json:"type" yaml:"type"` // "reflected", "stored", "dom"
-	Description string `json:"description" yaml:"description"`
-	Remediation string `json:"remediation" yaml:"remediation"`
-	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+	URL                  string `json:"url" yaml:"url"`
+	Parameter            string `json:"parameter" yaml:"parameter"`
+	Payload              string `json:"payload" yaml:"payload"`
+	Evidence             string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Severity             string `json:"severity" yaml:"severity"`
+	Type                 string `json:"type" yaml:"type"` // "reflected", "stored", "dom"
+	Description          string `json:"description" yaml:"description"`
+	Remediation          string `json:"remediation" yaml:"remediation"`
+	Confidence           string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+	Verified             bool   `json:"verified" yaml:"verified"`
+	VerificationAttempts int    `json:"verification_attempts,omitempty" yaml:"verification_attempts,omitempty"`
 }
 
 // XSSSummary provides an overview of the XSS scan results.
@@ -52,6 +54,21 @@ type XSSSummary struct {
 	HighSeverityCount    int `json:"high_severity_count" yaml:"high_severity_count"`
 	MediumSeverityCount  int `json:"medium_severity_count" yaml:"medium_severity_count"`
 	LowSeverityCount     int `json:"low_severity_count" yaml:"low_severity_count"`
+}
+
+// VerificationResult represents the result of a finding verification.
+type VerificationResult struct {
+	Verified    bool    `json:"verified" yaml:"verified"`
+	Attempts    int     `json:"attempts" yaml:"attempts"`
+	Confidence  float64 `json:"confidence" yaml:"confidence"` // 0.0 to 1.0
+	Explanation string  `json:"explanation" yaml:"explanation"`
+}
+
+// VerificationConfig controls how finding verification is performed.
+type VerificationConfig struct {
+	Enabled    bool          `json:"enabled" yaml:"enabled"`
+	MaxRetries int           `json:"max_retries" yaml:"max_retries"`
+	Delay      time.Duration `json:"delay" yaml:"delay"`
 }
 
 // xssPayload represents a test payload for XSS detection.
@@ -850,6 +867,169 @@ func (s *XSSScanner) extractDOMEvidence(scriptContent string, pattern *regexp.Re
 	snippet = strings.TrimSpace(snippet)
 
 	return fmt.Sprintf("...%s...", snippet)
+}
+
+// VerifyFinding re-tests an XSS finding with payload variants to confirm it's reproducible.
+func (s *XSSScanner) VerifyFinding(ctx context.Context, finding *XSSFinding, config VerificationConfig) (*VerificationResult, error) {
+	if finding == nil {
+		return nil, fmt.Errorf("finding is nil")
+	}
+
+	// DOM-based findings are not verified through re-testing with payloads
+	if finding.Type == "dom" {
+		return &VerificationResult{
+			Verified:    true,
+			Attempts:    1,
+			Confidence:  0.7,
+			Explanation: "DOM-based XSS findings are verified through static analysis",
+		}, nil
+	}
+
+	// Generate payload variants for verification
+	variants := s.generatePayloadVariants(finding.Payload)
+
+	// Parse the original URL to extract parameters
+	parsedURL, err := url.Parse(finding.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL in finding: %w", err)
+	}
+
+	successCount := 0
+	totalAttempts := 0
+	maxAttempts := config.MaxRetries
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	// Test each variant
+	for i, variant := range variants {
+		if i >= maxAttempts {
+			break
+		}
+
+		// Apply rate limiting before making the request
+		if s.rateLimiter != nil {
+			if err := s.rateLimiter.Wait(ctx); err != nil {
+				return nil, fmt.Errorf("rate limiting error: %w", err)
+			}
+		}
+
+		// Apply delay between attempts if configured
+		if i > 0 && config.Delay > 0 {
+			time.Sleep(config.Delay)
+		}
+
+		totalAttempts++
+
+		// Test with the variant payload
+		testURL := *parsedURL
+		q := testURL.Query()
+		q.Set(finding.Parameter, variant)
+		testURL.RawQuery = q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+		if err != nil {
+			continue
+		}
+
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		// Check if variant is reflected and executable
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, variant) {
+			_, isExecutable, _ := s.analyzeContext(bodyStr, variant)
+			if isExecutable {
+				successCount++
+			}
+		}
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+
+	// Calculate verification result
+	confidence := float64(successCount) / float64(totalAttempts)
+	verified := confidence >= 0.5 // At least 50% of variants must succeed
+
+	explanation := fmt.Sprintf("Verified %d out of %d payload variants successfully reproduced the vulnerability",
+		successCount, totalAttempts)
+
+	if !verified {
+		explanation = fmt.Sprintf("Only %d out of %d payload variants reproduced the vulnerability - likely a false positive",
+			successCount, totalAttempts)
+	}
+
+	return &VerificationResult{
+		Verified:    verified,
+		Attempts:    totalAttempts,
+		Confidence:  confidence,
+		Explanation: explanation,
+	}, nil
+}
+
+// generatePayloadVariants creates different encodings and variations of the original payload.
+func (s *XSSScanner) generatePayloadVariants(originalPayload string) []string {
+	variants := make([]string, 0)
+
+	// Add the original payload
+	variants = append(variants, originalPayload)
+
+	// Case variations
+	if strings.Contains(originalPayload, "<script>") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "<script>", "<SCRIPT>"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "<script>", "<ScRiPt>"))
+	}
+
+	// Different quote styles
+	if strings.Contains(originalPayload, "alert('XSS')") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "alert('XSS')", "alert(\"XSS\")"))
+		variants = append(variants, strings.ReplaceAll(originalPayload, "alert('XSS')", "alert(`XSS`)"))
+	}
+
+	// URL encoding variations
+	if strings.Contains(originalPayload, "<") {
+		urlEncoded := strings.ReplaceAll(originalPayload, "<", "%3C")
+		urlEncoded = strings.ReplaceAll(urlEncoded, ">", "%3E")
+		variants = append(variants, urlEncoded)
+	}
+
+	// Alternative event handlers
+	if strings.Contains(originalPayload, "onerror") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "onerror", "onload"))
+	}
+	if strings.Contains(originalPayload, "onload") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "onload", "onerror"))
+	}
+
+	// HTML5 variations
+	if strings.Contains(originalPayload, "<img") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "<img", "<svg"))
+	}
+	if strings.Contains(originalPayload, "<svg") {
+		variants = append(variants, strings.ReplaceAll(originalPayload, "<svg", "<img"))
+	}
+
+	return variants
 }
 
 // String returns a human-readable representation of the scan result.
