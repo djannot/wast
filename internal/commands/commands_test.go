@@ -146,6 +146,85 @@ func TestInterceptCmd(t *testing.T) {
 	}
 }
 
+func TestServeCmd(t *testing.T) {
+	cmd := NewServeCmd(testFormatter(&bytes.Buffer{}))
+
+	// Test command structure (not execution since it's a blocking server)
+	// Note: The serve command starts a blocking MCP server over stdio with signal handling.
+	// Comprehensive testing would require extensive mocking of the MCP server, stdio,
+	// and signal handling. We test the command structure and flag registration here.
+	if cmd.Use != "serve" {
+		t.Errorf("Expected Use 'serve', got %s", cmd.Use)
+	}
+
+	// Test that flags are registered
+	mcpFlag := cmd.Flag("mcp")
+	if mcpFlag == nil {
+		t.Error("Expected 'mcp' flag to be registered")
+	} else {
+		if mcpFlag.DefValue != "true" {
+			t.Errorf("Expected default mcp to be true, got %s", mcpFlag.DefValue)
+		}
+	}
+
+	// Test short and long description
+	if cmd.Short == "" {
+		t.Error("Expected short description to be set")
+	}
+	if cmd.Long == "" {
+		t.Error("Expected long description to be set")
+	}
+}
+
+func TestServeCmdFlags(t *testing.T) {
+	cmd := NewServeCmd(testFormatter(&bytes.Buffer{}))
+
+	tests := []struct {
+		flagName     string
+		expectedType string
+		hasDefault   bool
+		defaultValue string
+	}{
+		{"mcp", "bool", true, "true"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.flagName, func(t *testing.T) {
+			flag := cmd.Flag(tt.flagName)
+			if flag == nil {
+				t.Errorf("Expected flag '%s' to be registered", tt.flagName)
+				return
+			}
+
+			if tt.hasDefault && flag.DefValue != tt.defaultValue {
+				t.Errorf("Expected default value '%s' for flag '%s', got '%s'",
+					tt.defaultValue, tt.flagName, flag.DefValue)
+			}
+		})
+	}
+}
+
+func TestServeCommandDescriptions(t *testing.T) {
+	cmd := NewServeCmd(testFormatter(&bytes.Buffer{}))
+
+	expectedShort := "Start WAST in server mode"
+	if cmd.Short != expectedShort {
+		t.Errorf("Expected Short '%s', got '%s'", expectedShort, cmd.Short)
+	}
+
+	if cmd.Long == "" {
+		t.Error("Expected long description to be set")
+	}
+
+	// Verify the long description contains key information about MCP
+	if !strings.Contains(cmd.Long, "Model Context Protocol") {
+		t.Error("Expected long description to mention Model Context Protocol")
+	}
+	if !strings.Contains(cmd.Long, "JSON-RPC 2.0") {
+		t.Error("Expected long description to mention JSON-RPC 2.0")
+	}
+}
+
 func TestScanCmd(t *testing.T) {
 	var buf bytes.Buffer
 	cmd := NewScanCmd(testFormatter(&buf), testAuthConfig, testRateLimitConfig)
@@ -1159,6 +1238,7 @@ func TestCommandDescriptions(t *testing.T) {
 		{"scan", NewScanCmd(testFormatter(&bytes.Buffer{}), testAuthConfig, testRateLimitConfig), true, true},
 		{"api", NewAPICmd(testFormatter(&bytes.Buffer{}), testAuthConfig, testRateLimitConfig), true, true},
 		{"intercept", NewInterceptCmd(testFormatter(&bytes.Buffer{}), testAuthConfig), true, true},
+		{"serve", NewServeCmd(testFormatter(&bytes.Buffer{})), true, true},
 	}
 
 	for _, tt := range tests {
