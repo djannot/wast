@@ -180,6 +180,80 @@ wast scan https://example.com --quiet
 wast scan https://example.com --verbose
 ```
 
+### OpenTelemetry Tracing
+
+WAST supports OpenTelemetry (OTEL) tracing for comprehensive observability of scan operations. This enables you to monitor scan progress, identify performance bottlenecks, and correlate scan timing with findings.
+
+#### Configuration
+
+Telemetry is completely opt-in and has zero overhead when disabled. You can enable it in two ways:
+
+1. **Environment Variable** (recommended for automation):
+```bash
+export WAST_OTEL_ENDPOINT=localhost:4317
+wast --mcp
+```
+
+2. **CLI Flag**:
+```bash
+wast --mcp --telemetry-endpoint localhost:4317
+```
+
+#### Optional Configuration
+
+You can customize the service name (default: "wast"):
+```bash
+export WAST_OTEL_SERVICE_NAME=my-wast-instance
+export WAST_OTEL_ENDPOINT=localhost:4317
+wast --mcp
+```
+
+#### Example: Running with Jaeger
+
+```bash
+# Start Jaeger all-in-one container
+docker run -d --name jaeger \
+  -p 4317:4317 \
+  -p 16686:16686 \
+  jaegertracing/all-in-one:latest
+
+# Set telemetry endpoint
+export WAST_OTEL_ENDPOINT=localhost:4317
+
+# Run WAST in MCP mode with telemetry
+wast --mcp
+
+# Open Jaeger UI at http://localhost:16686
+```
+
+#### Span Structure
+
+WAST emits spans for all major operations:
+
+```
+wast.scan
+├── wast.recon
+│   ├── wast.dns.enumerate
+│   └── wast.tls.analyze
+├── wast.scanner.headers
+├── wast.scanner.xss
+│   └── wast.http.request (per payload)
+├── wast.scanner.sqli
+├── wast.scanner.csrf
+└── wast.scanner.ssrf
+```
+
+#### Compatible Backends
+
+WAST uses the OTLP gRPC protocol and works with any compatible backend:
+- Jaeger
+- Zipkin
+- Honeycomb
+- Grafana Tempo
+- DataDog APM
+- New Relic
+- Any OTLP-compatible collector
+
 ## Project Structure
 
 ```

@@ -13,6 +13,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/html"
 )
 
@@ -23,6 +24,7 @@ type CSRFScanner struct {
 	timeout     time.Duration
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
+	tracer      trace.Tracer
 }
 
 // CSRFScanResult represents the result of a CSRF vulnerability scan.
@@ -122,6 +124,13 @@ func WithCSRFRateLimitConfig(cfg ratelimit.Config) CSRFOption {
 	}
 }
 
+// WithCSRFTracer sets the OpenTelemetry tracer for the CSRF scanner.
+func WithCSRFTracer(tracer trace.Tracer) CSRFOption {
+	return func(s *CSRFScanner) {
+		s.tracer = tracer
+	}
+}
+
 // NewCSRFScanner creates a new CSRFScanner with the given options.
 func NewCSRFScanner(opts ...CSRFOption) *CSRFScanner {
 	s := &CSRFScanner{
@@ -143,6 +152,13 @@ func NewCSRFScanner(opts ...CSRFOption) *CSRFScanner {
 
 // Scan performs a CSRF vulnerability scan on the given target URL.
 func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "wast.scanner.csrf")
+		defer span.End()
+	}
+
 	result := &CSRFScanResult{
 		Target:   targetURL,
 		Findings: make([]CSRFFinding, 0),

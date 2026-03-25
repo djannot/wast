@@ -12,6 +12,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/html"
 )
 
@@ -57,6 +58,7 @@ type Crawler struct {
 	authConfig    *auth.AuthConfig
 	rateLimiter   ratelimit.Limiter
 	concurrency   int
+	tracer        trace.Tracer
 }
 
 // Option is a function that configures a Crawler.
@@ -118,6 +120,13 @@ func WithRateLimitConfig(cfg ratelimit.Config) Option {
 	}
 }
 
+// WithTracer sets the OpenTelemetry tracer for the crawler.
+func WithTracer(tracer trace.Tracer) Option {
+	return func(cr *Crawler) {
+		cr.tracer = tracer
+	}
+}
+
 // WithConcurrency sets the number of concurrent workers for crawling.
 func WithConcurrency(n int) Option {
 	return func(cr *Crawler) {
@@ -157,6 +166,13 @@ type queueItem struct {
 
 // Crawl performs a web crawl starting from the given target URL.
 func (c *Crawler) Crawl(ctx context.Context, targetURL string) *CrawlResult {
+	// Create tracing span if tracer is available
+	if c.tracer != nil {
+		var span trace.Span
+		ctx, span = c.tracer.Start(ctx, "wast.crawl")
+		defer span.End()
+	}
+
 	result := &CrawlResult{
 		Target:        targetURL,
 		CrawledURLs:   make([]string, 0),

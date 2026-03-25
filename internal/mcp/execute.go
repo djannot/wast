@@ -14,6 +14,7 @@ import (
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/djannot/wast/pkg/tls"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ReconResult represents the result of a reconnaissance operation.
@@ -38,7 +39,14 @@ type CompleteScanResult struct {
 }
 
 // executeRecon performs reconnaissance on a target domain.
-func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool) interface{} {
+func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.recon")
+		defer span.End()
+	}
+
 	// Perform DNS enumeration
 	enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 	dnsResult := enumerator.Enumerate(target)
@@ -68,7 +76,14 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.scan")
+		defer span.End()
+	}
+
 	// Create scanner options
 	headerOpts := []scanner.Option{
 		scanner.WithTimeout(time.Duration(timeout) * time.Second),
@@ -102,6 +117,15 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		sqliOpts = append(sqliOpts, scanner.WithSQLiRateLimitConfig(rateLimitConfig))
 		csrfOpts = append(csrfOpts, scanner.WithCSRFRateLimitConfig(rateLimitConfig))
 		ssrfOpts = append(ssrfOpts, scanner.WithSSRFRateLimitConfig(rateLimitConfig))
+	}
+
+	// Add tracer if configured
+	if tracer != nil {
+		headerOpts = append(headerOpts, scanner.WithTracer(tracer))
+		xssOpts = append(xssOpts, scanner.WithXSSTracer(tracer))
+		sqliOpts = append(sqliOpts, scanner.WithSQLiTracer(tracer))
+		csrfOpts = append(csrfOpts, scanner.WithCSRFTracer(tracer))
+		ssrfOpts = append(ssrfOpts, scanner.WithSSRFTracer(tracer))
 	}
 
 	// Create scanners
@@ -297,7 +321,14 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 }
 
 // executeCrawl performs web crawling on a target URL.
-func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
+func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.mcp.crawl")
+		defer span.End()
+	}
+
 	// Create crawler with configured options
 	opts := []crawler.Option{
 		crawler.WithMaxDepth(depth),
@@ -317,6 +348,11 @@ func executeCrawl(ctx context.Context, target string, depth int, timeout time.Du
 		opts = append(opts, crawler.WithRateLimitConfig(rateLimitConfig))
 	}
 
+	// Add tracer if configured
+	if tracer != nil {
+		opts = append(opts, crawler.WithTracer(tracer))
+	}
+
 	c := crawler.NewCrawler(opts...)
 
 	// Create context with timeout
@@ -330,7 +366,13 @@ func executeCrawl(ctx context.Context, target string, depth int, timeout time.Du
 }
 
 // executeAPI performs API discovery and testing.
-func executeAPI(ctx context.Context, target string, specFile string, dryRun bool, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config) interface{} {
+func executeAPI(ctx context.Context, target string, specFile string, dryRun bool, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.api")
+		defer span.End()
+	}
 	// If --spec is provided, parse the specification and optionally test endpoints
 	if specFile != "" {
 		// Parse the specification
@@ -390,7 +432,13 @@ func executeAPI(ctx context.Context, target string, specFile string, dryRun bool
 }
 
 // executeIntercept performs traffic interception on the specified port.
-func executeIntercept(ctx context.Context, port int, duration time.Duration, saveFile string, httpsInterception bool, maxRequests int) interface{} {
+func executeIntercept(ctx context.Context, port int, duration time.Duration, saveFile string, httpsInterception bool, maxRequests int, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.intercept")
+		defer span.End()
+	}
 	// Create a context with timeout based on duration
 	timeoutCtx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
