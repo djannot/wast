@@ -101,12 +101,26 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
+// mcpServerRunner is a variable that can be overridden in tests
+var mcpServerRunner = runMCPServerImpl
+
 // runMCPServer starts the MCP server and handles graceful shutdown.
 func runMCPServer() {
+	mcpServerRunner()
+}
+
+// runMCPServerImpl is the actual implementation of runMCPServer
+func runMCPServerImpl() {
+	runMCPServerWithContext(context.Background())
+}
+
+// runMCPServerWithContext runs the MCP server with a provided parent context
+// This allows for better testing by controlling the context lifecycle
+func runMCPServerWithContext(parentCtx context.Context) {
 	server := mcp.NewServer()
 
 	// Set up context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	// Initialize telemetry if configured
