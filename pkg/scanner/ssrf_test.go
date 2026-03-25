@@ -600,6 +600,110 @@ local-ipv4`
 	}
 }
 
+func TestSSRFScanner_AnalyzeSSRFResponse_KubernetesMetadata(t *testing.T) {
+	scanner := NewSSRFScanner()
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+	}
+
+	body := `{
+  "apiVersion": "v1",
+  "kind": "NamespaceList",
+  "metadata": {
+    "resourceVersion": "12345"
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "default",
+        "namespace": "default"
+      }
+    }
+  ]
+}`
+
+	payload := ssrfPayload{Target: "k8s-metadata"}
+
+	confidence, evidence := scanner.analyzeSSRFResponse(resp, body, payload, 100*time.Millisecond)
+
+	if confidence != "high" {
+		t.Errorf("Expected high confidence for Kubernetes metadata, got %s", confidence)
+	}
+
+	if !strings.Contains(evidence, "Kubernetes") {
+		t.Errorf("Expected evidence to mention Kubernetes, got %s", evidence)
+	}
+}
+
+func TestSSRFScanner_Scan_KubernetesMetadata(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure mock to return Kubernetes API response
+	k8sMetadataResponse := `{
+  "apiVersion": "v1",
+  "kind": "SecretList",
+  "metadata": {
+    "resourceVersion": "54321"
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "default-token",
+        "namespace": "default"
+      },
+      "data": {
+        "token": "serviceAccountToken"
+      }
+    }
+  ]
+}`
+
+	mock.responses["https://example.com/proxy?url=http%3A%2F%2Fkubernetes.default.svc%2Fapi%2Fv1%2Fnamespaces"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(k8sMetadataResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/proxy?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SSRF vulnerability")
+	}
+
+	// Find the K8s metadata finding
+	var k8sFinding *SSRFFinding
+	for i := range result.Findings {
+		if strings.Contains(result.Findings[i].Description, "Kubernetes") {
+			k8sFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if k8sFinding == nil {
+		t.Fatal("Expected to find Kubernetes metadata vulnerability")
+	}
+
+	if k8sFinding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, k8sFinding.Severity)
+	}
+
+	if k8sFinding.Confidence != "high" {
+		t.Errorf("Expected high confidence, got %s", k8sFinding.Confidence)
+	}
+
+	if !strings.Contains(k8sFinding.Evidence, "Kubernetes") {
+		t.Errorf("Expected evidence to mention Kubernetes, got %s", k8sFinding.Evidence)
+	}
+}
+
 func TestSSRFScanner_VerifyFinding(t *testing.T) {
 	mock := newMockSSRFHTTPClient()
 
@@ -679,6 +783,9 @@ func TestSSRFScanner_ExtractTargetType(t *testing.T) {
 		{"http://169.254.169.254/latest/meta-data/", "aws-metadata"},
 		{"http://169.254.169.254/metadata/instance?api-version=2021-02-01", "azure-metadata"},
 		{"http://metadata.google.internal/computeMetadata/v1/", "gcp-metadata"},
+		{"http://kubernetes.default.svc/api/v1/namespaces", "k8s-metadata"},
+		{"http://kubernetes.default.svc.cluster.local/api/v1/secrets", "k8s-metadata"},
+		{"https://kubernetes.default.svc/api/v1/pods", "k8s-metadata"},
 		{"http://127.0.0.1", "localhost"},
 		{"http://localhost", "localhost"},
 		{"http://192.168.1.1", "private-network"},

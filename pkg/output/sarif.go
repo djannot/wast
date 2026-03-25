@@ -292,11 +292,11 @@ func buildAllRules() []SARIFRule {
 				Text: "Server-Side Request Forgery (SSRF) vulnerability detected",
 			},
 			FullDescription: SARIFMessage{
-				Text: "The application allows user-controlled input to specify URLs for server-side requests, potentially enabling access to internal resources, cloud metadata endpoints, or local files.",
+				Text: "The application allows user-controlled input to specify URLs for server-side requests, potentially enabling access to internal resources, cloud metadata endpoints (AWS, GCP, Azure, Kubernetes), or local files.",
 			},
 			Help: SARIFMessage{
-				Text:     "Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges. Disable support for dangerous URL schemes.",
-				Markdown: "**Remediation:** Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x). Disable support for unnecessary URL schemes (file://, dict://, gopher://, etc.). Implement network segmentation to prevent access to internal services.",
+				Text:     "Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges and Kubernetes service endpoints. Disable support for dangerous URL schemes.",
+				Markdown: "**Remediation:** Implement strict URL validation and sanitization. Use an allowlist of permitted domains/IPs. Block access to private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x). Block access to Kubernetes API endpoints (kubernetes.default.svc, kubernetes.default.svc.cluster.local). Disable support for unnecessary URL schemes (file://, dict://, gopher://, etc.). Implement network segmentation to prevent access to internal services.",
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWESSRF, "security", "ssrf", "injection"},

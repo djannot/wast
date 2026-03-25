@@ -165,6 +165,28 @@ var ssrfPayloads = []ssrfPayload{
 		Description: "Critical SSRF vulnerability - application allows access to Azure Instance Metadata Service",
 		Target:      "azure-metadata",
 	},
+	// Kubernetes metadata endpoints
+	{
+		Payload:     "http://kubernetes.default.svc/api/v1/namespaces",
+		Type:        "blind",
+		Severity:    SeverityHigh,
+		Description: "Critical SSRF vulnerability - application allows access to Kubernetes API (namespaces endpoint)",
+		Target:      "k8s-metadata",
+	},
+	{
+		Payload:     "http://kubernetes.default.svc.cluster.local/api/v1/secrets",
+		Type:        "blind",
+		Severity:    SeverityHigh,
+		Description: "Critical SSRF vulnerability - application allows access to Kubernetes API (secrets endpoint)",
+		Target:      "k8s-metadata",
+	},
+	{
+		Payload:     "https://kubernetes.default.svc/api/v1/pods",
+		Type:        "blind",
+		Severity:    SeverityHigh,
+		Description: "Critical SSRF vulnerability - application allows access to Kubernetes API (pods endpoint)",
+		Target:      "k8s-metadata",
+	},
 	// DNS rebinding detection patterns
 	{
 		Payload:     "http://127.0.0.1.nip.io",
@@ -405,6 +427,12 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 			}
 		}
 
+		if payload.Target == "k8s-metadata" {
+			if containsKubernetesMetadataSignature(body) {
+				return "high", "Response contains Kubernetes API signatures"
+			}
+		}
+
 		// Check for localhost/internal responses
 		if payload.Target == "localhost" {
 			// Look for common localhost service responses
@@ -522,6 +550,29 @@ func containsAzureMetadataSignature(body string) bool {
 		}
 	}
 
+	return matchCount >= 2
+}
+
+// containsKubernetesMetadataSignature checks if response contains Kubernetes API signatures.
+func containsKubernetesMetadataSignature(body string) bool {
+	signatures := []string{
+		"apiVersion",
+		"kind",
+		"metadata",
+		"namespace",
+		"items",
+		"serviceAccountToken",
+	}
+
+	bodyLower := strings.ToLower(body)
+	matchCount := 0
+	for _, sig := range signatures {
+		if strings.Contains(bodyLower, strings.ToLower(sig)) {
+			matchCount++
+		}
+	}
+
+	// If we find multiple Kubernetes-specific terms, it's likely Kubernetes API response
 	return matchCount >= 2
 }
 
@@ -928,6 +979,9 @@ func extractTargetType(payload string) string {
 	}
 	if strings.Contains(payload, "metadata.google.internal") {
 		return "gcp-metadata"
+	}
+	if strings.Contains(payload, "kubernetes.default.svc") {
+		return "k8s-metadata"
 	}
 
 	// Check for localhost and private network targets
