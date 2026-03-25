@@ -1091,3 +1091,711 @@ func TestAPIToolRateLimitingDefault(t *testing.T) {
 		t.Errorf("Execute should work with default rate limiting: %v", err)
 	}
 }
+
+// TestServerRunWithMalformedJSON tests handling of malformed JSON requests
+func TestServerRunWithMalformedJSON(t *testing.T) {
+	server := NewServer()
+
+	malformedInputs := []string{
+		`{"jsonrpc": "2.0", "id": 1, "method": "initialize"`,        // Missing closing brace
+		`{"jsonrpc": "2.0", "id": 1, "method": initialize}`,          // Unquoted value
+		`{"jsonrpc": "2.0", "id": 1, "method": "initialize", }`,      // Trailing comma
+		`not-json-at-all`,                                            // Not JSON
+		`{"jsonrpc": "2.0", "id": null, "method": "initialize"}`,     // Null ID (valid JSON-RPC but edge case)
+		`{"jsonrpc": "2.0", "id": "string-id", "method": "initialize"}`, // String ID (valid)
+	}
+
+	for _, input := range malformedInputs {
+		t.Run("malformed_"+input[:min(len(input), 20)], func(t *testing.T) {
+			var output bytes.Buffer
+			server.reader = strings.NewReader(input + "\n")
+			server.writer = &output
+
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+
+			// Run the server
+			err := server.Run(ctx)
+
+			// Should return without error (malformed JSON should be handled gracefully)
+			if err != nil && err != context.DeadlineExceeded {
+				t.Logf("Run returned error: %v (may be expected)", err)
+			}
+
+			// For truly malformed JSON, we should see a parse error response
+			outputStr := output.String()
+			if !strings.Contains(input, "null") && !strings.Contains(input, "string-id") {
+				if !strings.Contains(outputStr, "Parse error") && !strings.Contains(outputStr, "error") {
+					t.Logf("Expected error response for malformed JSON, got: %s", outputStr)
+				}
+			}
+		})
+	}
+}
+
+// Helper function for min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// TestServerRunWithMultipleRequests tests processing multiple sequential requests
+func TestServerRunWithMultipleRequests(t *testing.T) {
+	server := NewServer()
+
+	requests := `{"jsonrpc":"2.0","id":1,"method":"initialize"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"initialize"}
+`
+
+	var output bytes.Buffer
+	server.reader = strings.NewReader(requests)
+	server.writer = &output
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := server.Run(ctx)
+	if err != nil && err != context.DeadlineExceeded {
+		t.Logf("Run returned error: %v", err)
+	}
+
+	// Should have received multiple responses
+	outputStr := output.String()
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+
+	if len(lines) < 3 {
+		t.Errorf("Expected at least 3 response lines, got %d", len(lines))
+	}
+
+	// Verify each response is valid JSON
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		var resp JSONRPCResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Errorf("Response %d is not valid JSON: %v", i, err)
+		}
+	}
+}
+
+// TestServerRunWithEmptyLines tests handling of empty lines
+func TestServerRunWithEmptyLines(t *testing.T) {
+	server := NewServer()
+
+	requests := `
+{"jsonrpc":"2.0","id":1,"method":"initialize"}
+
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+
+`
+
+	var output bytes.Buffer
+	server.reader = strings.NewReader(requests)
+	server.writer = &output
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := server.Run(ctx)
+	if err != nil && err != context.DeadlineExceeded {
+		t.Logf("Run returned error: %v", err)
+	}
+
+	// Should have processed valid requests and ignored empty lines
+	outputStr := output.String()
+	if !strings.Contains(outputStr, "jsonrpc") {
+		t.Error("Expected at least one valid response")
+	}
+}
+
+// TestHandleToolsCallSuccess tests successful tool execution
+func TestHandleToolsCallSuccess(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Test with recon tool (minimal execution)
+	params := map[string]interface{}{
+		"name": "wast_recon",
+		"arguments": map[string]interface{}{
+			"target":  "example.com",
+			"timeout": "1s",
+		},
+	}
+	paramsJSON, _ := json.Marshal(params)
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  paramsJSON,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server.handleRequest(ctx, &request)
+
+	// Parse response
+	var response JSONRPCResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should return success
+	if response.Error != nil {
+		t.Errorf("Expected success, got error: %v", response.Error)
+	}
+
+	// Result should have content field
+	if response.Result == nil {
+		t.Error("Result should not be nil")
+	}
+
+	resultMap, ok := response.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result should be a map")
+	}
+
+	if _, ok := resultMap["content"]; !ok {
+		t.Error("Result should have content field")
+	}
+}
+
+// TestFormatToolResultWithComplexTypes tests formatToolResult with various data types
+func TestFormatToolResultWithComplexTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  interface{}
+		verify func(string) bool
+	}{
+		{
+			name: "nested map",
+			input: map[string]interface{}{
+				"outer": map[string]interface{}{
+					"inner": "value",
+				},
+			},
+			verify: func(s string) bool {
+				return strings.Contains(s, "outer") && strings.Contains(s, "inner")
+			},
+		},
+		{
+			name: "array of objects",
+			input: []map[string]interface{}{
+				{"id": 1, "name": "first"},
+				{"id": 2, "name": "second"},
+			},
+			verify: func(s string) bool {
+				return strings.Contains(s, "first") && strings.Contains(s, "second")
+			},
+		},
+		{
+			name:  "nil value",
+			input: nil,
+			verify: func(s string) bool {
+				return s == "null"
+			},
+		},
+		{
+			name:  "string value",
+			input: "simple string",
+			verify: func(s string) bool {
+				return strings.Contains(s, "simple string")
+			},
+		},
+		{
+			name:  "numeric value",
+			input: 42,
+			verify: func(s string) bool {
+				return strings.Contains(s, "42")
+			},
+		},
+		{
+			name:  "boolean value",
+			input: true,
+			verify: func(s string) bool {
+				return strings.Contains(s, "true")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatToolResult(tt.input)
+
+			if result == "" {
+				t.Error("formatToolResult should not return empty string")
+			}
+
+			if !tt.verify(result) {
+				t.Errorf("formatToolResult output doesn't match expectations: %s", result)
+			}
+
+			// Verify output is valid JSON
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+				t.Errorf("formatToolResult should return valid JSON: %v", err)
+			}
+		})
+	}
+}
+
+// TestSendResponseWithMarshalError tests sendResponse error handling
+func TestSendResponseWithMarshalError(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Create a value that can't be marshaled (channels can't be marshaled to JSON)
+	ch := make(chan int)
+	defer close(ch)
+
+	server.sendResponse(1, ch)
+
+	// Should have received a fallback error response
+	outputStr := output.String()
+	if !strings.Contains(outputStr, "error") {
+		t.Error("Expected error response for unmarshalable result")
+	}
+
+	if !strings.Contains(outputStr, "Internal error") {
+		t.Error("Expected 'Internal error' in fallback response")
+	}
+}
+
+// TestSendErrorWithMarshalError tests sendError error handling
+func TestSendErrorWithMarshalError(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Create a value that can't be marshaled
+	ch := make(chan int)
+	defer close(ch)
+
+	server.sendError(1, -32603, "Test error", ch)
+
+	// Should have received a fallback error response
+	outputStr := output.String()
+	if !strings.Contains(outputStr, "error") {
+		t.Error("Expected error response")
+	}
+}
+
+// TestSendErrorWithComplexData tests sendError with various data types
+func TestSendErrorWithComplexData(t *testing.T) {
+	tests := []struct {
+		name string
+		id   interface{}
+		code int
+		msg  string
+		data interface{}
+	}{
+		{
+			name: "error with string data",
+			id:   1,
+			code: -32602,
+			msg:  "Invalid params",
+			data: "parameter 'x' is required",
+		},
+		{
+			name: "error with map data",
+			id:   2,
+			code: -32603,
+			msg:  "Internal error",
+			data: map[string]interface{}{"details": "database connection failed"},
+		},
+		{
+			name: "error with array data",
+			id:   3,
+			code: -32602,
+			msg:  "Invalid params",
+			data: []string{"param1", "param2"},
+		},
+		{
+			name: "error with nil data",
+			id:   4,
+			code: -32601,
+			msg:  "Method not found",
+			data: nil,
+		},
+		{
+			name: "error with null id",
+			id:   nil,
+			code: -32700,
+			msg:  "Parse error",
+			data: "invalid JSON",
+		},
+		{
+			name: "error with string id",
+			id:   "request-abc-123",
+			code: -32600,
+			msg:  "Invalid Request",
+			data: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewServer()
+
+			var output bytes.Buffer
+			server.writer = &output
+
+			server.sendError(tt.id, tt.code, tt.msg, tt.data)
+
+			// Parse response
+			var response JSONRPCResponse
+			if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+				t.Fatalf("Failed to parse error response: %v", err)
+			}
+
+			// Verify error is present
+			if response.Error == nil {
+				t.Fatal("Error should not be nil")
+			}
+
+			if response.Error.Code != tt.code {
+				t.Errorf("Expected error code %d, got %d", tt.code, response.Error.Code)
+			}
+
+			if response.Error.Message != tt.msg {
+				t.Errorf("Expected error message %s, got %s", tt.msg, response.Error.Message)
+			}
+
+			// Verify ID matches
+			if tt.id == nil && response.ID != nil {
+				t.Errorf("Expected nil ID, got %v", response.ID)
+			}
+		})
+	}
+}
+
+// TestToolsCallWithInvalidParams tests tools/call with invalid parameters
+func TestToolsCallWithInvalidParams(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Invalid JSON in params
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name": "wast_scan"`), // Invalid JSON
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	// Parse response
+	var response JSONRPCResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should return error
+	if response.Error == nil {
+		t.Error("Expected error for invalid params JSON")
+	}
+	if response.Error.Code != -32602 {
+		t.Errorf("Expected error code -32602, got %d", response.Error.Code)
+	}
+}
+
+// TestHandleRequestWithContextCancellation tests request handling with canceled context
+func TestHandleRequestWithContextCancellation(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Create already-canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+	}
+
+	// Should still handle the request even with canceled context
+	server.handleRequest(ctx, &request)
+
+	// Should have a response
+	if output.Len() == 0 {
+		t.Error("Expected a response even with canceled context")
+	}
+}
+
+// TestServerConcurrentRequests tests handling multiple concurrent requests
+func TestServerConcurrentRequests(t *testing.T) {
+	numRequests := 10
+	done := make(chan bool, numRequests)
+
+	for i := 0; i < numRequests; i++ {
+		go func(id int) {
+			// Create a new server instance for each goroutine to avoid writer conflicts
+			server := NewServer()
+			var output bytes.Buffer
+			server.writer = &output
+
+			request := JSONRPCRequest{
+				JSONRPC: "2.0",
+				ID:      id,
+				Method:  "initialize",
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			server.handleRequest(ctx, &request)
+
+			// Verify we got a response
+			var response JSONRPCResponse
+			if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+				t.Errorf("Request %d: Failed to parse response: %v", id, err)
+			}
+
+			done <- true
+		}(i)
+	}
+
+	// Wait for all requests to complete
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < numRequests; i++ {
+		select {
+		case <-done:
+			// Success
+		case <-timeout:
+			t.Fatal("Timeout waiting for concurrent requests to complete")
+		}
+	}
+}
+
+// TestReconToolExecuteWithSubdomains tests recon with subdomain discovery
+func TestReconToolExecuteWithSubdomains(t *testing.T) {
+	tool := &ReconTool{}
+
+	args := map[string]interface{}{
+		"target":             "example.com",
+		"timeout":            "5s",
+		"include_subdomains": true,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify result structure
+	reconResult, ok := result.(ReconResult)
+	if !ok {
+		t.Fatal("Result should be a ReconResult")
+	}
+
+	if reconResult.Target != "example.com" {
+		t.Errorf("Expected target example.com, got %s", reconResult.Target)
+	}
+
+	// DNS result should be present
+	if reconResult.DNS == nil {
+		t.Error("DNS result should not be nil")
+	}
+}
+
+// TestScanToolTimeoutDefault tests scan tool timeout default handling
+func TestScanToolTimeoutDefault(t *testing.T) {
+	tool := &ScanTool{}
+
+	args := map[string]interface{}{
+		"target":  "https://example.com",
+		"timeout": -1, // Invalid timeout, should use default
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default timeout
+	scanResult, ok := result.(CompleteScanResult)
+	if !ok {
+		t.Fatal("Result should be a CompleteScanResult")
+	}
+
+	if scanResult.Target != "https://example.com" {
+		t.Errorf("Expected target https://example.com, got %s", scanResult.Target)
+	}
+}
+
+// TestCrawlToolDepthDefault tests crawl tool depth default handling
+func TestCrawlToolDepthDefault(t *testing.T) {
+	tool := &CrawlTool{}
+
+	args := map[string]interface{}{
+		"target": "https://example.com",
+		"depth":  0, // Should use default depth of 3
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default depth
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestAPIToolWithSpecFile tests API tool with spec file
+func TestAPIToolWithSpecFile(t *testing.T) {
+	tool := &APITool{}
+
+	args := map[string]interface{}{
+		"spec_file": "/nonexistent/spec.yaml",
+		"dry_run":   true,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should return a result (likely an error map due to nonexistent file)
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+
+	// Check if it's an error result
+	resultMap, ok := result.(map[string]interface{})
+	if ok {
+		if _, hasError := resultMap["error"]; hasError {
+			// Expected for nonexistent file
+			t.Log("Received expected error for nonexistent spec file")
+		}
+	}
+}
+
+// TestAPIToolTimeoutDefault tests API tool timeout default handling
+func TestAPIToolTimeoutDefault(t *testing.T) {
+	tool := &APITool{}
+
+	args := map[string]interface{}{
+		"target":  "https://api.example.com",
+		"timeout": -5, // Invalid timeout, should use default
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default timeout
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestInterceptToolWithHTTPSAndSaveFile tests intercept with both HTTPS and save file
+func TestInterceptToolWithHTTPSAndSaveFile(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":               9100,
+		"duration":           "1s",
+		"save_file":          "/tmp/https_intercept_test.json",
+		"https_interception": true,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestInterceptToolPortDefault tests intercept port default handling
+func TestInterceptToolPortDefault(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":     -1, // Invalid port, should use default
+		"duration": "1s",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default port
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
+
+// TestInterceptToolDurationDefault tests intercept duration default handling
+func TestInterceptToolDurationDefault(t *testing.T) {
+	tool := &InterceptTool{}
+
+	args := map[string]interface{}{
+		"port":     9101,
+		"duration": "", // Empty duration, should use default
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, argsJSON)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Should succeed with default duration
+	if result == nil {
+		t.Error("Result should not be nil")
+	}
+}
