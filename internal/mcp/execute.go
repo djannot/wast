@@ -315,3 +315,41 @@ func executeIntercept(ctx context.Context, port int, duration time.Duration, sav
 
 	return result
 }
+
+// executeHeaders performs passive security header analysis on a target URL.
+func executeHeaders(ctx context.Context, target string, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.headers")
+		defer span.End()
+	}
+
+	// Build scanner options
+	opts := []scanner.Option{
+		scanner.WithTimeout(time.Duration(timeout) * time.Second),
+	}
+
+	// Add authentication if configured
+	if !authConfig.IsEmpty() {
+		opts = append(opts, scanner.WithAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		opts = append(opts, scanner.WithRateLimitConfig(rateLimitConfig))
+	}
+
+	// Add tracer if configured
+	if tracer != nil {
+		opts = append(opts, scanner.WithTracer(tracer))
+	}
+
+	// Create headers scanner
+	headersScanner := scanner.NewHTTPHeadersScanner(opts...)
+
+	// Perform the scan
+	result := headersScanner.Scan(ctx, target)
+
+	return result
+}

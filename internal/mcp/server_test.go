@@ -69,8 +69,8 @@ func TestToolsListRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("Tools is not a list")
 	}
-	if len(toolsList) != 5 {
-		t.Errorf("Expected 5 tools, got %d", len(toolsList))
+	if len(toolsList) != 6 {
+		t.Errorf("Expected 6 tools, got %d", len(toolsList))
 	}
 }
 
