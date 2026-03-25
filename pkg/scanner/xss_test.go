@@ -759,3 +759,493 @@ func TestXSSScanner_AnalyzeContext(t *testing.T) {
 		})
 	}
 }
+
+// Test DOM XSS detection with innerHTML sink
+func TestXSSScanner_ScanForDOMXSS_InnerHTML(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return HTML with vulnerable JavaScript
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				var hash = location.hash;
+				document.getElementById('content').innerHTML = hash;
+			</script>
+		</head>
+		<body><div id="content"></div></body>
+		</html>
+	`
+	mock.responses["https://example.com/"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find DOM XSS vulnerability with innerHTML sink")
+	}
+
+	// Check that at least one finding is DOM-based
+	domFound := false
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			domFound = true
+			if !strings.Contains(finding.Description, "innerHTML") {
+				t.Errorf("Expected description to mention innerHTML, got %s", finding.Description)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for direct source-to-sink flow, got %s", finding.Confidence)
+			}
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected high severity for innerHTML, got %s", finding.Severity)
+			}
+			break
+		}
+	}
+
+	if !domFound {
+		t.Error("Expected to find at least one DOM XSS finding")
+	}
+}
+
+// Test DOM XSS detection with document.write sink
+func TestXSSScanner_ScanForDOMXSS_DocumentWrite(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return HTML with document.write vulnerability
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				var ref = document.referrer;
+				document.write('Referrer: ' + ref);
+			</script>
+		</head>
+		<body></body>
+		</html>
+	`
+	mock.responses["https://example.com/page"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/page")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find DOM XSS vulnerability with document.write sink")
+	}
+
+	// Find the DOM XSS finding
+	var domFinding *XSSFinding
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			domFinding = &finding
+			break
+		}
+	}
+
+	if domFinding == nil {
+		t.Fatal("Expected to find DOM XSS finding")
+	}
+
+	if !strings.Contains(domFinding.Description, "document.write") {
+		t.Errorf("Expected description to mention document.write, got %s", domFinding.Description)
+	}
+
+	if !strings.Contains(domFinding.Payload, "document.write") {
+		t.Errorf("Expected payload to mention document.write, got %s", domFinding.Payload)
+	}
+}
+
+// Test DOM XSS detection with eval sink
+func TestXSSScanner_ScanForDOMXSS_Eval(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return HTML with eval vulnerability
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				var userInput = location.search.substring(1);
+				eval(userInput);
+			</script>
+		</head>
+		<body></body>
+		</html>
+	`
+	mock.responses["https://example.com/test"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	domFound := false
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" && strings.Contains(finding.Description, "eval") {
+			domFound = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected high severity for eval, got %s", finding.Severity)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for eval with source, got %s", finding.Confidence)
+			}
+			break
+		}
+	}
+
+	if !domFound {
+		t.Error("Expected to find DOM XSS vulnerability with eval sink")
+	}
+}
+
+// Test DOM XSS detection with multiple sinks
+func TestXSSScanner_ScanForDOMXSS_MultipleSinks(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return HTML with multiple vulnerabilities
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				var hash = location.hash;
+				document.getElementById('div1').innerHTML = hash;
+
+				var search = location.search;
+				eval(search);
+
+				var name = window.name;
+				document.write(name);
+			</script>
+		</head>
+		<body><div id="div1"></div></body>
+		</html>
+	`
+	mock.responses["https://example.com/multi"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/multi")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	domCount := 0
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			domCount++
+		}
+	}
+
+	if domCount < 3 {
+		t.Errorf("Expected at least 3 DOM XSS findings, got %d", domCount)
+	}
+}
+
+// Test DOM XSS detection with no vulnerability
+func TestXSSScanner_ScanForDOMXSS_NoVulnerability(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return safe JavaScript
+	safeJS := `
+		<html>
+		<head>
+			<script>
+				var safeData = 'static content';
+				document.getElementById('content').textContent = safeData;
+			</script>
+		</head>
+		<body><div id="content"></div></body>
+		</html>
+	`
+	mock.responses["https://example.com/safe"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(safeJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/safe")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should not find DOM XSS in safe code
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			t.Errorf("Should not find DOM XSS in safe code, but found: %s", finding.Description)
+		}
+	}
+}
+
+// Test DOM XSS detection with sink but no source (low confidence)
+func TestXSSScanner_ScanForDOMXSS_SinkNoSource(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Configure mock to return JavaScript with sink but no obvious source
+	jsWithSink := `
+		<html>
+		<head>
+			<script>
+				function updateContent(data) {
+					document.getElementById('content').innerHTML = data;
+				}
+			</script>
+		</head>
+		<body><div id="content"></div></body>
+		</html>
+	`
+	mock.responses["https://example.com/sink"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(jsWithSink)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/sink")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should find the sink even without obvious source, but with low confidence
+	domFound := false
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			domFound = true
+			if finding.Confidence != "low" {
+				t.Errorf("Expected low confidence for sink without source, got %s", finding.Confidence)
+			}
+			break
+		}
+	}
+
+	if !domFound {
+		t.Error("Expected to find DOM XSS finding even without obvious source")
+	}
+}
+
+// Test extractJavaScript function
+func TestXSSScanner_ExtractJavaScript(t *testing.T) {
+	scanner := NewXSSScanner()
+
+	html := `
+		<html>
+		<head>
+			<script>var x = 1;</script>
+			<script src="external.js"></script>
+			<script>
+				var y = 2;
+				console.log(y);
+			</script>
+		</head>
+		<body>
+			<button onclick="alert('test')">Click</button>
+			<img onerror="console.error('error')" src="test.jpg">
+		</body>
+		</html>
+	`
+
+	scripts := scanner.extractJavaScript(html)
+
+	if len(scripts) < 2 {
+		t.Errorf("Expected at least 2 script blocks, got %d", len(scripts))
+	}
+
+	// Check that inline scripts were extracted
+	foundInline := false
+	for _, script := range scripts {
+		if strings.Contains(script, "var x = 1") || strings.Contains(script, "var y = 2") {
+			foundInline = true
+			break
+		}
+	}
+	if !foundInline {
+		t.Error("Expected to find inline script content")
+	}
+
+	// Check that event handlers were extracted
+	foundEventHandler := false
+	for _, script := range scripts {
+		if strings.Contains(script, "alert('test')") || strings.Contains(script, "console.error") {
+			foundEventHandler = true
+			break
+		}
+	}
+	if !foundEventHandler {
+		t.Error("Expected to find event handler code")
+	}
+}
+
+// Test getDOMSources function
+func TestGetDOMSources(t *testing.T) {
+	sources := getDOMSources()
+
+	if len(sources) == 0 {
+		t.Fatal("Expected at least one DOM source")
+	}
+
+	// Check that common sources are included
+	expectedSources := []string{"location.hash", "location.search", "document.referrer", "window.name"}
+	for _, expected := range expectedSources {
+		found := false
+		for _, source := range sources {
+			if source.name == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected to find source %s", expected)
+		}
+	}
+}
+
+// Test getDOMSinks function
+func TestGetDOMSinks(t *testing.T) {
+	sinks := getDOMSinks()
+
+	if len(sinks) == 0 {
+		t.Fatal("Expected at least one DOM sink")
+	}
+
+	// Check that common sinks are included
+	expectedSinks := []string{"innerHTML", "document.write", "eval"}
+	for _, expected := range expectedSinks {
+		found := false
+		for _, sink := range sinks {
+			if sink.name == expected {
+				found = true
+				if sink.severity == "" {
+					t.Errorf("Sink %s should have a severity", expected)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected to find sink %s", expected)
+		}
+	}
+}
+
+// Test DOM XSS with setTimeout sink
+func TestXSSScanner_ScanForDOMXSS_SetTimeout(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				var code = location.hash.substring(1);
+				setTimeout(code, 100);
+			</script>
+		</head>
+		<body></body>
+		</html>
+	`
+	mock.responses["https://example.com/timeout"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/timeout")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	domFound := false
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" && strings.Contains(finding.Description, "setTimeout") {
+			domFound = true
+			break
+		}
+	}
+
+	if !domFound {
+		t.Error("Expected to find DOM XSS vulnerability with setTimeout sink")
+	}
+}
+
+// Test DOM XSS finding includes proper remediation
+func TestXSSScanner_DOMXSSRemediation(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	vulnerableJS := `
+		<html>
+		<head>
+			<script>
+				document.getElementById('x').innerHTML = location.hash;
+			</script>
+		</head>
+		<body><div id="x"></div></body>
+		</html>
+	`
+	mock.responses["https://example.com/rem"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(vulnerableJS)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/rem")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	for _, finding := range result.Findings {
+		if finding.Type == "dom" {
+			if !strings.Contains(finding.Remediation, "innerHTML") {
+				t.Errorf("Expected remediation to mention innerHTML for DOM XSS, got %s", finding.Remediation)
+			}
+			if !strings.Contains(finding.Remediation, "textContent") {
+				t.Errorf("Expected remediation to mention safe alternatives like textContent, got %s", finding.Remediation)
+			}
+			break
+		}
+	}
+}

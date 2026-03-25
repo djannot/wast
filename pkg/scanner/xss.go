@@ -229,6 +229,11 @@ func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult 
 		}
 	}
 
+	// Scan for DOM-based XSS vulnerabilities
+	domFindings := s.scanForDOMXSS(ctx, parsedURL)
+	result.Findings = append(result.Findings, domFindings...)
+	result.Summary.VulnerabilitiesFound += len(domFindings)
+
 	// Calculate final summary
 	s.calculateSummary(result)
 
@@ -478,6 +483,373 @@ func (s *XSSScanner) calculateSummary(result *XSSScanResult) {
 			result.Summary.LowSeverityCount++
 		}
 	}
+}
+
+// domSource represents a dangerous source of user-controlled data in client-side JavaScript.
+type domSource struct {
+	pattern     *regexp.Regexp
+	name        string
+	description string
+}
+
+// domSink represents a dangerous sink that can execute JavaScript code.
+type domSink struct {
+	pattern     *regexp.Regexp
+	name        string
+	description string
+	severity    string
+}
+
+// getDOMSources returns a list of dangerous DOM sources.
+func getDOMSources() []domSource {
+	return []domSource{
+		{
+			pattern:     regexp.MustCompile(`location\.hash`),
+			name:        "location.hash",
+			description: "URL fragment identifier",
+		},
+		{
+			pattern:     regexp.MustCompile(`location\.search`),
+			name:        "location.search",
+			description: "URL query string",
+		},
+		{
+			pattern:     regexp.MustCompile(`location\.href`),
+			name:        "location.href",
+			description: "full URL",
+		},
+		{
+			pattern:     regexp.MustCompile(`document\.referrer`),
+			name:        "document.referrer",
+			description: "referrer URL",
+		},
+		{
+			pattern:     regexp.MustCompile(`window\.name`),
+			name:        "window.name",
+			description: "window name",
+		},
+		{
+			pattern:     regexp.MustCompile(`document\.URL`),
+			name:        "document.URL",
+			description: "document URL",
+		},
+		{
+			pattern:     regexp.MustCompile(`document\.documentURI`),
+			name:        "document.documentURI",
+			description: "document URI",
+		},
+		{
+			pattern:     regexp.MustCompile(`postMessage`),
+			name:        "postMessage",
+			description: "cross-origin message",
+		},
+	}
+}
+
+// getDOMSinks returns a list of dangerous DOM sinks.
+func getDOMSinks() []domSink {
+	return []domSink{
+		{
+			pattern:     regexp.MustCompile(`\.innerHTML\s*=`),
+			name:        "innerHTML",
+			description: "Direct HTML injection via innerHTML assignment",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`\.outerHTML\s*=`),
+			name:        "outerHTML",
+			description: "Direct HTML injection via outerHTML assignment",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`document\.write\s*\(`),
+			name:        "document.write",
+			description: "Direct content injection via document.write",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`document\.writeln\s*\(`),
+			name:        "document.writeln",
+			description: "Direct content injection via document.writeln",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`\beval\s*\(`),
+			name:        "eval",
+			description: "Code execution via eval",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`setTimeout\s*\(`),
+			name:        "setTimeout",
+			description: "Code execution via setTimeout with string argument",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`setInterval\s*\(`),
+			name:        "setInterval",
+			description: "Code execution via setInterval with string argument",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`new\s+Function\s*\(`),
+			name:        "Function constructor",
+			description: "Code execution via Function constructor",
+			severity:    SeverityHigh,
+		},
+		{
+			pattern:     regexp.MustCompile(`location\.href\s*=`),
+			name:        "location.href",
+			description: "URL manipulation via location.href assignment",
+			severity:    SeverityMedium,
+		},
+		{
+			pattern:     regexp.MustCompile(`location\.assign\s*\(`),
+			name:        "location.assign",
+			description: "URL manipulation via location.assign",
+			severity:    SeverityMedium,
+		},
+	}
+}
+
+// scanForDOMXSS scans for DOM-based XSS vulnerabilities by analyzing JavaScript code.
+func (s *XSSScanner) scanForDOMXSS(ctx context.Context, targetURL *url.URL) []XSSFinding {
+	findings := make([]XSSFinding, 0)
+
+	// Apply rate limiting before making the request
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			return findings
+		}
+	}
+
+	// Fetch the target page
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		return findings
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return findings
+	}
+	defer resp.Body.Close()
+
+	// Only check successful responses
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return findings
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return findings
+	}
+
+	bodyStr := string(body)
+
+	// Extract JavaScript code from the page
+	scriptContents := s.extractJavaScript(bodyStr)
+
+	// Analyze each script for DOM XSS vulnerabilities
+	for _, script := range scriptContents {
+		domFindings := s.analyzeDOMXSS(targetURL.String(), script)
+		findings = append(findings, domFindings...)
+	}
+
+	return findings
+}
+
+// extractJavaScript extracts JavaScript code from HTML content.
+func (s *XSSScanner) extractJavaScript(htmlContent string) []string {
+	scripts := make([]string, 0)
+
+	// Extract inline script tags
+	scriptTagPattern := regexp.MustCompile(`(?i)<script[^>]*>([\s\S]*?)</script>`)
+	matches := scriptTagPattern.FindAllStringSubmatch(htmlContent, -1)
+
+	for _, match := range matches {
+		if len(match) > 1 {
+			scriptContent := match[1]
+			// Skip empty scripts or those that only reference external sources
+			if strings.TrimSpace(scriptContent) != "" {
+				scripts = append(scripts, scriptContent)
+			}
+		}
+	}
+
+	// Extract event handler attributes (onclick, onerror, onload, etc.)
+	eventHandlerPattern := regexp.MustCompile(`(?i)\bon\w+\s*=\s*["']([^"']+)["']`)
+	eventMatches := eventHandlerPattern.FindAllStringSubmatch(htmlContent, -1)
+
+	for _, match := range eventMatches {
+		if len(match) > 1 {
+			eventCode := match[1]
+			if strings.TrimSpace(eventCode) != "" {
+				scripts = append(scripts, eventCode)
+			}
+		}
+	}
+
+	return scripts
+}
+
+// analyzeDOMXSS analyzes JavaScript code for DOM-based XSS vulnerabilities.
+func (s *XSSScanner) analyzeDOMXSS(url string, scriptContent string) []XSSFinding {
+	findings := make([]XSSFinding, 0)
+
+	sources := getDOMSources()
+	sinks := getDOMSinks()
+
+	// Check for dangerous sinks
+	for _, sink := range sinks {
+		if sink.pattern.MatchString(scriptContent) {
+			// Found a dangerous sink, now check for sources
+			confidence := "low"
+			detectedSources := make([]string, 0)
+
+			for _, source := range sources {
+				if source.pattern.MatchString(scriptContent) {
+					detectedSources = append(detectedSources, source.name)
+				}
+			}
+
+			// Determine confidence based on source detection
+			if len(detectedSources) > 0 {
+				// Check if source and sink appear in close proximity (source-to-sink flow)
+				if s.detectSourceToSinkFlow(scriptContent, sources, sink) {
+					confidence = "high"
+				} else {
+					confidence = "medium"
+				}
+			}
+
+			// Create finding
+			evidence := s.extractDOMEvidence(scriptContent, sink.pattern)
+			sourcesStr := "Unknown source"
+			if len(detectedSources) > 0 {
+				sourcesStr = strings.Join(detectedSources, ", ")
+			}
+
+			description := fmt.Sprintf("%s - Dangerous sink '%s' detected. User-controlled data from %s may reach this sink.",
+				sink.description, sink.name, sourcesStr)
+
+			finding := XSSFinding{
+				URL:         url,
+				Parameter:   "DOM-based",
+				Payload:     fmt.Sprintf("Sink: %s, Sources: %s", sink.name, sourcesStr),
+				Evidence:    evidence,
+				Severity:    sink.severity,
+				Type:        "dom",
+				Description: description,
+				Remediation: s.getRemediation("dom"),
+				Confidence:  confidence,
+			}
+
+			findings = append(findings, finding)
+		}
+	}
+
+	return findings
+}
+
+// detectSourceToSinkFlow checks if there's a direct flow from source to sink.
+func (s *XSSScanner) detectSourceToSinkFlow(scriptContent string, sources []domSource, sink domSink) bool {
+	// Split the script into lines for line-by-line analysis
+	lines := strings.Split(scriptContent, "\n")
+
+	// Look for patterns like: element.innerHTML = location.hash
+	// or var x = location.hash; element.innerHTML = x;
+	sinkMatches := sink.pattern.FindAllStringIndex(scriptContent, -1)
+	if len(sinkMatches) == 0 {
+		return false
+	}
+
+	// For each sink occurrence, check if there's a source nearby
+	for _, sinkMatch := range sinkMatches {
+		// Extract a window of 200 characters before the sink
+		start := sinkMatch[0] - 200
+		if start < 0 {
+			start = 0
+		}
+		end := sinkMatch[1] + 100
+		if end > len(scriptContent) {
+			end = len(scriptContent)
+		}
+
+		window := scriptContent[start:end]
+
+		// Check if any source appears in this window
+		for _, source := range sources {
+			if source.pattern.MatchString(window) {
+				return true
+			}
+		}
+	}
+
+	// Also check for variable assignment patterns
+	for _, line := range lines {
+		// Check if a source is assigned to a variable
+		for _, source := range sources {
+			if source.pattern.MatchString(line) {
+				// Extract variable name
+				varPattern := regexp.MustCompile(`(\w+)\s*=.*` + regexp.QuoteMeta(source.name))
+				if varMatch := varPattern.FindStringSubmatch(line); len(varMatch) > 1 {
+					varName := varMatch[1]
+					// Check if this variable is used in a sink
+					if strings.Contains(scriptContent, varName) && sink.pattern.MatchString(scriptContent) {
+						// Simple heuristic: if the variable appears near the sink
+						sinkLines := strings.Split(scriptContent, "\n")
+						for _, sinkLine := range sinkLines {
+							if sink.pattern.MatchString(sinkLine) && strings.Contains(sinkLine, varName) {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// extractDOMEvidence extracts evidence of the DOM XSS vulnerability.
+func (s *XSSScanner) extractDOMEvidence(scriptContent string, pattern *regexp.Regexp) string {
+	matches := pattern.FindStringIndex(scriptContent)
+	if matches == nil {
+		return "Pattern detected in JavaScript code"
+	}
+
+	// Extract context around the match (up to 100 characters)
+	start := matches[0] - 30
+	if start < 0 {
+		start = 0
+	}
+	end := matches[1] + 30
+	if end > len(scriptContent) {
+		end = len(scriptContent)
+	}
+
+	snippet := scriptContent[start:end]
+	// Clean up the snippet
+	snippet = strings.ReplaceAll(snippet, "\n", " ")
+	snippet = strings.ReplaceAll(snippet, "\r", " ")
+	snippet = strings.ReplaceAll(snippet, "\t", " ")
+	// Collapse multiple spaces
+	snippet = regexp.MustCompile(`\s+`).ReplaceAllString(snippet, " ")
+	snippet = strings.TrimSpace(snippet)
+
+	return fmt.Sprintf("...%s...", snippet)
 }
 
 // String returns a human-readable representation of the scan result.
