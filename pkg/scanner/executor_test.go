@@ -199,9 +199,9 @@ func TestCalculateFilteredCount(t *testing.T) {
 			},
 			result: &UnifiedScanResult{
 				XSS:  &XSSScanResult{Findings: []XSSFinding{{}, {}}}, // 2 verified out of 5
-				SQLi: &SQLiScanResult{Findings: []SQLiFinding{{}}},    // 1 verified out of 3
-				CSRF: &CSRFScanResult{Findings: []CSRFFinding{}},      // 0 verified out of 2
-				SSRF: &SSRFScanResult{Findings: []SSRFFinding{{}}},    // 1 verified out of 1
+				SQLi: &SQLiScanResult{Findings: []SQLiFinding{{}}},   // 1 verified out of 3
+				CSRF: &CSRFScanResult{Findings: []CSRFFinding{}},     // 0 verified out of 2
+				SSRF: &SSRFScanResult{Findings: []SSRFFinding{{}}},   // 1 verified out of 1
 			},
 			expected: 6, // (5-2) + (3-1) + (2-0) + (1-1) = 3 + 2 + 2 + 0 = 7... wait let me recalculate
 			// XSS: 5 total - 2 verified = 3 filtered

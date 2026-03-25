@@ -341,7 +341,7 @@ func TestExtractOpenAPI3Endpoints(t *testing.T) {
 										Schema: &OpenAPI3Schema{
 											Type: "object",
 											Properties: map[string]*OpenAPI3Schema{
-												"name": {Type: "string"},
+												"name":  {Type: "string"},
 												"email": {Type: "string", Format: "email"},
 											},
 											Required: []string{"name", "email"},

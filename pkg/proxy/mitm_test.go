@@ -1188,7 +1188,11 @@ func TestMITMHandler_HandleMITM_TLSHandshakeFails(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Should have recorded an error about TLS handshake
-	if len(handler.proxy.errors) == 0 {
+	handler.proxy.mu.RLock()
+	errorCount := len(handler.proxy.errors)
+	handler.proxy.mu.RUnlock()
+
+	if errorCount == 0 {
 		t.Log("Expected TLS handshake error to be recorded")
 	}
 }

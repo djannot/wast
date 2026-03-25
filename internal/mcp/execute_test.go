@@ -397,46 +397,46 @@ func TestExecuteCrawlWithRateLimit(t *testing.T) {
 // TestExecuteAPI tests the executeAPI function
 func TestExecuteAPI(t *testing.T) {
 	tests := []struct {
-		name    string
-		target  string
+		name     string
+		target   string
 		specFile string
-		dryRun  bool
-		timeout int
+		dryRun   bool
+		timeout  int
 	}{
 		{
-			name:    "API discovery mode",
-			target:  "https://api.example.com",
+			name:     "API discovery mode",
+			target:   "https://api.example.com",
 			specFile: "",
-			dryRun:  false,
-			timeout: 30,
+			dryRun:   false,
+			timeout:  30,
 		},
 		{
-			name:    "API discovery with dry run",
-			target:  "https://api.example.com",
+			name:     "API discovery with dry run",
+			target:   "https://api.example.com",
 			specFile: "",
-			dryRun:  true,
-			timeout: 30,
+			dryRun:   true,
+			timeout:  30,
 		},
 		{
-			name:    "spec parsing mode",
-			target:  "",
+			name:     "spec parsing mode",
+			target:   "",
 			specFile: "/nonexistent/spec.yaml",
-			dryRun:  true,
-			timeout: 30,
+			dryRun:   true,
+			timeout:  30,
 		},
 		{
-			name:    "spec with testing",
-			target:  "",
+			name:     "spec with testing",
+			target:   "",
 			specFile: "/nonexistent/openapi.json",
-			dryRun:  false,
-			timeout: 60,
+			dryRun:   false,
+			timeout:  60,
 		},
 		{
-			name:    "short timeout",
-			target:  "https://api.test.com",
+			name:     "short timeout",
+			target:   "https://api.test.com",
 			specFile: "",
-			dryRun:  false,
-			timeout: 5,
+			dryRun:   false,
+			timeout:  5,
 		},
 	}
 
@@ -868,7 +868,7 @@ func TestHeaderScanResultJSONMarshaling(t *testing.T) {
 		Cookies: []scanner.CookieFinding{},
 		CORS:    []scanner.CORSFinding{},
 		Summary: scanner.ScanSummary{
-			TotalHeaders: 7,
+			TotalHeaders:   7,
 			MissingHeaders: 2,
 		},
 		Errors: []string{},

@@ -175,7 +175,8 @@ func TestUnknownMethod(t *testing.T) {
 }
 
 func TestReconToolSchema(t *testing.T) {
-	server := NewServer(); tool := &ReconTool{server: server}
+	server := NewServer()
+	tool := &ReconTool{server: server}
 
 	if tool.Name() != "wast_recon" {
 		t.Errorf("Expected name wast_recon, got %s", tool.Name())
@@ -211,7 +212,8 @@ func TestReconToolSchema(t *testing.T) {
 }
 
 func TestScanToolSchema(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	if tool.Name() != "wast_scan" {
 		t.Errorf("Expected name wast_scan, got %s", tool.Name())
@@ -234,7 +236,8 @@ func TestScanToolSchema(t *testing.T) {
 }
 
 func TestCrawlToolSchema(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	if tool.Name() != "wast_crawl" {
 		t.Errorf("Expected name wast_crawl, got %s", tool.Name())
@@ -257,7 +260,8 @@ func TestCrawlToolSchema(t *testing.T) {
 }
 
 func TestAPIToolSchema(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	if tool.Name() != "wast_api" {
 		t.Errorf("Expected name wast_api, got %s", tool.Name())
@@ -315,7 +319,8 @@ func TestToolsCallWithUnknownTool(t *testing.T) {
 }
 
 func TestReconToolExecuteMissingTarget(t *testing.T) {
-	server := NewServer(); tool := &ReconTool{server: server}
+	server := NewServer()
+	tool := &ReconTool{server: server}
 
 	args := map[string]interface{}{}
 	argsJSON, _ := json.Marshal(args)
@@ -332,7 +337,8 @@ func TestReconToolExecuteMissingTarget(t *testing.T) {
 }
 
 func TestScanToolExecuteMissingTarget(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	args := map[string]interface{}{}
 	argsJSON, _ := json.Marshal(args)
@@ -349,7 +355,8 @@ func TestScanToolExecuteMissingTarget(t *testing.T) {
 }
 
 func TestCrawlToolExecuteMissingTarget(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	args := map[string]interface{}{}
 	argsJSON, _ := json.Marshal(args)
@@ -366,7 +373,8 @@ func TestCrawlToolExecuteMissingTarget(t *testing.T) {
 }
 
 func TestAPIToolExecuteMissingBoth(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	args := map[string]interface{}{}
 	argsJSON, _ := json.Marshal(args)
@@ -380,7 +388,8 @@ func TestAPIToolExecuteMissingBoth(t *testing.T) {
 }
 
 func TestReconToolExecuteWithInvalidTimeout(t *testing.T) {
-	server := NewServer(); tool := &ReconTool{server: server}
+	server := NewServer()
+	tool := &ReconTool{server: server}
 
 	args := map[string]interface{}{
 		"target":  "example.com",
@@ -400,7 +409,8 @@ func TestReconToolExecuteWithInvalidTimeout(t *testing.T) {
 }
 
 func TestCrawlToolExecuteWithInvalidTimeout(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	args := map[string]interface{}{
 		"target":  "https://example.com",
@@ -490,7 +500,8 @@ func TestReconToolExecuteDefaults(t *testing.T) {
 }
 
 func TestScanToolWithAuthParameters(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	// Verify schema includes auth parameters
 	schema := tool.InputSchema()
@@ -527,7 +538,8 @@ func TestScanToolWithAuthParameters(t *testing.T) {
 }
 
 func TestCrawlToolWithAuthParameters(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	// Verify schema includes auth parameters
 	schema := tool.InputSchema()
@@ -563,7 +575,8 @@ func TestCrawlToolWithAuthParameters(t *testing.T) {
 }
 
 func TestAPIToolWithAuthParameters(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	// Verify schema includes auth parameters
 	schema := tool.InputSchema()
@@ -599,7 +612,8 @@ func TestAPIToolWithAuthParameters(t *testing.T) {
 }
 
 func TestScanToolAuthConfigConstruction(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	args := map[string]interface{}{
 		"target":       "https://example.com",
@@ -622,7 +636,8 @@ func TestScanToolAuthConfigConstruction(t *testing.T) {
 }
 
 func TestCrawlToolAuthConfigConstruction(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	args := map[string]interface{}{
 		"target":      "https://example.com",
@@ -643,7 +658,8 @@ func TestCrawlToolAuthConfigConstruction(t *testing.T) {
 }
 
 func TestAPIToolAuthConfigConstruction(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	args := map[string]interface{}{
 		"target":       "https://api.example.com",
@@ -663,7 +679,8 @@ func TestAPIToolAuthConfigConstruction(t *testing.T) {
 }
 
 func TestInterceptToolSchema(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	if tool.Name() != "wast_intercept" {
 		t.Errorf("Expected name wast_intercept, got %s", tool.Name())
@@ -715,7 +732,8 @@ func TestInterceptToolSchema(t *testing.T) {
 }
 
 func TestInterceptToolExecuteDefaults(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	// Test with minimal arguments (should use defaults)
 	args := map[string]interface{}{}
@@ -738,7 +756,8 @@ func TestInterceptToolExecuteDefaults(t *testing.T) {
 }
 
 func TestInterceptToolExecuteCustomPort(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":     9090,
@@ -760,7 +779,8 @@ func TestInterceptToolExecuteCustomPort(t *testing.T) {
 }
 
 func TestInterceptToolExecuteInvalidDuration(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"duration": "invalid-duration",
@@ -779,7 +799,8 @@ func TestInterceptToolExecuteInvalidDuration(t *testing.T) {
 }
 
 func TestInterceptToolExecuteWithSaveFile(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":      9091,
@@ -802,7 +823,8 @@ func TestInterceptToolExecuteWithSaveFile(t *testing.T) {
 }
 
 func TestInterceptToolExecuteWithMaxRequests(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":         9092,
@@ -825,7 +847,8 @@ func TestInterceptToolExecuteWithMaxRequests(t *testing.T) {
 }
 
 func TestInterceptToolExecuteInvalidJSON(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	invalidJSON := []byte(`{"port": "not-a-number"}`)
 
@@ -841,7 +864,8 @@ func TestInterceptToolExecuteInvalidJSON(t *testing.T) {
 }
 
 func TestInterceptToolSchemaProperties(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 	schema := tool.InputSchema()
 
 	// Verify schema structure
@@ -904,7 +928,8 @@ func TestInterceptToolSchemaProperties(t *testing.T) {
 }
 
 func TestScanToolRateLimitingSchema(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 	schema := tool.InputSchema()
 	props, ok := schema["properties"].(map[string]interface{})
 	if !ok {
@@ -928,7 +953,8 @@ func TestScanToolRateLimitingSchema(t *testing.T) {
 }
 
 func TestCrawlToolRateLimitingSchema(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 	schema := tool.InputSchema()
 	props, ok := schema["properties"].(map[string]interface{})
 	if !ok {
@@ -952,7 +978,8 @@ func TestCrawlToolRateLimitingSchema(t *testing.T) {
 }
 
 func TestAPIToolRateLimitingSchema(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 	schema := tool.InputSchema()
 	props, ok := schema["properties"].(map[string]interface{})
 	if !ok {
@@ -976,7 +1003,8 @@ func TestAPIToolRateLimitingSchema(t *testing.T) {
 }
 
 func TestScanToolWithRateLimitParameter(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	// Test execution with rate limiting parameter
 	args := map[string]interface{}{
@@ -997,7 +1025,8 @@ func TestScanToolWithRateLimitParameter(t *testing.T) {
 }
 
 func TestCrawlToolWithRateLimitParameter(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	// Test execution with rate limiting parameter
 	args := map[string]interface{}{
@@ -1018,7 +1047,8 @@ func TestCrawlToolWithRateLimitParameter(t *testing.T) {
 }
 
 func TestAPIToolWithRateLimitParameter(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	// Test execution with rate limiting parameter
 	args := map[string]interface{}{
@@ -1039,7 +1069,8 @@ func TestAPIToolWithRateLimitParameter(t *testing.T) {
 }
 
 func TestScanToolRateLimitingDefault(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	// Test execution without rate limiting parameter (should default to 0)
 	args := map[string]interface{}{
@@ -1058,7 +1089,8 @@ func TestScanToolRateLimitingDefault(t *testing.T) {
 }
 
 func TestCrawlToolRateLimitingDefault(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	// Test execution without rate limiting parameter (should default to 0)
 	args := map[string]interface{}{
@@ -1077,7 +1109,8 @@ func TestCrawlToolRateLimitingDefault(t *testing.T) {
 }
 
 func TestAPIToolRateLimitingDefault(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	// Test execution without rate limiting parameter (should default to 0)
 	args := map[string]interface{}{
@@ -1100,11 +1133,11 @@ func TestServerRunWithMalformedJSON(t *testing.T) {
 	server := NewServer()
 
 	malformedInputs := []string{
-		`{"jsonrpc": "2.0", "id": 1, "method": "initialize"`,        // Missing closing brace
-		`{"jsonrpc": "2.0", "id": 1, "method": initialize}`,          // Unquoted value
-		`{"jsonrpc": "2.0", "id": 1, "method": "initialize", }`,      // Trailing comma
-		`not-json-at-all`,                                            // Not JSON
-		`{"jsonrpc": "2.0", "id": null, "method": "initialize"}`,     // Null ID (valid JSON-RPC but edge case)
+		`{"jsonrpc": "2.0", "id": 1, "method": "initialize"`,    // Missing closing brace
+		`{"jsonrpc": "2.0", "id": 1, "method": initialize}`,     // Unquoted value
+		`{"jsonrpc": "2.0", "id": 1, "method": "initialize", }`, // Trailing comma
+		`not-json-at-all`, // Not JSON
+		`{"jsonrpc": "2.0", "id": null, "method": "initialize"}`,        // Null ID (valid JSON-RPC but edge case)
 		`{"jsonrpc": "2.0", "id": "string-id", "method": "initialize"}`, // String ID (valid)
 	}
 
@@ -1587,7 +1620,8 @@ func TestServerConcurrentRequests(t *testing.T) {
 
 // TestReconToolExecuteWithSubdomains tests recon with subdomain discovery
 func TestReconToolExecuteWithSubdomains(t *testing.T) {
-	server := NewServer(); tool := &ReconTool{server: server}
+	server := NewServer()
+	tool := &ReconTool{server: server}
 
 	args := map[string]interface{}{
 		"target":             "example.com",
@@ -1622,7 +1656,8 @@ func TestReconToolExecuteWithSubdomains(t *testing.T) {
 
 // TestScanToolTimeoutDefault tests scan tool timeout default handling
 func TestScanToolTimeoutDefault(t *testing.T) {
-	server := NewServer(); tool := &ScanTool{server: server}
+	server := NewServer()
+	tool := &ScanTool{server: server}
 
 	args := map[string]interface{}{
 		"target":  "https://example.com",
@@ -1651,7 +1686,8 @@ func TestScanToolTimeoutDefault(t *testing.T) {
 
 // TestCrawlToolDepthDefault tests crawl tool depth default handling
 func TestCrawlToolDepthDefault(t *testing.T) {
-	server := NewServer(); tool := &CrawlTool{server: server}
+	server := NewServer()
+	tool := &CrawlTool{server: server}
 
 	args := map[string]interface{}{
 		"target": "https://example.com",
@@ -1675,7 +1711,8 @@ func TestCrawlToolDepthDefault(t *testing.T) {
 
 // TestAPIToolWithSpecFile tests API tool with spec file
 func TestAPIToolWithSpecFile(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	args := map[string]interface{}{
 		"spec_file": "/nonexistent/spec.yaml",
@@ -1708,7 +1745,8 @@ func TestAPIToolWithSpecFile(t *testing.T) {
 
 // TestAPIToolTimeoutDefault tests API tool timeout default handling
 func TestAPIToolTimeoutDefault(t *testing.T) {
-	server := NewServer(); tool := &APITool{server: server}
+	server := NewServer()
+	tool := &APITool{server: server}
 
 	args := map[string]interface{}{
 		"target":  "https://api.example.com",
@@ -1732,7 +1770,8 @@ func TestAPIToolTimeoutDefault(t *testing.T) {
 
 // TestInterceptToolWithHTTPSAndSaveFile tests intercept with both HTTPS and save file
 func TestInterceptToolWithHTTPSAndSaveFile(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":               9100,
@@ -1757,7 +1796,8 @@ func TestInterceptToolWithHTTPSAndSaveFile(t *testing.T) {
 
 // TestInterceptToolPortDefault tests intercept port default handling
 func TestInterceptToolPortDefault(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":     -1, // Invalid port, should use default
@@ -1781,7 +1821,8 @@ func TestInterceptToolPortDefault(t *testing.T) {
 
 // TestInterceptToolDurationDefault tests intercept duration default handling
 func TestInterceptToolDurationDefault(t *testing.T) {
-	server := NewServer(); tool := &InterceptTool{server: server}
+	server := NewServer()
+	tool := &InterceptTool{server: server}
 
 	args := map[string]interface{}{
 		"port":     9101,
