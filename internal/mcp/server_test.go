@@ -899,3 +899,195 @@ func TestInterceptToolSchemaProperties(t *testing.T) {
 		t.Error("Schema should have max_requests property")
 	}
 }
+
+func TestScanToolRateLimitingSchema(t *testing.T) {
+	tool := &ScanTool{}
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Verify requests_per_second exists and defaults to 0
+	if rpsParam, ok := props["requests_per_second"].(map[string]interface{}); ok {
+		if rpsType, ok := rpsParam["type"].(string); !ok || rpsType != "number" {
+			t.Error("requests_per_second type should be 'number'")
+		}
+		if defaultVal, ok := rpsParam["default"].(int); !ok || defaultVal != 0 {
+			t.Error("requests_per_second should default to 0")
+		}
+		if desc, ok := rpsParam["description"].(string); !ok || desc == "" {
+			t.Error("requests_per_second should have a description")
+		}
+	} else {
+		t.Error("Schema should have requests_per_second property")
+	}
+}
+
+func TestCrawlToolRateLimitingSchema(t *testing.T) {
+	tool := &CrawlTool{}
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Verify requests_per_second exists and defaults to 0
+	if rpsParam, ok := props["requests_per_second"].(map[string]interface{}); ok {
+		if rpsType, ok := rpsParam["type"].(string); !ok || rpsType != "number" {
+			t.Error("requests_per_second type should be 'number'")
+		}
+		if defaultVal, ok := rpsParam["default"].(int); !ok || defaultVal != 0 {
+			t.Error("requests_per_second should default to 0")
+		}
+		if desc, ok := rpsParam["description"].(string); !ok || desc == "" {
+			t.Error("requests_per_second should have a description")
+		}
+	} else {
+		t.Error("Schema should have requests_per_second property")
+	}
+}
+
+func TestAPIToolRateLimitingSchema(t *testing.T) {
+	tool := &APITool{}
+	schema := tool.InputSchema()
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	// Verify requests_per_second exists and defaults to 0
+	if rpsParam, ok := props["requests_per_second"].(map[string]interface{}); ok {
+		if rpsType, ok := rpsParam["type"].(string); !ok || rpsType != "number" {
+			t.Error("requests_per_second type should be 'number'")
+		}
+		if defaultVal, ok := rpsParam["default"].(int); !ok || defaultVal != 0 {
+			t.Error("requests_per_second should default to 0")
+		}
+		if desc, ok := rpsParam["description"].(string); !ok || desc == "" {
+			t.Error("requests_per_second should have a description")
+		}
+	} else {
+		t.Error("Schema should have requests_per_second property")
+	}
+}
+
+func TestScanToolWithRateLimitParameter(t *testing.T) {
+	tool := &ScanTool{}
+
+	// Test execution with rate limiting parameter
+	args := map[string]interface{}{
+		"target":              "https://example.com",
+		"requests_per_second": 5.0,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse requests_per_second parameter correctly: %v", err)
+	}
+}
+
+func TestCrawlToolWithRateLimitParameter(t *testing.T) {
+	tool := &CrawlTool{}
+
+	// Test execution with rate limiting parameter
+	args := map[string]interface{}{
+		"target":              "https://example.com",
+		"requests_per_second": 2.5,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse requests_per_second parameter correctly: %v", err)
+	}
+}
+
+func TestAPIToolWithRateLimitParameter(t *testing.T) {
+	tool := &APITool{}
+
+	// Test execution with rate limiting parameter
+	args := map[string]interface{}{
+		"target":              "https://api.example.com",
+		"requests_per_second": 10.0,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// We expect this to succeed (even if the target is unreachable)
+	// The important part is that it doesn't fail during parsing
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should parse requests_per_second parameter correctly: %v", err)
+	}
+}
+
+func TestScanToolRateLimitingDefault(t *testing.T) {
+	tool := &ScanTool{}
+
+	// Test execution without rate limiting parameter (should default to 0)
+	args := map[string]interface{}{
+		"target": "https://example.com",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// Should work fine with default rate limiting (no rate limit)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should work with default rate limiting: %v", err)
+	}
+}
+
+func TestCrawlToolRateLimitingDefault(t *testing.T) {
+	tool := &CrawlTool{}
+
+	// Test execution without rate limiting parameter (should default to 0)
+	args := map[string]interface{}{
+		"target": "https://example.com",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// Should work fine with default rate limiting (no rate limit)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should work with default rate limiting: %v", err)
+	}
+}
+
+func TestAPIToolRateLimitingDefault(t *testing.T) {
+	tool := &APITool{}
+
+	// Test execution without rate limiting parameter (should default to 0)
+	args := map[string]interface{}{
+		"target": "https://api.example.com",
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := tool.Execute(ctx, argsJSON)
+	// Should work fine with default rate limiting (no rate limit)
+	if err != nil && strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("Execute should work with default rate limiting: %v", err)
+	}
+}
