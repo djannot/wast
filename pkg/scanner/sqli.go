@@ -30,9 +30,9 @@ const (
 	lengthDifferenceThresholdPct   = 10 // Minimum percentage difference in length to consider significant (lowered from 20)
 
 	// Adaptive threshold settings
-	smallResponseSizeThreshold = 1024      // Responses < 1KB use more sensitive thresholds
-	fewStructuralElementsLimit = 10        // Responses with < 10 structural elements use sensitive thresholds
-	minWordCountForPercentage  = 20        // If baseline has < 20 words, use absolute difference instead of percentage
+	smallResponseSizeThreshold = 1024 // Responses < 1KB use more sensitive thresholds
+	fewStructuralElementsLimit = 10   // Responses with < 10 structural elements use sensitive thresholds
+	minWordCountForPercentage  = 20   // If baseline has < 20 words, use absolute difference instead of percentage
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -1128,7 +1128,7 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 
 	if isSmallResponse || hasFewStructuralElements {
 		// For small responses, use more sensitive thresholds
-		adaptiveLengthThreshold = 5 // 5% for small responses (was 10%)
+		adaptiveLengthThreshold = 5    // 5% for small responses (was 10%)
 		adaptiveWordCountThreshold = 2 // 2 words minimum (was 3)
 	}
 
@@ -1498,7 +1498,7 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 
 	if isSmallResponse || hasFewStructuralElements {
 		// For small responses, use more sensitive thresholds
-		adaptiveLengthThreshold = 5 // 5% for small responses
+		adaptiveLengthThreshold = 5    // 5% for small responses
 		adaptiveWordCountThreshold = 2 // 2 words minimum
 	}
 
