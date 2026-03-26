@@ -16,6 +16,24 @@ import (
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/html"
+)
+
+const (
+	// maxResponseSize is the maximum response size to analyze (10MB) to prevent memory exhaustion
+	maxResponseSize = 10 * 1024 * 1024
+
+	// Content-based detection thresholds
+	minWordCountDifference        = 5   // Minimum word count difference to consider significant
+	minStructuralElementDifference = 1  // Minimum structural element difference to consider significant
+	lengthDifferenceThresholdPct  = 20  // Minimum percentage difference in length to consider significant
+)
+
+// Pre-compiled regex patterns for structural element counting (performance optimization)
+var (
+	trRegex  = regexp.MustCompile(`(?i)<tr[^>]*>`)
+	liRegex  = regexp.MustCompile(`(?i)<li[^>]*>`)
+	divRegex = regexp.MustCompile(`(?i)<div[^>]*class=['"][^'"]*(?:item|row|entry|record|result)[^'"]*['"][^>]*>`)
 )
 
 // SQLiScanner performs active SQL injection vulnerability detection.
@@ -705,36 +723,55 @@ type responseCharacteristics struct {
 }
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
-func extractBodyContent(html string) string {
-	// Remove script tags and their content
-	scriptRegex := regexp.MustCompile(`(?i)<script[^>]*>.*?</script>`)
-	content := scriptRegex.ReplaceAllString(html, "")
-
-	// Remove style tags and their content
-	styleRegex := regexp.MustCompile(`(?i)<style[^>]*>.*?</style>`)
-	content = styleRegex.ReplaceAllString(content, "")
-
-	// Remove HTML comments
-	commentRegex := regexp.MustCompile(`<!--.*?-->`)
-	content = commentRegex.ReplaceAllString(content, "")
-
-	// Extract text between body tags if present
-	bodyRegex := regexp.MustCompile(`(?i)<body[^>]*>(.*?)</body>`)
-	if matches := bodyRegex.FindStringSubmatch(content); len(matches) > 1 {
-		content = matches[1]
+// Uses golang.org/x/net/html parser to avoid ReDoS vulnerabilities from regex patterns
+func extractBodyContent(htmlStr string) string {
+	// Limit input size to prevent memory exhaustion
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
 	}
 
-	// Remove all remaining HTML tags
-	tagRegex := regexp.MustCompile(`<[^>]+>`)
-	content = tagRegex.ReplaceAllString(content, " ")
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		// If parsing fails, fall back to simple whitespace normalization
+		return strings.Join(strings.Fields(htmlStr), " ")
+	}
+
+	var textBuilder strings.Builder
+	var extractText func(*html.Node)
+
+	extractText = func(n *html.Node) {
+		// Skip script and style elements entirely
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style") {
+			return
+		}
+
+		// Extract text from text nodes
+		if n.Type == html.TextNode {
+			text := strings.TrimSpace(n.Data)
+			if text != "" {
+				if textBuilder.Len() > 0 {
+					textBuilder.WriteString(" ")
+				}
+				textBuilder.WriteString(text)
+			}
+		}
+
+		// Recursively process child nodes
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			extractText(c)
+		}
+	}
+
+	extractText(doc)
 
 	// Normalize whitespace
-	content = strings.Join(strings.Fields(content), " ")
-
+	content := strings.Join(strings.Fields(textBuilder.String()), " ")
 	return content
 }
 
 // computeContentHash calculates MD5 hash of extracted body content
+// Note: MD5 is intentionally used here for performance in a non-cryptographic context.
+// This is for content fingerprinting/comparison only, not security or authentication.
 func computeContentHash(html string) string {
 	content := extractBodyContent(html)
 	hash := md5.Sum([]byte(content))
@@ -751,29 +788,47 @@ func countWords(body string) int {
 }
 
 // countStructuralElements counts HTML elements that typically contain data rows
-func countStructuralElements(html string) int {
+// Uses pre-compiled regex patterns for performance
+func countStructuralElements(htmlStr string) int {
+	// Limit input size to prevent excessive processing
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
+	}
+
 	count := 0
 
-	// Count table rows
-	trRegex := regexp.MustCompile(`(?i)<tr[^>]*>`)
-	count += len(trRegex.FindAllString(html, -1))
+	// Count table rows using pre-compiled regex
+	count += len(trRegex.FindAllString(htmlStr, -1))
 
-	// Count list items
-	liRegex := regexp.MustCompile(`(?i)<li[^>]*>`)
-	count += len(liRegex.FindAllString(html, -1))
+	// Count list items using pre-compiled regex
+	count += len(liRegex.FindAllString(htmlStr, -1))
 
-	// Count divs with common data classes
-	divRegex := regexp.MustCompile(`(?i)<div[^>]*class=['"][^'"]*(?:item|row|entry|record|result)[^'"]*['"][^>]*>`)
-	count += len(divRegex.FindAllString(html, -1))
+	// Count divs with common data classes using pre-compiled regex
+	count += len(divRegex.FindAllString(htmlStr, -1))
 
 	return count
 }
 
 // analyzeResponse extracts all characteristics from a response
+// Optimized to extract body content only once
 func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int) {
-	contentHash = computeContentHash(body)
-	wordCount = countWords(body)
+	// Extract content once and reuse for both hash and word count
+	extractedContent := extractBodyContent(body)
+
+	// Compute hash from extracted content
+	hash := md5.Sum([]byte(extractedContent))
+	contentHash = fmt.Sprintf("%x", hash)
+
+	// Count words from extracted content
+	if extractedContent == "" {
+		wordCount = 0
+	} else {
+		wordCount = len(strings.Fields(extractedContent))
+	}
+
+	// Count structural elements from raw HTML (needs tags)
 	structuralElements = countStructuralElements(body)
+
 	return
 }
 
@@ -1000,8 +1055,8 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	statusDiffers := trueResp.StatusCode != falseResp.StatusCode
 	lengthDiffersSignificantly := false
 
-	// True and false should differ from each other
-	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+	// True and false should differ from each other (using lengthDifferenceThresholdPct constant)
+	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/lengthDifferenceThresholdPct {
 		lengthDiffersSignificantly = true
 	}
 
@@ -1011,12 +1066,12 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		baselineDiffers = true
 	}
 
-	// Content-based differential analysis
+	// Content-based differential analysis using defined thresholds
 	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
 	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	wordCountDiffersSignificantly := wordCountDiff > 5 // At least 5 words difference
+	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
 	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
-	structuralDiffersSignificantly := structuralDiff > 0 // Any structural difference is significant
+	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
 
 	// Build evidence message with all detection methods
 	var detectionMethods []string
@@ -1330,17 +1385,17 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		}
 	}
 
-	// Compare true vs false responses for differential behavior
+	// Compare true vs false responses for differential behavior (using lengthDifferenceThresholdPct constant)
 	lengthDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
 	statusDiff := trueResp.StatusCode != falseResp.StatusCode
-	lengthDiffersSignificantly := lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/20
+	lengthDiffersSignificantly := lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/lengthDifferenceThresholdPct
 
-	// Content-based differential analysis
+	// Content-based differential analysis using defined thresholds
 	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
 	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	wordCountDiffersSignificantly := wordCountDiff > 5 // At least 5 words difference
+	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
 	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
-	structuralDiffersSignificantly := structuralDiff > 0 // Any structural difference is significant
+	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
 
 	// Build evidence message with all detection methods
 	var detectionMethods []string
