@@ -373,7 +373,26 @@ const (
 // analyzeContext determines where the payload appears and if it's executable.
 // Returns the context type and whether the payload is in an executable form.
 func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, string) {
-	// Check if payload is HTML-encoded (would neutralize XSS)
+	// First, check if the exact payload appears verbatim in the response
+	idx := strings.Index(body, payload)
+	if idx == -1 {
+		// Payload not found verbatim, try to find evidence instead
+		return ContextUnknown, false, "low"
+	}
+
+	// Early detection: If payload contains executable tags and appears verbatim, it's likely executable
+	// This handles DVWA-style trivial reflected XSS
+	if strings.Contains(payload, "<script") && strings.Contains(body, payload) {
+		return ContextHTMLBody, true, "high"
+	}
+	if (strings.Contains(payload, "onerror") || strings.Contains(payload, "onload")) &&
+	   (strings.Contains(payload, "<img") || strings.Contains(payload, "<svg")) &&
+	   strings.Contains(body, payload) {
+		return ContextHTMLBody, true, "high"
+	}
+
+	// Now check if payload is HTML-encoded (would neutralize XSS)
+	// This check comes AFTER checking for verbatim reflection
 	htmlEncodedPayload := strings.ReplaceAll(payload, "<", "&lt;")
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, ">", "&gt;")
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "\"", "&quot;")
@@ -381,13 +400,6 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 
 	if strings.Contains(body, htmlEncodedPayload) {
 		return ContextHTMLBody, false, "low" // Payload is HTML-encoded, not executable
-	}
-
-	// Find the index where payload appears
-	idx := strings.Index(body, payload)
-	if idx == -1 {
-		// Try to find evidence instead
-		return ContextUnknown, false, "low"
 	}
 
 	// Extract context around the payload (200 chars before and after)
@@ -433,7 +445,7 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	}
 
 	// Check if script/img/svg tags are properly formed
-	if strings.Contains(payload, "<script") || strings.Contains(payload, "<img") || strings.Contains(payload, "<svg") {
+	if strings.Contains(payload, "<script") || strings.Contains(payload, "<img") || strings.Contains(payload, "<svg") || strings.Contains(payload, "<iframe") {
 		tagPattern := regexp.MustCompile(`<(script|img|svg|iframe)[^>]*>`)
 		if tagPattern.MatchString(payload) {
 			// Check if the tag is actually rendered (not inside a string or comment)
@@ -496,6 +508,13 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 
 	// Check if the payload or evidence is reflected in the response
 	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+		// If the payload is not found verbatim but only evidence is found,
+		// it's likely HTML-encoded and not executable
+		if !strings.Contains(bodyStr, payload.Payload) && strings.Contains(bodyStr, payload.Evidence) {
+			// Evidence found but not the full payload - likely encoded
+			return nil
+		}
+
 		// Payload is reflected - now verify if it's actually executable
 		contextType, isExecutable, confidence := s.analyzeContext(bodyStr, payload.Payload)
 
@@ -593,6 +612,13 @@ func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, pa
 
 	// Check if the payload or evidence is reflected in the response
 	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+		// If the payload is not found verbatim but only evidence is found,
+		// it's likely HTML-encoded and not executable
+		if !strings.Contains(bodyStr, payload.Payload) && strings.Contains(bodyStr, payload.Evidence) {
+			// Evidence found but not the full payload - likely encoded
+			return nil
+		}
+
 		// Payload is reflected - now verify if it's actually executable
 		contextType, isExecutable, confidence := s.analyzeContext(bodyStr, payload.Payload)
 

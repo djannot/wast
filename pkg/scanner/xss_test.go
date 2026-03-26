@@ -743,6 +743,27 @@ func TestXSSScanner_AnalyzeContext(t *testing.T) {
 			expectedExecutable: true,
 			expectedConfidence: "high",
 		},
+		{
+			name:               "DVWA-style verbatim reflection of script tag",
+			body:               "Hello <script>alert('XSS')</script>",
+			payload:            "<script>alert('XSS')</script>",
+			expectedExecutable: true,
+			expectedConfidence: "high",
+		},
+		{
+			name:               "DVWA-style verbatim reflection of img onerror",
+			body:               "<h1>Welcome</h1><img src=x onerror=alert('XSS')>",
+			payload:            "<img src=x onerror=alert('XSS')>",
+			expectedExecutable: true,
+			expectedConfidence: "high",
+		},
+		{
+			name:               "SVG onload verbatim reflection",
+			body:               "<div>Results for: <svg/onload=alert('XSS')></div>",
+			payload:            "<svg/onload=alert('XSS')>",
+			expectedExecutable: true,
+			expectedConfidence: "high",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1438,5 +1459,147 @@ func TestXSSScanner_GeneratePayloadVariants(t *testing.T) {
 				seen[v] = true
 			}
 		})
+	}
+}
+
+// Test DVWA-style trivial reflected XSS detection
+func TestXSSScanner_Scan_DVWAStyleReflectedXSS(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Simulate DVWA at security=low: directly reflects input without encoding
+	// Test with script tag payload
+	scriptPayload := "<script>alert('XSS')</script>"
+	mock.responses["https://dvwa.local/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Hello %s!</body></html>", scriptPayload))),
+		Header:     make(http.Header),
+	}
+
+	// Test with img onerror payload
+	imgPayload := "<img src=x onerror=alert('XSS')>"
+	mock.responses["https://dvwa.local/vulnerabilities/xss_r/?name=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Hello %s!</body></html>", imgPayload))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://dvwa.local/vulnerabilities/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected to detect DVWA-style reflected XSS, found 0 vulnerabilities")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding for DVWA-style XSS")
+	}
+
+	// Verify findings have high confidence
+	for _, finding := range result.Findings {
+		if finding.Type == "reflected" {
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for verbatim reflection, got %s for payload %s", finding.Confidence, finding.Payload)
+			}
+			if !finding.Verified && finding.Severity == SeverityHigh {
+				// For high severity reflected XSS, we expect high confidence
+				if finding.Confidence != "high" {
+					t.Errorf("High severity reflected XSS should have high confidence, got %s", finding.Confidence)
+				}
+			}
+		}
+	}
+}
+
+// Test that properly encoded output doesn't trigger false positives
+func TestXSSScanner_Scan_ProperlyEncodedNoFalsePositive(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Simulate a secure application that properly encodes output
+	encodedScript := "&lt;script&gt;alert('XSS')&lt;/script&gt;"
+	mock.responses["https://secure.local/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Results for: %s</body></html>", encodedScript))),
+		Header:     make(http.Header),
+	}
+
+	encodedImg := "&lt;img src=x onerror=alert('XSS')&gt;"
+	mock.responses["https://secure.local/search?q=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Results for: %s</body></html>", encodedImg))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://secure.local/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT report vulnerabilities for properly encoded output
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("False positive detected: found %d vulnerabilities in properly encoded output", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: %s with payload %s (confidence: %s)", finding.Description, finding.Payload, finding.Confidence)
+		}
+	}
+}
+
+// Test mixed scenario: some payloads reflected, some encoded
+func TestXSSScanner_Scan_MixedEncodingScenario(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// First payload is reflected verbatim (vulnerable)
+	scriptPayload := "<script>alert('XSS')</script>"
+	mock.responses["https://mixed.local/page?input=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Input: %s</body></html>", scriptPayload))),
+		Header:     make(http.Header),
+	}
+
+	// Second payload is properly encoded (safe)
+	imgPayloadEncoded := "&lt;img src=x onerror=alert('XSS')&gt;"
+	mock.responses["https://mixed.local/page?input=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Input: %s</body></html>", imgPayloadEncoded))),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://mixed.local/page?input=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should find exactly 1 vulnerability (the script tag)
+	// The img tag is properly encoded, so should not be reported
+	vulnerableCount := 0
+	for _, finding := range result.Findings {
+		if strings.Contains(finding.Payload, "<script>") && finding.Type == "reflected" {
+			vulnerableCount++
+			if finding.Confidence != "high" {
+				t.Errorf("Expected high confidence for verbatim script reflection, got %s", finding.Confidence)
+			}
+		}
+		// Should NOT have findings for the encoded img tag
+		if strings.Contains(finding.Payload, "<img") && finding.Type == "reflected" {
+			t.Errorf("False positive: detected vulnerability in encoded img tag")
+		}
+	}
+
+	if vulnerableCount == 0 {
+		t.Error("Expected to find at least the verbatim reflected script tag vulnerability")
 	}
 }
