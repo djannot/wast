@@ -760,7 +760,12 @@ func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target Discove
 
 // scanTargetForRedirect scans a single discovered target for Open Redirect vulnerabilities.
 func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) []RedirectFinding {
-	// Redirect scanner doesn't have POST support yet, only scan GET requests
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -781,7 +786,12 @@ func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target Discove
 
 // scanTargetForPathTraversal scans a single discovered target for Path Traversal vulnerabilities.
 func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) []PathTraversalFinding {
-	// Path traversal scanner doesn't have POST support yet, only scan GET requests
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
