@@ -438,11 +438,16 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 		params.Set("callback", "")
 	}
 
-	// Fetch baseline response for comparison
-	baseline := s.fetchBaseline(ctx, targetURL, http.MethodGet, nil)
-
 	// Test each parameter with each payload
 	for paramName := range params {
+		// Fetch per-parameter baseline with a benign value for this specific parameter
+		// This is more accurate than a single URL baseline, especially for invented parameters
+		baselineURL := *parsedURL
+		q := baselineURL.Query()
+		q.Set(paramName, "https://example.com") // Benign, safe URL value
+		baselineURL.RawQuery = q.Encode()
+		baseline := s.fetchBaseline(ctx, baselineURL.String(), http.MethodGet, nil)
+
 		for _, payload := range ssrfPayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
@@ -529,15 +534,18 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 		}
 	}
 
-	// Fetch baseline response for comparison
-	formData := url.Values{}
-	for k, v := range params {
-		formData.Set(k, v)
-	}
-	baseline := s.fetchBaseline(ctx, parsedURL.String(), http.MethodPost, formData)
-
 	// Test each parameter with each payload
 	for paramName := range params {
+		// Fetch per-parameter baseline with a benign value for this specific parameter
+		// This is more accurate than a single form baseline, especially for invented parameters
+		baselineFormData := url.Values{}
+		for k, v := range params {
+			baselineFormData.Set(k, v)
+		}
+		// Set this parameter to a benign, safe URL value for baseline
+		baselineFormData.Set(paramName, "https://example.com")
+		baseline := s.fetchBaseline(ctx, parsedURL.String(), http.MethodPost, baselineFormData)
+
 		for _, payload := range ssrfPayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
