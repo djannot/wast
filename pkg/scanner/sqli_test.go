@@ -28,21 +28,41 @@ type mockSQLiHTTPClient struct {
 func (m *mockSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	m.requests = append(m.requests, req)
 
+	// Read POST body if present
+	var postBody string
+	if req.Body != nil && req.Method == http.MethodPost {
+		bodyBytes, _ := io.ReadAll(req.Body)
+		postBody = string(bodyBytes)
+		// Restore the body for potential re-reading
+		req.Body = io.NopCloser(strings.NewReader(postBody))
+	}
+
 	// Simulate time delay for time-based SQL injection payloads
 	if m.simulateTimeDelay {
-		query := req.URL.Query()
-		for _, val := range query {
-			for _, v := range val {
-				// Check for time-based SQL injection payloads (case-insensitive)
+		checkValues := func(values []string) bool {
+			for _, v := range values {
 				vLower := strings.ToLower(v)
 				if strings.Contains(vLower, "sleep") || strings.Contains(vLower, "pg_sleep") ||
 					strings.Contains(vLower, "waitfor") || strings.Contains(vLower, "benchmark") ||
 					strings.Contains(vLower, "randomblob") {
-					// Simulate the delay
 					time.Sleep(m.delayDuration)
-					break
+					return true
 				}
 			}
+			return false
+		}
+
+		// Check query params
+		query := req.URL.Query()
+		for _, val := range query {
+			if checkValues(val) {
+				break
+			}
+		}
+
+		// Check POST body
+		if postBody != "" {
+			checkValues([]string{postBody})
 		}
 	}
 
@@ -55,17 +75,25 @@ func (m *mockSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 	// Check if we're doing differential testing
 	if m.differentialResponse {
-		query := req.URL.Query()
-		for _, val := range query {
-			for _, v := range val {
+		checkDifferential := func(values []string) {
+			for _, v := range values {
 				if strings.Contains(v, "1'='1") || strings.Contains(v, "2'='2") || strings.Contains(v, "a'='a") {
 					bodyStr = m.trueResponse
-					break
 				} else if strings.Contains(v, "1'='2") || strings.Contains(v, "2'='3") || strings.Contains(v, "a'='b") {
 					bodyStr = m.falseResponse
-					break
 				}
 			}
+		}
+
+		// Check query params
+		query := req.URL.Query()
+		for _, val := range query {
+			checkDifferential(val)
+		}
+
+		// Check POST body
+		if postBody != "" {
+			checkDifferential([]string{postBody})
 		}
 	}
 
@@ -1277,5 +1305,56 @@ func TestSQLiScanner_VerifyFinding_TimeBased(t *testing.T) {
 
 	if result.Attempts <= 0 {
 		t.Errorf("Expected Attempts > 0, got %d", result.Attempts)
+	}
+}
+
+// TestSQLiScanner_ScanPOST tests POST parameter scanning for SQL injection
+func TestSQLiScanner_ScanPOST(t *testing.T) {
+	mockClient := newMockSQLiHTTPClient()
+	// Set response that contains SQL error for any request with SQL payloads
+	mockClient.defaultResponse = "<html><body>You have an error in your SQL syntax near '' at line 1</body></html>"
+
+	scanner := NewSQLiScanner(
+		WithSQLiTimeout(30*time.Second),
+		WithSQLiUserAgent("WAST-Test/1.0"),
+	)
+	scanner.client = mockClient
+
+	ctx := context.Background()
+	targetURL := "http://example.com/login"
+	params := map[string]string{
+		"username": "admin",
+		"password": "test",
+	}
+
+	result := scanner.ScanPOST(ctx, targetURL, params)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	if result.Target != targetURL {
+		t.Errorf("Expected target %s, got %s", targetURL, result.Target)
+	}
+
+	// Verify that POST requests were made with proper content type
+	foundPostRequest := false
+	for _, req := range mockClient.requests {
+		if req.Method == http.MethodPost {
+			foundPostRequest = true
+			if req.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+				t.Errorf("Expected Content-Type header to be application/x-www-form-urlencoded, got %s", req.Header.Get("Content-Type"))
+			}
+			break
+		}
+	}
+
+	if !foundPostRequest {
+		t.Error("Expected at least one POST request to be made")
+	}
+
+	// Verify the scan ran and returned results (findings may or may not be found based on payload detection)
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected TotalTests > 0")
 	}
 }

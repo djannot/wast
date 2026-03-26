@@ -274,6 +274,91 @@ func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult 
 	return result
 }
 
+// ScanPOST scans a URL for XSS vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common parameter names
+//     (q, search, query, input) with empty default values.
+//
+// Returns:
+//   - An XSSScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
+func (s *XSSScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *XSSScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanXSS)
+		defer span.End()
+	}
+
+	result := &XSSScanResult{
+		Target:   targetURL,
+		Findings: make([]XSSFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = map[string]string{
+			"q":      "",
+			"search": "",
+			"query":  "",
+			"input":  "",
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range xssPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
 // XSSContext represents where a payload appears in the HTML/JavaScript context.
 type XSSContext int
 
@@ -441,6 +526,103 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 		// Vulnerability found!
 		finding := &XSSFinding{
 			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    s.extractEvidence(bodyStr, payload.Evidence, payload.Payload),
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(payload.Type),
+			Confidence:  confidence,
+		}
+		return finding
+	}
+
+	return nil
+}
+
+// testParameterPOST tests a single parameter for XSS vulnerability using POST.
+func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload xssPayload, allParameters map[string]string) *XSSFinding {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Only check successful responses
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check if the payload or evidence is reflected in the response
+	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+		// Payload is reflected - now verify if it's actually executable
+		contextType, isExecutable, confidence := s.analyzeContext(bodyStr, payload.Payload)
+
+		// If payload is HTML-encoded or in a safe context, it's likely a false positive
+		if !isExecutable && contextType != ContextUnknown {
+			// Don't report low-confidence findings that are clearly encoded
+			if confidence == "low" {
+				return nil
+			}
+		}
+
+		// For executable contexts, increase confidence
+		if isExecutable {
+			if contextType == ContextJavaScript || contextType == ContextHTMLAttribute {
+				confidence = "high"
+			} else if contextType == ContextHTMLBody {
+				// Check if it's actually a complete executable tag
+				if strings.Contains(payload.Payload, "<script") ||
+					strings.Contains(payload.Payload, "onerror") ||
+					strings.Contains(payload.Payload, "onload") {
+					confidence = "high"
+				} else {
+					confidence = "medium"
+				}
+			}
+		}
+
+		// Vulnerability found!
+		finding := &XSSFinding{
+			URL:         baseURL.String(),
 			Parameter:   paramName,
 			Payload:     payload.Payload,
 			Evidence:    s.extractEvidence(bodyStr, payload.Evidence, payload.Payload),

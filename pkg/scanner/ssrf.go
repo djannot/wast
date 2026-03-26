@@ -343,6 +343,94 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 	return result
 }
 
+// ScanPOST scans a URL for SSRF vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common parameter names
+//     (url, uri, path, dest, redirect, file, callback) with empty default values.
+//
+// Returns:
+//   - An SSRFScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
+func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *SSRFScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSSRF)
+		defer span.End()
+	}
+
+	result := &SSRFScanResult{
+		Target:   targetURL,
+		Findings: make([]SSRFFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = map[string]string{
+			"url":      "",
+			"uri":      "",
+			"path":     "",
+			"dest":     "",
+			"redirect": "",
+			"file":     "",
+			"callback": "",
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range ssrfPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
 // testParameter tests a single parameter with a specific SSRF payload.
 func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload) *SSRFFinding {
 	// Create a copy of the URL with the test payload
@@ -405,6 +493,86 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 	if confidence != "low" && confidence != "" {
 		finding := &SSRFFinding{
 			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidence,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+			Confidence:  confidence,
+		}
+		return finding
+	}
+
+	return nil
+}
+
+// testParameterPOST tests a single parameter with a specific SSRF payload using POST.
+func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload, allParameters map[string]string) *SSRFFinding {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Measure request time for timing-based detection
+	startTime := time.Now()
+
+	// Send the request
+	resp, err := s.client.Do(req)
+
+	requestDuration := time.Since(startTime)
+
+	// Handle request errors - this might indicate SSRF attempt was blocked
+	if err != nil {
+		// Check if error indicates network timeout or connection refused
+		// These could be signs that SSRF was attempted but blocked
+		if isNetworkError(err) {
+			// Don't report false positives on network errors
+			return nil
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Analyze the response for SSRF indicators
+	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration)
+
+	// Only report if there's medium or high confidence
+	if confidence != "low" && confidence != "" {
+		finding := &SSRFFinding{
+			URL:         baseURL.String(),
 			Parameter:   paramName,
 			Payload:     payload.Payload,
 			Evidence:    evidence,
