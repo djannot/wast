@@ -109,6 +109,7 @@ const (
 	RuleIDSQLi         = "WAST-SQLI-001"
 	RuleIDCSRF         = "WAST-CSRF-001"
 	RuleIDSSRF         = "WAST-SSRF-001"
+	RuleIDRedirect     = "WAST-REDIRECT-001"
 	RuleIDHeaderHSTS   = "WAST-HDR-001"
 	RuleIDHeaderCSP    = "WAST-HDR-002"
 	RuleIDHeaderXFrame = "WAST-HDR-003"
@@ -119,13 +120,14 @@ const (
 
 // CWE references for common vulnerabilities
 const (
-	CWEXSS     = "CWE-79"
-	CWESQLi    = "CWE-89"
-	CWECSRF    = "CWE-352"
-	CWESSRF    = "CWE-918"
-	CWEHeaders = "CWE-693"
-	CWECookie  = "CWE-614"
-	CWECORS    = "CWE-942"
+	CWEXSS      = "CWE-79"
+	CWESQLi     = "CWE-89"
+	CWECSRF     = "CWE-352"
+	CWESSRF     = "CWE-918"
+	CWERedirect = "CWE-601"
+	CWEHeaders  = "CWE-693"
+	CWECookie   = "CWE-614"
+	CWECORS     = "CWE-942"
 )
 
 // outputSARIF outputs data as SARIF 2.1.0 format.
@@ -209,6 +211,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 	// Process SSRF if present
 	if ssrf, ok := data["ssrf"].(map[string]interface{}); ok {
 		processSSRFMap(ssrf, &run)
+	}
+
+	// Process Redirect if present
+	if redirect, ok := data["redirect"].(map[string]interface{}); ok {
+		processRedirectMap(redirect, &run)
 	}
 
 	report.Runs = append(report.Runs, run)
@@ -300,6 +307,23 @@ func buildAllRules() []SARIFRule {
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWESSRF, "security", "ssrf", "injection"},
+			},
+		},
+		{
+			ID:   RuleIDRedirect,
+			Name: "OpenRedirect",
+			ShortDescription: SARIFMessage{
+				Text: "Open Redirect vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application redirects users to URLs specified in user-controlled parameters without proper validation, enabling phishing attacks and authentication bypass via protocol-relative URLs, @ symbol bypass, encoded payloads, or subdomain confusion.",
+			},
+			Help: SARIFMessage{
+				Text:     "Implement strict URL validation before redirecting. Use an allowlist of permitted redirect destinations. Validate that redirect URLs are relative paths or belong to trusted domains. Avoid using user input directly in redirect operations.",
+				Markdown: "**Remediation:** Implement strict URL validation before redirecting. Use an allowlist of permitted redirect destinations. Validate that redirect URLs are relative paths (not absolute URLs) or belong to trusted domains. If absolute URLs are required, validate the protocol (http/https only), domain (against allowlist), and path. Use indirect reference maps (e.g., redirect to /page?id=123 where 123 maps to a safe URL server-side). Implement CSRF tokens for any redirect functionality. Consider using the Referrer-Policy header to control referrer information leakage.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWERedirect, "security", "redirect", "phishing"},
 			},
 		},
 		{
@@ -505,6 +529,19 @@ func processSSRFMap(ssrf map[string]interface{}, run *SARIFRun) {
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createSSRFResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processRedirectMap(redirect map[string]interface{}, run *SARIFRun) {
+	if findings, ok := redirect["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createRedirectResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -781,6 +818,43 @@ func createSSRFResult(finding map[string]interface{}) *SARIFResult {
 	}
 }
 
+func createRedirectResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	redirectType := getStringValue(finding, "type")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDRedirect,
+		RuleIndex: getRuleIndex(RuleIDRedirect),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("Open Redirect vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**Open Redirect Vulnerability (%s)**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\n**Remediation:** %s", redirectType, parameter, payload, description, evidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"type":       redirectType,
+			"confidence": confidence,
+		},
+	}
+}
+
 // Helper functions for severity mapping and rule lookups
 
 func mapSeverityToLevel(severity string) string {
@@ -816,6 +890,8 @@ func getRuleIndex(ruleID string) int {
 		RuleIDXSS,
 		RuleIDSQLi,
 		RuleIDCSRF,
+		RuleIDSSRF,
+		RuleIDRedirect,
 		RuleIDHeaderHSTS,
 		RuleIDHeaderCSP,
 		RuleIDHeaderXFrame,

@@ -511,6 +511,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.SQLi,
 		intermediateResult.CSRF,
 		intermediateResult.SSRF,
+		intermediateResult.Redirect,
 		intermediateResult.Errors,
 	)
 

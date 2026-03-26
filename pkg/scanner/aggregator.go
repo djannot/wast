@@ -28,6 +28,7 @@ type UnifiedScanResult struct {
 	XSS          *XSSScanResult      `json:"xss,omitempty" yaml:"xss,omitempty"`
 	CSRF         *CSRFScanResult     `json:"csrf,omitempty" yaml:"csrf,omitempty"`
 	SSRF         *SSRFScanResult     `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
+	Redirect     *RedirectScanResult `json:"redirect,omitempty" yaml:"redirect,omitempty"`
 	Correlations []CorrelatedFinding `json:"correlations,omitempty" yaml:"correlations,omitempty"`
 	RiskScore    RiskScore           `json:"risk_score" yaml:"risk_score"`
 	Summary      UnifiedSummary      `json:"summary" yaml:"summary"`
@@ -64,7 +65,7 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:       target,
 		PassiveOnly:  passiveOnly,
@@ -73,6 +74,7 @@ func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanRe
 		SQLi:         sqli,
 		CSRF:         csrf,
 		SSRF:         ssrf,
+		Redirect:     redirect,
 		Correlations: make([]CorrelatedFinding, 0),
 		Errors:       errors,
 	}
@@ -242,6 +244,18 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	}
 	breakdown["ssrf"] = min(ssrfScore, 30) // Cap at 30 points
 
+	// Score Open Redirect vulnerabilities
+	redirectScore := 0
+	if u.Redirect != nil {
+		for _, finding := range u.Redirect.Findings {
+			score := u.severityToScore(finding.Severity)
+			redirectScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
+	breakdown["redirect"] = min(redirectScore, 25) // Cap at 25 points
+
 	// Score header misconfigurations
 	misconfigScore := 0
 	if u.Headers != nil {
@@ -344,6 +358,13 @@ func (u *UnifiedScanResult) generateSummary() {
 		}
 	}
 
+	if u.Redirect != nil {
+		for _, finding := range u.Redirect.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
 	summary.HighSeverity = severityCounts[SeverityHigh]
 	summary.MediumSeverity = severityCounts[SeverityMedium]
 	summary.LowSeverity = severityCounts[SeverityLow]
@@ -404,6 +425,19 @@ func (u *UnifiedScanResult) generatePriorityActions() []string {
 	// Priority 4: CSRF vulnerabilities
 	if u.CSRF != nil && len(u.CSRF.Findings) > 0 {
 		actions = append(actions, fmt.Sprintf("MEDIUM: Implement CSRF tokens for %d vulnerable forms", len(u.CSRF.Findings)))
+	}
+
+	// Priority 4.5: Open Redirect vulnerabilities
+	if u.Redirect != nil && len(u.Redirect.Findings) > 0 {
+		highSeverityRedirect := 0
+		for _, finding := range u.Redirect.Findings {
+			if finding.Severity == SeverityHigh {
+				highSeverityRedirect++
+			}
+		}
+		if highSeverityRedirect > 0 {
+			actions = append(actions, fmt.Sprintf("HIGH: Fix %d Open Redirect vulnerabilities - implement URL validation allowlist", highSeverityRedirect))
+		}
 	}
 
 	// Priority 5: Cookie security issues

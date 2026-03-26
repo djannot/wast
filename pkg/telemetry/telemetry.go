@@ -38,6 +38,8 @@ const (
 	SpanNameScanCSRF = "wast.scanner.csrf"
 	// SpanNameScanSSRF is the span name for SSRF scanning
 	SpanNameScanSSRF = "wast.scanner.ssrf"
+	// SpanNameScanRedirect is the span name for Open Redirect scanning
+	SpanNameScanRedirect = "wast.scanner.redirect"
 	// SpanNameHTTPRequest is the span name for individual HTTP requests
 	SpanNameHTTPRequest = "wast.http.request"
 	// SpanNameCrawl is the span name for crawling operations

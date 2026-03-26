@@ -33,15 +33,17 @@ type IntermediateScanResult struct {
 	SQLi        *SQLiScanResult
 	CSRF        *CSRFScanResult
 	SSRF        *SSRFScanResult
+	Redirect    *RedirectScanResult
 	Errors      []string
 }
 
 // ScanStats tracks statistics about the verification process.
 type ScanStats struct {
-	TotalXSSFindings  int
-	TotalSQLiFindings int
-	TotalCSRFFindings int
-	TotalSSRFFindings int
+	TotalXSSFindings      int
+	TotalSQLiFindings     int
+	TotalCSRFFindings     int
+	TotalSSRFFindings     int
+	TotalRedirectFindings int
 }
 
 // ExecuteScan performs the complete scan workflow.
@@ -64,6 +66,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	ssrfOpts := []SSRFOption{
 		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	redirectOpts := []RedirectOption{
+		WithRedirectTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -72,6 +77,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		sqliOpts = append(sqliOpts, WithSQLiAuth(cfg.AuthConfig))
 		csrfOpts = append(csrfOpts, WithCSRFAuth(cfg.AuthConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
+		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -81,6 +87,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		sqliOpts = append(sqliOpts, WithSQLiRateLimitConfig(cfg.RateLimitConfig))
 		csrfOpts = append(csrfOpts, WithCSRFRateLimitConfig(cfg.RateLimitConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
+		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -90,6 +97,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		sqliOpts = append(sqliOpts, WithSQLiTracer(cfg.Tracer))
 		csrfOpts = append(csrfOpts, WithCSRFTracer(cfg.Tracer))
 		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
+		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
 	}
 
 	// Create scanners
@@ -120,15 +128,17 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		sqliScanner := NewSQLiScanner(sqliOpts...)
 		csrfScanner := NewCSRFScanner(csrfOpts...)
 		ssrfScanner := NewSSRFScanner(ssrfOpts...)
+		redirectScanner := NewRedirectScanner(redirectOpts...)
 
 		var wg sync.WaitGroup
 		var xssResult *XSSScanResult
 		var sqliResult *SQLiScanResult
 		var csrfResult *CSRFScanResult
 		var ssrfResult *SSRFScanResult
+		var redirectResult *RedirectScanResult
 
 		// Run scans in parallel
-		wg.Add(4)
+		wg.Add(5)
 		go func() {
 			defer wg.Done()
 			xssResult = xssScanner.Scan(ctx, cfg.Target)
@@ -145,6 +155,10 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			defer wg.Done()
 			ssrfResult = ssrfScanner.Scan(ctx, cfg.Target)
 		}()
+		go func() {
+			defer wg.Done()
+			redirectResult = redirectScanner.Scan(ctx, cfg.Target)
+		}()
 		wg.Wait()
 
 		// Verify findings if enabled
@@ -160,6 +174,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			stats.TotalSQLiFindings = len(sqliResult.Findings)
 			stats.TotalCSRFFindings = len(csrfResult.Findings)
 			stats.TotalSSRFFindings = len(ssrfResult.Findings)
+			stats.TotalRedirectFindings = len(redirectResult.Findings)
 
 			// Verify XSS findings
 			for i := range xssResult.Findings {
@@ -222,6 +237,23 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				}
 			}
 
+			// Verify Redirect findings
+			for i := range redirectResult.Findings {
+				result, err := redirectScanner.VerifyFinding(ctx, &redirectResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					redirectResult.Findings[i].Verified = result.Verified
+					redirectResult.Findings[i].VerificationAttempts = result.Attempts
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						redirectResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						redirectResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						redirectResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings when verification is enabled
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -258,12 +290,22 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			}
 			ssrfResult.Findings = verifiedSSRFFindings
 			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
+
+			verifiedRedirectFindings := make([]RedirectFinding, 0)
+			for _, finding := range redirectResult.Findings {
+				if finding.Verified {
+					verifiedRedirectFindings = append(verifiedRedirectFindings, finding)
+				}
+			}
+			redirectResult.Findings = verifiedRedirectFindings
+			redirectResult.Summary.VulnerabilitiesFound = len(verifiedRedirectFindings)
 		}
 
 		intermediateResult.XSS = xssResult
 		intermediateResult.SQLi = sqliResult
 		intermediateResult.CSRF = csrfResult
 		intermediateResult.SSRF = ssrfResult
+		intermediateResult.Redirect = redirectResult
 
 		// Aggregate errors from active scans
 		if len(xssResult.Errors) > 0 {
@@ -278,6 +320,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		if len(ssrfResult.Errors) > 0 {
 			intermediateResult.Errors = append(intermediateResult.Errors, ssrfResult.Errors...)
 		}
+		if len(redirectResult.Errors) > 0 {
+			intermediateResult.Errors = append(intermediateResult.Errors, redirectResult.Errors...)
+		}
 	}
 
 	// Create unified result with correlation and risk scoring
@@ -289,6 +334,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.SQLi,
 		intermediateResult.CSRF,
 		intermediateResult.SSRF,
+		intermediateResult.Redirect,
 		intermediateResult.Errors,
 	)
 
@@ -321,10 +367,16 @@ func CalculateFilteredCount(stats *ScanStats, result *UnifiedScanResult) int {
 		verifiedSSRFCount = len(result.SSRF.Findings)
 	}
 
+	verifiedRedirectCount := 0
+	if result.Redirect != nil {
+		verifiedRedirectCount = len(result.Redirect.Findings)
+	}
+
 	totalFiltered := (stats.TotalXSSFindings - verifiedXSSCount) +
 		(stats.TotalSQLiFindings - verifiedSQLiCount) +
 		(stats.TotalCSRFFindings - verifiedCSRFCount) +
-		(stats.TotalSSRFFindings - verifiedSSRFCount)
+		(stats.TotalSSRFFindings - verifiedSSRFCount) +
+		(stats.TotalRedirectFindings - verifiedRedirectCount)
 
 	return totalFiltered
 }
