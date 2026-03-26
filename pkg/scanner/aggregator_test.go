@@ -33,7 +33,7 @@ func TestNewUnifiedScanResult(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.Target != target {
 		t.Errorf("Expected target %s, got %s", target, result.Target)
@@ -80,7 +80,7 @@ func TestCorrelationXSSWithMissingCSP(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected XSS + missing CSP correlation, got no correlations")
@@ -132,7 +132,7 @@ func TestCorrelationSQLiWithServerHeaders(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, sqli, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, sqli, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected SQLi + server header correlation, got no correlations")
@@ -176,7 +176,7 @@ func TestCorrelationCSRFWithMissingSameSite(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, nil, csrf, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, nil, csrf, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected CSRF + missing SameSite correlation, got no correlations")
@@ -212,7 +212,7 @@ func TestCorrelationMultipleInjectionPoints(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, nil, xss, sqli, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, nil, xss, sqli, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected multiple injection point correlation, got no correlations")
@@ -275,7 +275,7 @@ func TestRiskScoreCalculation(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil)
 
 	if result.RiskScore.Overall <= 0 || result.RiskScore.Overall > 100 {
 		t.Errorf("Expected risk score between 1-100, got %d", result.RiskScore.Overall)
@@ -329,7 +329,7 @@ func TestUnifiedSummary(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.Summary.TotalFindings != 3 {
 		t.Errorf("Expected 3 total findings, got %d", result.Summary.TotalFindings)
@@ -360,7 +360,7 @@ func TestPriorityActions(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, nil, nil, sqli, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, nil, nil, sqli, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Summary.PriorityActions) == 0 {
 		t.Errorf("Expected priority actions to be generated")
@@ -425,7 +425,7 @@ func TestGetPrioritizedFindings(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil)
 	prioritized := result.GetPrioritizedFindings()
 
 	if len(prioritized) == 0 {
@@ -442,7 +442,7 @@ func TestGetPrioritizedFindings(t *testing.T) {
 func TestEmptyResultHandling(t *testing.T) {
 	target := "https://example.com"
 
-	result := NewUnifiedScanResult(target, true, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, true, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.RiskScore.Overall != 0 {
 		t.Errorf("Expected zero risk score for empty results, got %d", result.RiskScore.Overall)
@@ -471,7 +471,7 @@ func TestPassiveOnlyFlag(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, true, headers, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, true, headers, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if !result.PassiveOnly {
 		t.Errorf("Expected PassiveOnly flag to be true")
@@ -482,7 +482,7 @@ func TestErrorPropagation(t *testing.T) {
 	target := "https://example.com"
 	errors := []string{"error 1", "error 2"}
 
-	result := NewUnifiedScanResult(target, false, nil, nil, nil, nil, nil, nil, nil, errors)
+	result := NewUnifiedScanResult(target, false, nil, nil, nil, nil, nil, nil, nil, nil, errors)
 
 	if len(result.Errors) != 2 {
 		t.Errorf("Expected 2 errors, got %d", len(result.Errors))
@@ -584,7 +584,7 @@ func TestCorrelationIDGeneration(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil)
 
 	// Check that correlation IDs are unique
 	ids := make(map[string]bool)
@@ -634,7 +634,7 @@ func TestRiskScoreBreakdownCategories(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil)
 
 	// Check that expected categories are present
 	expectedCategories := []string{"injection", "csrf", "misconfiguration"}
@@ -671,7 +671,7 @@ func TestGetPrioritizedFindings_NoDuplicates(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil)
 	prioritized := result.GetPrioritizedFindings()
 
 	// Check for duplicates by building a map of findings
@@ -754,7 +754,7 @@ func TestFindCookiesWithoutSameSite_NoneValue(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, nil, nil, nil, nil, nil, nil, nil)
 	insecure := result.findCookiesWithoutSameSite()
 
 	// Should find 2 insecure cookies: "none" and empty string

@@ -21,19 +21,20 @@ const (
 // UnifiedScanResult represents a comprehensive aggregation of all scan results
 // with correlation and risk scoring for AI agent consumption.
 type UnifiedScanResult struct {
-	Target       string              `json:"target" yaml:"target"`
-	PassiveOnly  bool                `json:"passive_only" yaml:"passive_only"`
-	Headers      *HeaderScanResult   `json:"headers,omitempty" yaml:"headers,omitempty"`
-	SQLi         *SQLiScanResult     `json:"sqli,omitempty" yaml:"sqli,omitempty"`
-	XSS          *XSSScanResult      `json:"xss,omitempty" yaml:"xss,omitempty"`
-	CSRF         *CSRFScanResult     `json:"csrf,omitempty" yaml:"csrf,omitempty"`
-	SSRF         *SSRFScanResult     `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
-	Redirect     *RedirectScanResult `json:"redirect,omitempty" yaml:"redirect,omitempty"`
-	CMDi         *CMDiScanResult     `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
-	Correlations []CorrelatedFinding `json:"correlations,omitempty" yaml:"correlations,omitempty"`
-	RiskScore    RiskScore           `json:"risk_score" yaml:"risk_score"`
-	Summary      UnifiedSummary      `json:"summary" yaml:"summary"`
-	Errors       []string            `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Target        string                   `json:"target" yaml:"target"`
+	PassiveOnly   bool                     `json:"passive_only" yaml:"passive_only"`
+	Headers       *HeaderScanResult        `json:"headers,omitempty" yaml:"headers,omitempty"`
+	SQLi          *SQLiScanResult          `json:"sqli,omitempty" yaml:"sqli,omitempty"`
+	XSS           *XSSScanResult           `json:"xss,omitempty" yaml:"xss,omitempty"`
+	CSRF          *CSRFScanResult          `json:"csrf,omitempty" yaml:"csrf,omitempty"`
+	SSRF          *SSRFScanResult          `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
+	Redirect      *RedirectScanResult      `json:"redirect,omitempty" yaml:"redirect,omitempty"`
+	CMDi          *CMDiScanResult          `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
+	PathTraversal *PathTraversalScanResult `json:"pathtraversal,omitempty" yaml:"pathtraversal,omitempty"`
+	Correlations  []CorrelatedFinding      `json:"correlations,omitempty" yaml:"correlations,omitempty"`
+	RiskScore     RiskScore                `json:"risk_score" yaml:"risk_score"`
+	Summary       UnifiedSummary           `json:"summary" yaml:"summary"`
+	Errors        []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // CorrelatedFinding represents related vulnerabilities across different scanners
@@ -66,19 +67,20 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
-		Target:       target,
-		PassiveOnly:  passiveOnly,
-		Headers:      headers,
-		XSS:          xss,
-		SQLi:         sqli,
-		CSRF:         csrf,
-		SSRF:         ssrf,
-		Redirect:     redirect,
-		CMDi:         cmdi,
-		Correlations: make([]CorrelatedFinding, 0),
-		Errors:       errors,
+		Target:        target,
+		PassiveOnly:   passiveOnly,
+		Headers:       headers,
+		XSS:           xss,
+		SQLi:          sqli,
+		CSRF:          csrf,
+		SSRF:          ssrf,
+		Redirect:      redirect,
+		CMDi:          cmdi,
+		PathTraversal: pathtraversal,
+		Correlations:  make([]CorrelatedFinding, 0),
+		Errors:        errors,
 	}
 
 	// Perform correlation analysis
@@ -289,6 +291,14 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 			confidenceCount++
 		}
 	}
+	if u.PathTraversal != nil {
+		for _, finding := range u.PathTraversal.Findings {
+			score := u.severityToScore(finding.Severity)
+			injectionScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
 	breakdown["injection"] = min(injectionScore, 40) // Cap at 40 points
 
 	// Score CSRF vulnerabilities
@@ -435,6 +445,13 @@ func (u *UnifiedScanResult) generateSummary() {
 
 	if u.CMDi != nil {
 		for _, finding := range u.CMDi.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
+	if u.PathTraversal != nil {
+		for _, finding := range u.PathTraversal.Findings {
 			summary.TotalFindings++
 			severityCounts[finding.Severity]++
 		}
