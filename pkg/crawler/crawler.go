@@ -58,18 +58,22 @@ const (
 	MaxSitemapsPerIndex = 5
 )
 
+// ProgressCallback is a function called to report progress during crawling.
+type ProgressCallback func(visited int, discovered int, phase string)
+
 // Crawler performs web crawling operations.
 type Crawler struct {
-	client        HTTPClient
-	userAgent     string
-	timeout       time.Duration
-	maxDepth      int
-	respectRobots bool
-	robotsData    *RobotsData
-	authConfig    *auth.AuthConfig
-	rateLimiter   ratelimit.Limiter
-	concurrency   int
-	tracer        trace.Tracer
+	client           HTTPClient
+	userAgent        string
+	timeout          time.Duration
+	maxDepth         int
+	respectRobots    bool
+	robotsData       *RobotsData
+	authConfig       *auth.AuthConfig
+	rateLimiter      ratelimit.Limiter
+	concurrency      int
+	tracer           trace.Tracer
+	progressCallback ProgressCallback
 }
 
 // Option is a function that configures a Crawler.
@@ -144,6 +148,13 @@ func WithConcurrency(n int) Option {
 		if n > 0 {
 			cr.concurrency = n
 		}
+	}
+}
+
+// WithProgressCallback sets a callback function to receive progress updates.
+func WithProgressCallback(cb ProgressCallback) Option {
+	return func(cr *Crawler) {
+		cr.progressCallback = cb
 	}
 }
 
@@ -332,6 +343,15 @@ func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.
 	result.CrawledURLs = append(result.CrawledURLs, item.url)
 	if item.depth > result.Statistics.MaxDepthReached {
 		result.Statistics.MaxDepthReached = item.depth
+	}
+
+	// Report progress if callback is set
+	if c.progressCallback != nil {
+		visited := len(result.CrawledURLs)
+		discovered := len(result.InternalLinks)
+		mu.Unlock()
+		c.progressCallback(visited, discovered, "crawling")
+		mu.Lock()
 	}
 	mu.Unlock()
 

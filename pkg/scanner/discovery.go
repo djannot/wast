@@ -12,6 +12,9 @@ import (
 	"github.com/djannot/wast/pkg/crawler"
 )
 
+// ProgressCallback is a function called to report progress during scanning.
+type ProgressCallback func(completed int, total int, phase string)
+
 // DiscoveredTarget represents a discovered endpoint to scan.
 type DiscoveredTarget struct {
 	URL        string            // The URL to scan
@@ -23,10 +26,11 @@ type DiscoveredTarget struct {
 // DiscoveryScanConfig extends ScanConfig with discovery-specific options.
 type DiscoveryScanConfig struct {
 	ScanConfig
-	CrawlDepth      int  // Maximum depth for crawling (default: 2)
-	Concurrency     int  // Number of concurrent workers for crawling (default: 5)
-	ScanConcurrency int  // Number of concurrent workers for scanning discovered targets (default: 5)
-	Discover        bool // Enable discovery mode
+	CrawlDepth       int              // Maximum depth for crawling (default: 2)
+	Concurrency      int              // Number of concurrent workers for crawling (default: 5)
+	ScanConcurrency  int              // Number of concurrent workers for scanning discovered targets (default: 5)
+	Discover         bool             // Enable discovery mode
+	ProgressCallback ProgressCallback // Optional callback to report progress
 }
 
 // ExecuteDiscoveryScan performs crawl-then-scan workflow.
@@ -68,6 +72,13 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 		crawlerOpts = append(crawlerOpts, crawler.WithTracer(cfg.Tracer))
 	}
 
+	// Add progress callback for crawling phase
+	if cfg.ProgressCallback != nil {
+		crawlerOpts = append(crawlerOpts, crawler.WithProgressCallback(func(visited, discovered int, phase string) {
+			cfg.ProgressCallback(visited, 0, "crawling")
+		}))
+	}
+
 	c := crawler.NewCrawler(crawlerOpts...)
 
 	// Perform the crawl
@@ -80,7 +91,7 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 	targets := extractDiscoveredTargets(cfg.Target, crawlResult)
 
 	// Scan all discovered targets
-	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency)
+	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency, cfg.ProgressCallback)
 }
 
 // extractDiscoveredTargets extracts scannable targets from crawl results.
@@ -160,11 +171,16 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 }
 
 // scanDiscoveredTargets scans all discovered targets and aggregates results.
-func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget, scanConcurrency int) (*UnifiedScanResult, *ScanStats) {
+func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget, scanConcurrency int, progressCallback ProgressCallback) (*UnifiedScanResult, *ScanStats) {
 	// If no targets discovered, fall back to scanning the base target
 	if len(targets) == 0 {
 		return ExecuteScan(ctx, cfg)
 	}
+
+	// Track completed scans for progress reporting
+	var completedScans int
+	totalTargets := len(targets)
+	var progressMutex sync.Mutex
 
 	// Create scanner options
 	headerOpts := []Option{
@@ -296,6 +312,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					allCSRFFindings = append(allCSRFFindings, csrfFindings...)
 					allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
 					mu.Unlock()
+
+					// Report progress if callback is set
+					if progressCallback != nil {
+						progressMutex.Lock()
+						completedScans++
+						currentCompleted := completedScans
+						progressMutex.Unlock()
+						progressCallback(currentCompleted, totalTargets, "scanning")
+					}
 				}
 			}()
 		}

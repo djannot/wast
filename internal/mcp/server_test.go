@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1277,10 +1278,18 @@ func TestHandleToolsCallSuccess(t *testing.T) {
 
 	server.handleRequest(ctx, &request)
 
-	// Parse response
+	// Output may contain multiple JSON objects (notifications + response)
+	// Find the last line which should be the response
+	outputStr := output.String()
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	if len(lines) == 0 {
+		t.Fatal("No output received")
+	}
+
+	// Parse the last line as the response
 	var response JSONRPCResponse
-	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to parse response: %v", err)
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v (output: %s)", err, outputStr)
 	}
 
 	// Should return success
@@ -2054,5 +2063,129 @@ func TestHeadersToolTimeoutDefault(t *testing.T) {
 	// Should succeed with default timeout
 	if result == nil {
 		t.Error("Result should not be nil")
+	}
+}
+
+// TestSendProgress tests the sendProgress method
+func TestSendProgress(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Send a progress notification
+	server.sendProgress("crawling", 5, 10, "crawling: visited 5 pages")
+
+	// Parse the notification
+	var notif JSONRPCNotification
+	if err := json.Unmarshal(output.Bytes(), &notif); err != nil {
+		t.Fatalf("Failed to parse notification: %v", err)
+	}
+
+	// Verify notification structure
+	if notif.JSONRPC != "2.0" {
+		t.Errorf("Expected jsonrpc 2.0, got %s", notif.JSONRPC)
+	}
+	if notif.Method != "notifications/progress" {
+		t.Errorf("Expected method notifications/progress, got %s", notif.Method)
+	}
+
+	// Verify progress params
+	paramsMap, ok := notif.Params.(map[string]interface{})
+	if !ok {
+		t.Fatal("Params should be a map")
+	}
+
+	if phase, ok := paramsMap["phase"].(string); !ok || phase != "crawling" {
+		t.Errorf("Expected phase crawling, got %v", paramsMap["phase"])
+	}
+	if completed, ok := paramsMap["completed"].(float64); !ok || int(completed) != 5 {
+		t.Errorf("Expected completed 5, got %v", paramsMap["completed"])
+	}
+	if total, ok := paramsMap["total"].(float64); !ok || int(total) != 10 {
+		t.Errorf("Expected total 10, got %v", paramsMap["total"])
+	}
+	if message, ok := paramsMap["message"].(string); !ok || message != "crawling: visited 5 pages" {
+		t.Errorf("Expected message 'crawling: visited 5 pages', got %v", paramsMap["message"])
+	}
+}
+
+// TestSendNotification tests the sendNotification method
+func TestSendNotification(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Send a custom notification
+	params := map[string]interface{}{
+		"status": "running",
+		"phase":  "scanning",
+	}
+	server.sendNotification("custom/notification", params)
+
+	// Parse the notification
+	var notif JSONRPCNotification
+	if err := json.Unmarshal(output.Bytes(), &notif); err != nil {
+		t.Fatalf("Failed to parse notification: %v", err)
+	}
+
+	// Verify notification structure
+	if notif.JSONRPC != "2.0" {
+		t.Errorf("Expected jsonrpc 2.0, got %s", notif.JSONRPC)
+	}
+	if notif.Method != "custom/notification" {
+		t.Errorf("Expected method custom/notification, got %s", notif.Method)
+	}
+
+	// Verify params
+	paramsMap, ok := notif.Params.(map[string]interface{})
+	if !ok {
+		t.Fatal("Params should be a map")
+	}
+	if status, ok := paramsMap["status"].(string); !ok || status != "running" {
+		t.Errorf("Expected status running, got %v", paramsMap["status"])
+	}
+}
+
+// TestConcurrentProgressNotifications tests thread-safety of progress notifications
+func TestConcurrentProgressNotifications(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	numNotifications := 20
+	done := make(chan bool, numNotifications)
+
+	// Send multiple progress notifications concurrently
+	for i := 0; i < numNotifications; i++ {
+		go func(n int) {
+			server.sendProgress("test", n, numNotifications, fmt.Sprintf("progress %d", n))
+			done <- true
+		}(i)
+	}
+
+	// Wait for all notifications
+	timeout := time.After(5 * time.Second)
+	for i := 0; i < numNotifications; i++ {
+		select {
+		case <-done:
+			// Success
+		case <-timeout:
+			t.Fatal("Timeout waiting for concurrent notifications")
+		}
+	}
+
+	// Verify we got notifications (should have multiple JSON objects in output)
+	outputStr := output.String()
+	if outputStr == "" {
+		t.Error("Should have received notifications")
+	}
+
+	// Count number of notifications
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	if len(lines) != numNotifications {
+		t.Errorf("Expected %d notifications, got %d", numNotifications, len(lines))
 	}
 }
