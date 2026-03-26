@@ -24,9 +24,9 @@ const (
 	maxResponseSize = 10 * 1024 * 1024
 
 	// Content-based detection thresholds
-	minWordCountDifference        = 5   // Minimum word count difference to consider significant
+	minWordCountDifference         = 5  // Minimum word count difference to consider significant
 	minStructuralElementDifference = 1  // Minimum structural element difference to consider significant
-	lengthDifferenceThresholdPct  = 20  // Minimum percentage difference in length to consider significant
+	lengthDifferenceThresholdPct   = 20 // Minimum percentage difference in length to consider significant
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -714,12 +714,12 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 
 // responseCharacteristics holds response data for comparison
 type responseCharacteristics struct {
-	StatusCode        int
-	BodyLength        int
-	Body              string
-	ContentHash       string // MD5 hash of extracted body content
-	WordCount         int    // Number of words in the response
-	StructuralElements int   // Count of structural HTML elements (tr, li, etc.)
+	StatusCode         int
+	BodyLength         int
+	Body               string
+	ContentHash        string // MD5 hash of extracted body content
+	WordCount          int    // Number of words in the response
+	StructuralElements int    // Count of structural HTML elements (tr, li, etc.)
 }
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
