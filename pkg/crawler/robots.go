@@ -118,6 +118,12 @@ func matchesRobotsPath(urlPath, robotsPath string) bool {
 // matchWildcard performs simple wildcard matching.
 // Supports * for any characters.
 func matchWildcard(s, pattern string) bool {
+	// Handle $ end anchor on the pattern
+	hasEndAnchor := strings.HasSuffix(pattern, "$")
+	if hasEndAnchor {
+		pattern = strings.TrimSuffix(pattern, "$")
+	}
+
 	// Split pattern by wildcards
 	parts := strings.Split(pattern, "*")
 
@@ -142,11 +148,10 @@ func matchWildcard(s, pattern string) bool {
 		pos += idx + len(parts[i])
 	}
 
-	// Handle $ end anchor on last part
-	lastPart := parts[len(parts)-1]
-	if strings.HasSuffix(lastPart, "$") {
-		expected := strings.TrimSuffix(lastPart, "$")
-		return strings.HasSuffix(s, expected)
+	// If end anchor is present, verify the match ends exactly
+	if hasEndAnchor {
+		lastPart := parts[len(parts)-1]
+		return strings.HasSuffix(s, lastPart)
 	}
 
 	return true
