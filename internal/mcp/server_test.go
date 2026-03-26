@@ -2330,3 +2330,433 @@ func TestVerifyToolValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestVerifyToolExecute tests successful verification scenarios
+func TestVerifyToolExecute(t *testing.T) {
+	tests := []struct {
+		name        string
+		findingType string
+		findingURL  string
+		parameter   string
+		payload     string
+		maxRetries  int
+		delay       string
+	}{
+		{
+			name:        "verify XSS finding",
+			findingType: "xss",
+			findingURL:  "https://example.com/search",
+			parameter:   "q",
+			payload:     "<script>alert('XSS')</script>",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify SQLi finding",
+			findingType: "sqli",
+			findingURL:  "https://example.com/query",
+			parameter:   "id",
+			payload:     "' OR '1'='1",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify SSRF finding",
+			findingType: "ssrf",
+			findingURL:  "https://example.com/fetch",
+			parameter:   "url",
+			payload:     "http://169.254.169.254/latest/meta-data",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify CMDi finding",
+			findingType: "cmdi",
+			findingURL:  "https://example.com/exec",
+			parameter:   "cmd",
+			payload:     "; ls -la",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify Path Traversal finding",
+			findingType: "pathtraversal",
+			findingURL:  "https://example.com/file",
+			parameter:   "path",
+			payload:     "../../../../etc/passwd",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify Redirect finding",
+			findingType: "redirect",
+			findingURL:  "https://example.com/redirect",
+			parameter:   "target",
+			payload:     "//evil.com",
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+		{
+			name:        "verify CSRF finding",
+			findingType: "csrf",
+			findingURL:  "https://example.com/form",
+			parameter:   "missing_token",
+			payload:     "placeholder", // CSRF doesn't use payload in verification but validation requires it
+			maxRetries:  3,
+			delay:       "100ms",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewServer()
+			tool := &VerifyTool{server: server}
+
+			params := map[string]interface{}{
+				"finding_type": tt.findingType,
+				"finding_url":  tt.findingURL,
+				"parameter":    tt.parameter,
+				"payload":      tt.payload,
+				"max_retries":  tt.maxRetries,
+				"delay":        tt.delay,
+			}
+
+			paramsJSON, err := json.Marshal(params)
+			if err != nil {
+				t.Fatalf("Failed to marshal params: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := tool.Execute(ctx, paramsJSON)
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if result == nil {
+				t.Fatal("Execute returned nil result")
+			}
+
+			// Verify result is a VerificationResult
+			verifyResult, ok := result.(*scanner.VerificationResult)
+			if !ok {
+				t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+			}
+
+			// Validate result structure
+			if verifyResult.Attempts < 0 {
+				t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+			}
+
+			if verifyResult.Confidence < 0.0 || verifyResult.Confidence > 1.0 {
+				t.Errorf("Confidence should be between 0.0 and 1.0, got %f", verifyResult.Confidence)
+			}
+
+			if verifyResult.Explanation == "" {
+				t.Error("Explanation should not be empty")
+			}
+		})
+	}
+}
+
+// TestVerifyToolExecuteWithAuth tests verification with authentication
+func TestVerifyToolExecuteWithAuth(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type": "xss",
+		"finding_url":  "https://example.com/test",
+		"parameter":    "q",
+		"payload":      "<script>alert(1)</script>",
+		"max_retries":  2,
+		"delay":        "50ms",
+		"bearer_token": "test-bearer-token",
+		"basic_auth":   "user:password",
+		"cookies":      []string{"session=xyz123", "user=admin"},
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, paramsJSON)
+
+	if err != nil {
+		t.Errorf("Unexpected error with auth: %v", err)
+		return
+	}
+
+	if result == nil {
+		t.Fatal("Execute with auth returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestVerifyToolExecuteWithRateLimit tests verification with rate limiting
+func TestVerifyToolExecuteWithRateLimit(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type":        "sqli",
+		"finding_url":         "https://example.com/query",
+		"parameter":           "id",
+		"payload":             "' OR '1'='1",
+		"max_retries":         2,
+		"delay":               "50ms",
+		"requests_per_second": 5.0,
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, paramsJSON)
+
+	if err != nil {
+		t.Errorf("Unexpected error with rate limit: %v", err)
+		return
+	}
+
+	if result == nil {
+		t.Fatal("Execute with rate limit returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestVerifyToolExecuteWithCustomRetries tests verification with custom retry configuration
+func TestVerifyToolExecuteWithCustomRetries(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type": "xss",
+		"finding_url":  "https://example.com/test",
+		"parameter":    "q",
+		"payload":      "<img src=x onerror=alert(1)>",
+		"max_retries":  5,
+		"delay":        "200ms",
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, paramsJSON)
+
+	if err != nil {
+		t.Errorf("Unexpected error with custom retries: %v", err)
+		return
+	}
+
+	if result == nil {
+		t.Fatal("Execute with custom retries returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestVerifyToolExecuteInvalidDelay tests verification with invalid delay format
+func TestVerifyToolExecuteInvalidDelay(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type": "xss",
+		"finding_url":  "https://example.com/test",
+		"parameter":    "q",
+		"payload":      "<script>alert(1)</script>",
+		"max_retries":  3,
+		"delay":        "invalid",
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx := context.Background()
+
+	_, err = tool.Execute(ctx, paramsJSON)
+
+	if err == nil {
+		t.Error("Expected error for invalid delay, got nil")
+	} else if !strings.Contains(err.Error(), "invalid delay") {
+		t.Errorf("Expected 'invalid delay' error, got '%s'", err.Error())
+	}
+}
+
+// TestVerifyToolExecuteDefaultValues tests verification with default values
+func TestVerifyToolExecuteDefaultValues(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type": "xss",
+		"finding_url":  "https://example.com/test",
+		"parameter":    "q",
+		"payload":      "<script>alert(1)</script>",
+		// max_retries and delay not provided, should use defaults
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := tool.Execute(ctx, paramsJSON)
+
+	if err != nil {
+		t.Errorf("Unexpected error with defaults: %v", err)
+		return
+	}
+
+	if result == nil {
+		t.Fatal("Execute with defaults returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestVerifyToolExecuteInvalidURL tests verification with invalid URL
+func TestVerifyToolExecuteInvalidURL(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	params := map[string]interface{}{
+		"finding_type": "xss",
+		"finding_url":  "ftp://not-http-scheme.com", // Invalid scheme for security testing
+		"parameter":    "q",
+		"payload":      "<script>alert(1)</script>",
+		"max_retries":  3,
+		"delay":        "100ms",
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("Failed to marshal params: %v", err)
+	}
+
+	ctx := context.Background()
+
+	_, err = tool.Execute(ctx, paramsJSON)
+
+	if err == nil {
+		t.Error("Expected error for invalid URL scheme, got nil")
+	} else if !strings.Contains(err.Error(), "HTTP") {
+		t.Logf("Got expected error: %v", err)
+	}
+}
+
+// TestVerifyToolExecuteAllFindingTypes tests all supported finding types through Execute
+func TestVerifyToolExecuteAllFindingTypes(t *testing.T) {
+	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	for _, findingType := range findingTypes {
+		t.Run(findingType, func(t *testing.T) {
+			parameter := "param"
+			payload := "test"
+			if findingType == "csrf" {
+				parameter = "missing_token"
+				payload = "placeholder" // CSRF doesn't use payload in verification but validation requires it
+			}
+
+			params := map[string]interface{}{
+				"finding_type": findingType,
+				"finding_url":  "https://example.com/test",
+				"parameter":    parameter,
+				"payload":      payload,
+				"max_retries":  2,
+				"delay":        "50ms",
+			}
+
+			paramsJSON, err := json.Marshal(params)
+			if err != nil {
+				t.Fatalf("Failed to marshal params: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			result, err := tool.Execute(ctx, paramsJSON)
+
+			if err != nil {
+				t.Errorf("Unexpected error for %s: %v", findingType, err)
+				return
+			}
+
+			if result == nil {
+				t.Fatalf("Execute returned nil for %s", findingType)
+			}
+
+			verifyResult, ok := result.(*scanner.VerificationResult)
+			if !ok {
+				t.Fatalf("Expected *scanner.VerificationResult type for %s, got %T", findingType, result)
+			}
+
+			if verifyResult.Attempts < 0 {
+				t.Errorf("%s: Attempts should be non-negative, got %d", findingType, verifyResult.Attempts)
+			}
+
+			if verifyResult.Confidence < 0.0 || verifyResult.Confidence > 1.0 {
+				t.Errorf("%s: Confidence should be between 0.0 and 1.0, got %f", findingType, verifyResult.Confidence)
+			}
+
+			if verifyResult.Explanation == "" {
+				t.Errorf("%s: Explanation should not be empty", findingType)
+			}
+		})
+	}
+}

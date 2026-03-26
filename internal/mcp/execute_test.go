@@ -705,6 +705,293 @@ func TestReconResultJSONMarshaling(t *testing.T) {
 	}
 }
 
+// TestExecuteVerify tests the executeVerify function
+func TestExecuteVerify(t *testing.T) {
+	tests := []struct {
+		name        string
+		findingType string
+		findingURL  string
+		parameter   string
+		payload     string
+		maxRetries  int
+		delay       time.Duration
+		expectError bool
+	}{
+		{
+			name:        "xss verification",
+			findingType: "xss",
+			findingURL:  "https://example.com/test",
+			parameter:   "q",
+			payload:     "<script>alert('XSS')</script>",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "sqli verification",
+			findingType: "sqli",
+			findingURL:  "https://example.com/query",
+			parameter:   "id",
+			payload:     "' OR '1'='1",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "ssrf verification",
+			findingType: "ssrf",
+			findingURL:  "https://example.com/fetch",
+			parameter:   "url",
+			payload:     "http://169.254.169.254/latest/meta-data",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "cmdi verification",
+			findingType: "cmdi",
+			findingURL:  "https://example.com/exec",
+			parameter:   "cmd",
+			payload:     "; ls -la",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "pathtraversal verification",
+			findingType: "pathtraversal",
+			findingURL:  "https://example.com/file",
+			parameter:   "path",
+			payload:     "../../../../etc/passwd",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "redirect verification",
+			findingType: "redirect",
+			findingURL:  "https://example.com/redirect",
+			parameter:   "target",
+			payload:     "//evil.com",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "csrf verification",
+			findingType: "csrf",
+			findingURL:  "https://example.com/form",
+			parameter:   "missing_token",
+			payload:     "",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "invalid finding type",
+			findingType: "invalid",
+			findingURL:  "https://example.com/test",
+			parameter:   "param",
+			payload:     "test",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			authConfig := &auth.AuthConfig{}
+			rateLimitConfig := ratelimit.Config{}
+
+			result, err := executeVerify(ctx, tt.findingType, tt.findingURL, tt.parameter, tt.payload, tt.maxRetries, tt.delay, authConfig, rateLimitConfig, nil)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error for invalid finding type, got nil")
+				}
+				if !strings.Contains(err.Error(), "unsupported finding type") {
+					t.Errorf("Expected 'unsupported finding type' error, got: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if result == nil {
+				t.Fatal("executeVerify returned nil result")
+			}
+
+			// Verify result is a VerificationResult
+			verifyResult, ok := result.(*scanner.VerificationResult)
+			if !ok {
+				t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+			}
+
+			// Basic validation of verification result structure
+			if verifyResult.Attempts < 0 {
+				t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+			}
+
+			if verifyResult.Confidence < 0.0 || verifyResult.Confidence > 1.0 {
+				t.Errorf("Confidence should be between 0.0 and 1.0, got %f", verifyResult.Confidence)
+			}
+
+			if verifyResult.Explanation == "" {
+				t.Error("Explanation should not be empty")
+			}
+		})
+	}
+}
+
+// TestExecuteVerifyWithAuth tests executeVerify with authentication
+func TestExecuteVerifyWithAuth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-token",
+		BasicAuth:   "user:pass",
+		Cookies:     []string{"session=abc123"},
+	}
+	rateLimitConfig := ratelimit.Config{}
+
+	result, err := executeVerify(ctx, "xss", "https://example.com/test", "q", "<script>alert(1)</script>", 3, 100*time.Millisecond, authConfig, rateLimitConfig, nil)
+
+	if err != nil {
+		t.Errorf("Unexpected error with auth: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("executeVerify with auth returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestExecuteVerifyWithRateLimit tests executeVerify with rate limiting
+func TestExecuteVerifyWithRateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{
+		RequestsPerSecond: 5.0,
+	}
+
+	result, err := executeVerify(ctx, "sqli", "https://example.com/query", "id", "' OR '1'='1", 3, 100*time.Millisecond, authConfig, rateLimitConfig, nil)
+
+	if err != nil {
+		t.Errorf("Unexpected error with rate limit: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("executeVerify with rate limit returned nil")
+	}
+
+	verifyResult, ok := result.(*scanner.VerificationResult)
+	if !ok {
+		t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+	}
+
+	if verifyResult.Attempts < 0 {
+		t.Errorf("Attempts should be non-negative, got %d", verifyResult.Attempts)
+	}
+}
+
+// TestExecuteVerifyContextCancellation tests context cancellation in executeVerify
+func TestExecuteVerifyContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	result, err := executeVerify(ctx, "xss", "https://example.com/test", "q", "<script>alert(1)</script>", 3, 100*time.Millisecond, authConfig, rateLimitConfig, nil)
+
+	// Result should be returned even if context is canceled
+	if result == nil && err == nil {
+		t.Fatal("executeVerify should return a result or error with canceled context")
+	}
+
+	if result != nil {
+		verifyResult, ok := result.(*scanner.VerificationResult)
+		if !ok {
+			t.Fatalf("Expected *scanner.VerificationResult type, got %T", result)
+		}
+
+		// Basic structure should be populated
+		if verifyResult.Explanation == "" {
+			t.Error("Explanation should be populated")
+		}
+	}
+}
+
+// TestExecuteVerifyAllFindingTypes tests all supported finding types
+func TestExecuteVerifyAllFindingTypes(t *testing.T) {
+	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+
+	for _, findingType := range findingTypes {
+		t.Run(findingType, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			authConfig := &auth.AuthConfig{}
+			rateLimitConfig := ratelimit.Config{}
+
+			// Use appropriate parameter based on finding type
+			parameter := "param"
+			payload := "test"
+			if findingType == "csrf" {
+				parameter = "missing_token"
+				payload = ""
+			}
+
+			result, err := executeVerify(ctx, findingType, "https://example.com/test", parameter, payload, 2, 50*time.Millisecond, authConfig, rateLimitConfig, nil)
+
+			if err != nil {
+				t.Errorf("Unexpected error for %s: %v", findingType, err)
+				return
+			}
+
+			if result == nil {
+				t.Fatalf("executeVerify returned nil for %s", findingType)
+			}
+
+			verifyResult, ok := result.(*scanner.VerificationResult)
+			if !ok {
+				t.Fatalf("Expected *scanner.VerificationResult type for %s, got %T", findingType, result)
+			}
+
+			// Verify result structure
+			if verifyResult.Attempts < 0 {
+				t.Errorf("%s: Attempts should be non-negative, got %d", findingType, verifyResult.Attempts)
+			}
+
+			if verifyResult.Confidence < 0.0 || verifyResult.Confidence > 1.0 {
+				t.Errorf("%s: Confidence should be between 0.0 and 1.0, got %f", findingType, verifyResult.Confidence)
+			}
+
+			if verifyResult.Explanation == "" {
+				t.Errorf("%s: Explanation should not be empty", findingType)
+			}
+		})
+	}
+}
+
 // TestExecuteHeaders tests the executeHeaders function
 func TestExecuteHeaders(t *testing.T) {
 	tests := []struct {
