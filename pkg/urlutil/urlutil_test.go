@@ -7,10 +7,10 @@ import (
 
 func TestValidateTargetURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		expected    string
-		shouldError bool
+		name          string
+		input         string
+		expected      string
+		shouldError   bool
 		errorContains string
 	}{
 		// Valid URLs - should normalize
