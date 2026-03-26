@@ -122,19 +122,19 @@ func NewDetector(opts ...DetectorOption) *Detector {
 // WebSocketEndpoint represents a detected WebSocket endpoint.
 type WebSocketEndpoint struct {
 	URL              string   `json:"url" yaml:"url"`
-	DetectionMethod  string   `json:"detection_method" yaml:"detection_method"`  // "javascript", "upgrade_header", "url_pattern"
-	SourcePage       string   `json:"source_page" yaml:"source_page"`            // Where it was found
-	Context          string   `json:"context,omitempty" yaml:"context,omitempty"` // Surrounding code/text
-	IsSecure         bool     `json:"is_secure" yaml:"is_secure"`                // wss:// vs ws://
+	DetectionMethod  string   `json:"detection_method" yaml:"detection_method"`                       // "javascript", "upgrade_header", "url_pattern"
+	SourcePage       string   `json:"source_page" yaml:"source_page"`                                 // Where it was found
+	Context          string   `json:"context,omitempty" yaml:"context,omitempty"`                     // Surrounding code/text
+	IsSecure         bool     `json:"is_secure" yaml:"is_secure"`                                     // wss:// vs ws://
 	DetectedProtocol []string `json:"detected_protocol,omitempty" yaml:"detected_protocol,omitempty"` // Detected Sec-WebSocket-Protocol values
 }
 
 // DetectionResult contains the results of WebSocket endpoint detection.
 type DetectionResult struct {
-	Target    string                `json:"target" yaml:"target"`
-	Endpoints []WebSocketEndpoint   `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
-	Errors    []string              `json:"errors,omitempty" yaml:"errors,omitempty"`
-	Statistics DetectionStatistics  `json:"statistics" yaml:"statistics"`
+	Target     string              `json:"target" yaml:"target"`
+	Endpoints  []WebSocketEndpoint `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
+	Errors     []string            `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Statistics DetectionStatistics `json:"statistics" yaml:"statistics"`
 }
 
 // DetectionStatistics contains statistics about the detection operation.

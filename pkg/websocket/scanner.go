@@ -109,26 +109,26 @@ func NewSecurityScanner(opts ...ScannerOption) *SecurityScanner {
 
 // WebSocketFinding represents a security finding for a WebSocket endpoint.
 type WebSocketFinding struct {
-	URL                string   `json:"url" yaml:"url"`
-	FindingType        string   `json:"finding_type" yaml:"finding_type"` // "insecure_protocol", "missing_origin_validation", "missing_accept"
-	Severity           string   `json:"severity" yaml:"severity"`
-	Description        string   `json:"description" yaml:"description"`
-	Remediation        string   `json:"remediation" yaml:"remediation"`
-	Evidence           string   `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Confidence         string   `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
-	RuleID             string   `json:"rule_id" yaml:"rule_id"`       // SARIF rule ID
-	CWE                string   `json:"cwe,omitempty" yaml:"cwe,omitempty"`
-	OriginHeader       string   `json:"origin_header,omitempty" yaml:"origin_header,omitempty"`
-	OriginValidated    bool     `json:"origin_validated" yaml:"origin_validated"`
-	AcceptHeaderPresent bool    `json:"accept_header_present" yaml:"accept_header_present"`
+	URL                 string `json:"url" yaml:"url"`
+	FindingType         string `json:"finding_type" yaml:"finding_type"` // "insecure_protocol", "missing_origin_validation", "missing_accept"
+	Severity            string `json:"severity" yaml:"severity"`
+	Description         string `json:"description" yaml:"description"`
+	Remediation         string `json:"remediation" yaml:"remediation"`
+	Evidence            string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Confidence          string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+	RuleID              string `json:"rule_id" yaml:"rule_id"`       // SARIF rule ID
+	CWE                 string `json:"cwe,omitempty" yaml:"cwe,omitempty"`
+	OriginHeader        string `json:"origin_header,omitempty" yaml:"origin_header,omitempty"`
+	OriginValidated     bool   `json:"origin_validated" yaml:"origin_validated"`
+	AcceptHeaderPresent bool   `json:"accept_header_present" yaml:"accept_header_present"`
 }
 
 // ScanResult represents the result of a WebSocket security scan.
 type ScanResult struct {
-	Target   string                `json:"target" yaml:"target"`
-	Findings []WebSocketFinding    `json:"findings" yaml:"findings"`
-	Summary  ScanSummary           `json:"summary" yaml:"summary"`
-	Errors   []string              `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Target   string             `json:"target" yaml:"target"`
+	Findings []WebSocketFinding `json:"findings" yaml:"findings"`
+	Summary  ScanSummary        `json:"summary" yaml:"summary"`
+	Errors   []string           `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // ScanSummary provides an overview of the scan results.
