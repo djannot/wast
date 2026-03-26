@@ -829,6 +829,7 @@ func detectNoResultsPattern(body string) bool {
 		"no matches",
 		"no entries",
 		"empty",
+		"no user", // DVWA-specific pattern
 	}
 
 	for _, pattern := range noResultsPatterns {
@@ -846,10 +847,22 @@ func detectNoResultsPattern(body string) bool {
 			tableEnd := strings.Index(body[tableStart:], "</table>")
 			if tableEnd != -1 {
 				tableContent := body[tableStart : tableStart+tableEnd]
+
+				// Check if table has headers but no data cells
+				// Count <th> vs <td> tags
+				thCount := strings.Count(tableContent, "<th")
+				tdCount := strings.Count(tableContent, "<td")
+
+				// If we have headers but no data cells, it's empty
+				if thCount > 0 && tdCount == 0 {
+					return true
+				}
+
 				// Count tr tags in the table
 				trCount := len(trRegex.FindAllString(tableContent, -1))
-				// If table has 0-1 rows (header only or empty), it might indicate no results
-				if trCount <= 1 {
+				// If table has 0-1 rows and no td tags, it might indicate no results
+				// But if it has td tags, it has data regardless of tr count
+				if trCount <= 1 && tdCount == 0 {
 					return true
 				}
 			}
@@ -862,17 +875,40 @@ func detectNoResultsPattern(body string) bool {
 // hasResultsData checks if the response contains actual data/results
 func hasResultsData(body string, structuralElements int) bool {
 	// If there are multiple structural elements, likely has data
-	if structuralElements > 2 {
+	// Lowered threshold from 2 to 1 to better detect DVWA-style responses
+	if structuralElements > 1 {
 		return true
+	}
+
+	// Check for "no results" pattern first
+	if detectNoResultsPattern(body) {
+		return false
+	}
+
+	// Check for presence of data-like content (table cells with data)
+	// DVWA often returns data in <td> tags or <pre> tags
+	if strings.Contains(body, "<td") {
+		// Has table data cells - likely contains results
+		// Even a single td with content indicates data
+		return true
+	}
+
+	if strings.Contains(body, "<pre") {
+		// Extract text content to see if there's actual data in pre tags
+		content := extractBodyContent(body)
+		// If we have any meaningful content, it's data
+		if len(content) > 5 {
+			return true
+		}
 	}
 
 	// Check word count - very few words might indicate no data
 	wordCount := countWords(body)
-	if wordCount < 5 {
+	if wordCount < 3 {
 		return false
 	}
 
-	return !detectNoResultsPattern(body)
+	return true
 }
 
 // analyzeResponse extracts all characteristics from a response
@@ -1137,6 +1173,12 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		adaptiveWordCountThreshold = 1 // Any word difference is significant
 	}
 
+	// For DVWA-style responses: if baseline is moderate size, be more sensitive
+	// DVWA typically returns 2-5KB responses with subtle differences
+	if baseline.BodyLength > 1024 && baseline.BodyLength < 10240 {
+		adaptiveLengthThreshold = 15 // Use 15% threshold for medium-sized responses
+	}
+
 	// Check if responses differ significantly between true and false conditions
 	statusDiffers := trueResp.StatusCode != falseResp.StatusCode
 	lengthDiffersSignificantly := false
@@ -1147,8 +1189,9 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	}
 
 	// Additionally, at least one should differ from baseline
+	// Made more sensitive to catch DVWA-style differences
 	baselineDiffers := false
-	if baseline.BodyLength > 0 && (trueDiffFromBaseline > baseline.BodyLength/10 || falseDiffFromBaseline > baseline.BodyLength/10) {
+	if baseline.BodyLength > 0 && (trueDiffFromBaseline > baseline.BodyLength/adaptiveLengthThreshold || falseDiffFromBaseline > baseline.BodyLength/adaptiveLengthThreshold) {
 		baselineDiffers = true
 	}
 
