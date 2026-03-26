@@ -117,6 +117,7 @@ const (
 	RuleIDHeaderCT     = "WAST-HDR-004"
 	RuleIDCookie       = "WAST-COOKIE-001"
 	RuleIDCORS         = "WAST-CORS-001"
+	RuleIDLFI          = "WAST-LFI-001"
 )
 
 // CWE references for common vulnerabilities
@@ -130,6 +131,7 @@ const (
 	CWEHeaders  = "CWE-693"
 	CWECookie   = "CWE-614"
 	CWECORS     = "CWE-942"
+	CWELFI      = "CWE-22"
 )
 
 // outputSARIF outputs data as SARIF 2.1.0 format.
@@ -223,6 +225,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 	// Process CMDi if present
 	if cmdi, ok := data["cmdi"].(map[string]interface{}); ok {
 		processCMDiMap(cmdi, &run)
+	}
+
+	// Process PathTraversal if present
+	if pathtraversal, ok := data["pathtraversal"].(map[string]interface{}); ok {
+		processPathTraversalMap(pathtraversal, &run)
 	}
 
 	report.Runs = append(report.Runs, run)
@@ -452,6 +459,23 @@ func buildAllRules() []SARIFRule {
 				"tags": []string{CWECORS, "security", "cors"},
 			},
 		},
+		{
+			ID:   RuleIDLFI,
+			Name: "PathTraversal",
+			ShortDescription: SARIFMessage{
+				Text: "Path Traversal / Local File Inclusion (LFI) vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application allows user-controlled input to specify file paths without proper validation, enabling attackers to access files outside the intended directory structure. This can lead to disclosure of sensitive files like /etc/passwd, /etc/shadow, or Windows system files.",
+			},
+			Help: SARIFMessage{
+				Text:     "Implement strict input validation for file path parameters. Use allowlists for permitted files. Avoid using user input directly in file operations. Use indirect references and realpath() to validate canonical paths.",
+				Markdown: "**Remediation:** Implement strict input validation for file path parameters. Use allowlists for permitted files/directories. Avoid using user input directly in file system operations. Use indirect references (e.g., file IDs mapped to paths server-side). Sanitize input by removing directory traversal sequences (../, ..\\ and encoded variants). Use built-in security functions like realpath() to resolve canonical paths and verify they stay within allowed directories. Implement proper file system permissions.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWELFI, "security", "lfi", "path-traversal", "file-inclusion"},
+			},
+		},
 	}
 }
 
@@ -579,6 +603,19 @@ func processCMDiMap(cmdi map[string]interface{}, run *SARIFRun) {
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createCMDiResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processPathTraversalMap(pathtraversal map[string]interface{}, run *SARIFRun) {
+	if findings, ok := pathtraversal["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createPathTraversalResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -931,6 +968,43 @@ func createCMDiResult(finding map[string]interface{}) *SARIFResult {
 	}
 }
 
+func createPathTraversalResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	lfiType := getStringValue(finding, "type")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDLFI,
+		RuleIndex: getRuleIndex(RuleIDLFI),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("Path Traversal vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**Path Traversal / LFI (%s)**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\n**Remediation:** %s", lfiType, parameter, payload, description, evidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"type":       lfiType,
+			"confidence": confidence,
+		},
+	}
+}
+
 // Helper functions for severity mapping and rule lookups
 
 func mapSeverityToLevel(severity string) string {
@@ -975,6 +1049,7 @@ func getRuleIndex(ruleID string) int {
 		RuleIDHeaderCT,
 		RuleIDCookie,
 		RuleIDCORS,
+		RuleIDLFI,
 	}
 
 	for i, r := range rules {

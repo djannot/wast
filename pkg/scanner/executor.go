@@ -33,9 +33,10 @@ type IntermediateScanResult struct {
 	SQLi        *SQLiScanResult
 	CSRF        *CSRFScanResult
 	SSRF        *SSRFScanResult
-	Redirect    *RedirectScanResult
-	CMDi        *CMDiScanResult
-	Errors      []string
+	Redirect      *RedirectScanResult
+	CMDi          *CMDiScanResult
+	PathTraversal *PathTraversalScanResult
+	Errors        []string
 }
 
 // ScanStats tracks statistics about the verification process.
@@ -44,8 +45,9 @@ type ScanStats struct {
 	TotalSQLiFindings     int
 	TotalCSRFFindings     int
 	TotalSSRFFindings     int
-	TotalRedirectFindings int
-	TotalCMDiFindings     int
+	TotalRedirectFindings     int
+	TotalCMDiFindings         int
+	TotalPathTraversalFindings int
 }
 
 // ExecuteScan performs the complete scan workflow.
@@ -74,6 +76,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	cmdiOpts := []CMDiOption{
 		WithCMDiTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	pathtraversalOpts := []PathTraversalOption{
+		WithPathTraversalTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -84,6 +89,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
 		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -95,6 +101,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
 		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -106,6 +113,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
 		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
 		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
 	}
 
 	// Create scanners
@@ -138,6 +146,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ssrfScanner := NewSSRFScanner(ssrfOpts...)
 		redirectScanner := NewRedirectScanner(redirectOpts...)
 		cmdiScanner := NewCMDiScanner(cmdiOpts...)
+		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
 
 		var wg sync.WaitGroup
 		var xssResult *XSSScanResult
@@ -146,9 +155,10 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		var ssrfResult *SSRFScanResult
 		var redirectResult *RedirectScanResult
 		var cmdiResult *CMDiScanResult
+		var pathtraversalResult *PathTraversalScanResult
 
 		// Run scans in parallel
-		wg.Add(6)
+		wg.Add(7)
 		go func() {
 			defer wg.Done()
 			xssResult = xssScanner.Scan(ctx, cfg.Target)
@@ -173,6 +183,10 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			defer wg.Done()
 			cmdiResult = cmdiScanner.Scan(ctx, cfg.Target)
 		}()
+		go func() {
+			defer wg.Done()
+			pathtraversalResult = pathtraversalScanner.Scan(ctx, cfg.Target)
+		}()
 		wg.Wait()
 
 		// Verify findings if enabled
@@ -190,6 +204,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			stats.TotalSSRFFindings = len(ssrfResult.Findings)
 			stats.TotalRedirectFindings = len(redirectResult.Findings)
 			stats.TotalCMDiFindings = len(cmdiResult.Findings)
+			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
 
 			// Verify XSS findings
 			for i := range xssResult.Findings {
@@ -286,6 +301,23 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				}
 			}
 
+			// Verify PathTraversal findings
+			for i := range pathtraversalResult.Findings {
+				result, err := pathtraversalScanner.VerifyFinding(ctx, &pathtraversalResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					pathtraversalResult.Findings[i].Verified = result.Verified
+					pathtraversalResult.Findings[i].VerificationAttempts = result.Attempts
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						pathtraversalResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						pathtraversalResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						pathtraversalResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings when verification is enabled
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -340,6 +372,15 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			}
 			cmdiResult.Findings = verifiedCMDiFindings
 			cmdiResult.Summary.VulnerabilitiesFound = len(verifiedCMDiFindings)
+
+			verifiedPathTraversalFindings := make([]PathTraversalFinding, 0)
+			for _, finding := range pathtraversalResult.Findings {
+				if finding.Verified {
+					verifiedPathTraversalFindings = append(verifiedPathTraversalFindings, finding)
+				}
+			}
+			pathtraversalResult.Findings = verifiedPathTraversalFindings
+			pathtraversalResult.Summary.VulnerabilitiesFound = len(verifiedPathTraversalFindings)
 		}
 
 		intermediateResult.XSS = xssResult
@@ -348,6 +389,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.SSRF = ssrfResult
 		intermediateResult.Redirect = redirectResult
 		intermediateResult.CMDi = cmdiResult
+		intermediateResult.PathTraversal = pathtraversalResult
 
 		// Aggregate errors from active scans
 		if len(xssResult.Errors) > 0 {
@@ -368,6 +410,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		if len(cmdiResult.Errors) > 0 {
 			intermediateResult.Errors = append(intermediateResult.Errors, cmdiResult.Errors...)
 		}
+		if len(pathtraversalResult.Errors) > 0 {
+			intermediateResult.Errors = append(intermediateResult.Errors, pathtraversalResult.Errors...)
+		}
 	}
 
 	// Create unified result with correlation and risk scoring
@@ -381,6 +426,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.SSRF,
 		intermediateResult.Redirect,
 		intermediateResult.CMDi,
+		intermediateResult.PathTraversal,
 		intermediateResult.Errors,
 	)
 
@@ -423,12 +469,18 @@ func CalculateFilteredCount(stats *ScanStats, result *UnifiedScanResult) int {
 		verifiedCMDiCount = len(result.CMDi.Findings)
 	}
 
+	verifiedPathTraversalCount := 0
+	if result.PathTraversal != nil {
+		verifiedPathTraversalCount = len(result.PathTraversal.Findings)
+	}
+
 	totalFiltered := (stats.TotalXSSFindings - verifiedXSSCount) +
 		(stats.TotalSQLiFindings - verifiedSQLiCount) +
 		(stats.TotalCSRFFindings - verifiedCSRFCount) +
 		(stats.TotalSSRFFindings - verifiedSSRFCount) +
 		(stats.TotalRedirectFindings - verifiedRedirectCount) +
-		(stats.TotalCMDiFindings - verifiedCMDiCount)
+		(stats.TotalCMDiFindings - verifiedCMDiCount) +
+		(stats.TotalPathTraversalFindings - verifiedPathTraversalCount)
 
 	return totalFiltered
 }
