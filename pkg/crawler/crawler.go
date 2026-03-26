@@ -47,6 +47,17 @@ func (c *DefaultHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return c.client.Do(req)
 }
 
+const (
+	// MaxSitemapsFromRobots limits the number of sitemaps fetched from robots.txt
+	MaxSitemapsFromRobots = 5
+
+	// MaxSitemapIndexDepth limits nesting of sitemap indexes
+	MaxSitemapIndexDepth = 1
+
+	// MaxSitemapsPerIndex limits sitemaps fetched from a single index
+	MaxSitemapsPerIndex = 5
+)
+
 // Crawler performs web crawling operations.
 type Crawler struct {
 	client        HTTPClient
@@ -197,8 +208,9 @@ func (c *Crawler) Crawl(ctx context.Context, targetURL string) *CrawlResult {
 	}
 
 	// Fetch and parse robots.txt if respecting robots
+	var sitemapURLs []string
 	if c.respectRobots {
-		c.fetchRobots(ctx, baseURL, result)
+		sitemapURLs = c.fetchRobots(ctx, baseURL, result)
 	}
 
 	// Initialize visited set and tracking maps with mutex protection
@@ -233,6 +245,20 @@ func (c *Crawler) Crawl(ctx context.Context, targetURL string) *CrawlResult {
 	// Enqueue initial URL
 	activeItems.Add(1)
 	workQueue <- queueItem{url: targetURL, depth: 0}
+
+	// Enqueue sitemap URLs at depth 0
+	for _, sitemapURL := range sitemapURLs {
+		normalizedURL := normalizeURL(sitemapURL)
+		mu.Lock()
+		if !visited[normalizedURL] {
+			visited[normalizedURL] = true
+			mu.Unlock()
+			activeItems.Add(1)
+			workQueue <- queueItem{url: sitemapURL, depth: 0}
+		} else {
+			mu.Unlock()
+		}
+	}
 
 	// Monitor for completion - close queue when no more work
 	go func() {
@@ -398,20 +424,85 @@ func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.
 }
 
 // fetchRobots fetches and parses robots.txt for the target domain.
-func (c *Crawler) fetchRobots(ctx context.Context, baseURL *url.URL, result *CrawlResult) {
+// It also fetches and parses any sitemaps referenced in robots.txt.
+// Returns a list of URLs discovered in sitemaps.
+func (c *Crawler) fetchRobots(ctx context.Context, baseURL *url.URL, result *CrawlResult) []string {
 	robotsURL, err := GetRobotsURL(baseURL.String())
 	if err != nil {
-		return
+		return nil
 	}
 
 	content, err := c.fetchPage(ctx, robotsURL)
 	if err != nil {
 		// robots.txt not found or error - that's fine, continue crawling
-		return
+		return nil
 	}
 
 	c.robotsData = ParseRobots(strings.NewReader(content))
 	result.RobotsDisallow = c.robotsData.Disallow
+
+	// Process sitemaps found in robots.txt
+	sitemapURLs := make([]string, 0)
+
+	// Limit the number of sitemaps to fetch to avoid DoS
+	sitemapsToFetch := c.robotsData.Sitemaps
+	if len(sitemapsToFetch) > MaxSitemapsFromRobots {
+		sitemapsToFetch = sitemapsToFetch[:MaxSitemapsFromRobots]
+	}
+
+	for _, sitemapURL := range sitemapsToFetch {
+		urls := c.fetchAndParseSitemap(ctx, sitemapURL, baseURL)
+		sitemapURLs = append(sitemapURLs, urls...)
+	}
+
+	result.SitemapURLs = sitemapURLs
+	return sitemapURLs
+}
+
+// fetchAndParseSitemap fetches a sitemap and parses it for URLs.
+// It handles both standard sitemaps and sitemap indexes.
+// For sitemap indexes, it recursively fetches referenced sitemaps (up to a limit).
+func (c *Crawler) fetchAndParseSitemap(ctx context.Context, sitemapURL string, baseURL *url.URL) []string {
+	return c.fetchAndParseSitemapWithDepth(ctx, sitemapURL, baseURL, 0, MaxSitemapIndexDepth)
+}
+
+func (c *Crawler) fetchAndParseSitemapWithDepth(ctx context.Context, sitemapURL string, baseURL *url.URL, currentDepth, maxDepth int) []string {
+	allURLs := make([]string, 0)
+
+	// Fetch sitemap content
+	content, err := c.fetchPage(ctx, sitemapURL)
+	if err != nil {
+		// Sitemap not found or error - continue without it
+		return allURLs
+	}
+
+	// Parse the sitemap to determine type and extract URLs
+	urlsetURLs, sitemapIndexURLs := ParseSitemapBoth(strings.NewReader(content))
+
+	if len(sitemapIndexURLs) > 0 && currentDepth < maxDepth {
+		// This is a sitemap index - fetch the referenced sitemaps
+		for i, nestedURL := range sitemapIndexURLs {
+			if i >= MaxSitemapsPerIndex {
+				break
+			}
+			nestedURLs := c.fetchAndParseSitemapWithDepth(ctx, nestedURL, baseURL, currentDepth+1, maxDepth)
+			allURLs = append(allURLs, nestedURLs...)
+		}
+	} else {
+		// Regular sitemap - filter URLs by domain
+		for _, urlStr := range urlsetURLs {
+			parsedURL, err := url.Parse(urlStr)
+			if err != nil {
+				continue
+			}
+			// Only add URLs that are on the same domain
+			if isSameDomain(baseURL, parsedURL) {
+				allURLs = append(allURLs, urlStr)
+			}
+		}
+	}
+
+	return allURLs
 }
 
 // fetchPage fetches the content of a URL.
