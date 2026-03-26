@@ -198,6 +198,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	ssrfOpts := []SSRFOption{
 		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	redirectOpts := []RedirectOption{
+		WithRedirectTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	cmdiOpts := []CMDiOption{
+		WithCMDiTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	pathtraversalOpts := []PathTraversalOption{
+		WithPathTraversalTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -206,6 +215,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		sqliOpts = append(sqliOpts, WithSQLiAuth(cfg.AuthConfig))
 		csrfOpts = append(csrfOpts, WithCSRFAuth(cfg.AuthConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
+		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
+		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -215,6 +227,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		sqliOpts = append(sqliOpts, WithSQLiRateLimitConfig(cfg.RateLimitConfig))
 		csrfOpts = append(csrfOpts, WithCSRFRateLimitConfig(cfg.RateLimitConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
+		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
+		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -224,6 +239,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		sqliOpts = append(sqliOpts, WithSQLiTracer(cfg.Tracer))
 		csrfOpts = append(csrfOpts, WithCSRFTracer(cfg.Tracer))
 		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
+		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
+		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
 	}
 
 	// Create scanners
@@ -254,12 +272,18 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		sqliScanner := NewSQLiScanner(sqliOpts...)
 		csrfScanner := NewCSRFScanner(csrfOpts...)
 		ssrfScanner := NewSSRFScanner(ssrfOpts...)
+		redirectScanner := NewRedirectScanner(redirectOpts...)
+		cmdiScanner := NewCMDiScanner(cmdiOpts...)
+		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
 
 		// Aggregate findings from all targets
 		allXSSFindings := make([]XSSFinding, 0)
 		allSQLiFindings := make([]SQLiFinding, 0)
 		allCSRFFindings := make([]CSRFFinding, 0)
 		allSSRFFindings := make([]SSRFFinding, 0)
+		allRedirectFindings := make([]RedirectFinding, 0)
+		allCMDiFindings := make([]CMDiFinding, 0)
+		allPathTraversalFindings := make([]PathTraversalFinding, 0)
 		var mu sync.Mutex
 
 		// Create buffered channel for target distribution
@@ -290,6 +314,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					sqliFindings := scanTargetForSQLi(workerCtx, sqliScanner, target)
 					csrfFindings := scanTargetForCSRF(workerCtx, csrfScanner, target)
 					ssrfFindings := scanTargetForSSRF(workerCtx, ssrfScanner, target)
+					redirectFindings := scanTargetForRedirect(workerCtx, redirectScanner, target)
+					cmdiFindings := scanTargetForCMDi(workerCtx, cmdiScanner, target)
+					pathtraversalFindings := scanTargetForPathTraversal(workerCtx, pathtraversalScanner, target)
 
 					// Add source information to findings
 					for i := range xssFindings {
@@ -304,6 +331,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					for i := range ssrfFindings {
 						ssrfFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfFindings[i].Evidence)
 					}
+					for i := range redirectFindings {
+						redirectFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, redirectFindings[i].Evidence)
+					}
+					for i := range cmdiFindings {
+						cmdiFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, cmdiFindings[i].Evidence)
+					}
+					for i := range pathtraversalFindings {
+						pathtraversalFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, pathtraversalFindings[i].Evidence)
+					}
 
 					// Thread-safe aggregation of findings
 					mu.Lock()
@@ -311,6 +347,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					allSQLiFindings = append(allSQLiFindings, sqliFindings...)
 					allCSRFFindings = append(allCSRFFindings, csrfFindings...)
 					allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
+					allRedirectFindings = append(allRedirectFindings, redirectFindings...)
+					allCMDiFindings = append(allCMDiFindings, cmdiFindings...)
+					allPathTraversalFindings = append(allPathTraversalFindings, pathtraversalFindings...)
 					mu.Unlock()
 
 					// Report progress if callback is set
@@ -386,6 +425,33 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Errors: []string{},
 		}
 
+		redirectResult := &RedirectScanResult{
+			Target:   cfg.Target,
+			Findings: allRedirectFindings,
+			Summary: RedirectSummary{
+				VulnerabilitiesFound: len(allRedirectFindings),
+			},
+			Errors: []string{},
+		}
+
+		cmdiResult := &CMDiScanResult{
+			Target:   cfg.Target,
+			Findings: allCMDiFindings,
+			Summary: CMDiSummary{
+				VulnerabilitiesFound: len(allCMDiFindings),
+			},
+			Errors: []string{},
+		}
+
+		pathtraversalResult := &PathTraversalScanResult{
+			Target:   cfg.Target,
+			Findings: allPathTraversalFindings,
+			Summary: PathTraversalSummary{
+				VulnerabilitiesFound: len(allPathTraversalFindings),
+			},
+			Errors: []string{},
+		}
+
 		// Verify findings if enabled
 		if cfg.VerifyFindings {
 			verifyConfig := VerificationConfig{
@@ -399,6 +465,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			stats.TotalSQLiFindings = len(sqliResult.Findings)
 			stats.TotalCSRFFindings = len(csrfResult.Findings)
 			stats.TotalSSRFFindings = len(ssrfResult.Findings)
+			stats.TotalRedirectFindings = len(redirectResult.Findings)
+			stats.TotalCMDiFindings = len(cmdiResult.Findings)
+			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
 
 			// Verify findings (similar to ExecuteScan)
 			// Verify XSS findings
@@ -458,6 +527,54 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 				}
 			}
 
+			// Verify Redirect findings
+			for i := range redirectResult.Findings {
+				result, err := redirectScanner.VerifyFinding(ctx, &redirectResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					redirectResult.Findings[i].Verified = result.Verified
+					redirectResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						redirectResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						redirectResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						redirectResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify CMDi findings
+			for i := range cmdiResult.Findings {
+				result, err := cmdiScanner.VerifyFinding(ctx, &cmdiResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					cmdiResult.Findings[i].Verified = result.Verified
+					cmdiResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						cmdiResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						cmdiResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						cmdiResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify PathTraversal findings
+			for i := range pathtraversalResult.Findings {
+				result, err := pathtraversalScanner.VerifyFinding(ctx, &pathtraversalResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					pathtraversalResult.Findings[i].Verified = result.Verified
+					pathtraversalResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						pathtraversalResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						pathtraversalResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						pathtraversalResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -494,12 +611,42 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			}
 			ssrfResult.Findings = verifiedSSRFFindings
 			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
+
+			verifiedRedirectFindings := make([]RedirectFinding, 0)
+			for _, finding := range redirectResult.Findings {
+				if finding.Verified {
+					verifiedRedirectFindings = append(verifiedRedirectFindings, finding)
+				}
+			}
+			redirectResult.Findings = verifiedRedirectFindings
+			redirectResult.Summary.VulnerabilitiesFound = len(verifiedRedirectFindings)
+
+			verifiedCMDiFindings := make([]CMDiFinding, 0)
+			for _, finding := range cmdiResult.Findings {
+				if finding.Verified {
+					verifiedCMDiFindings = append(verifiedCMDiFindings, finding)
+				}
+			}
+			cmdiResult.Findings = verifiedCMDiFindings
+			cmdiResult.Summary.VulnerabilitiesFound = len(verifiedCMDiFindings)
+
+			verifiedPathTraversalFindings := make([]PathTraversalFinding, 0)
+			for _, finding := range pathtraversalResult.Findings {
+				if finding.Verified {
+					verifiedPathTraversalFindings = append(verifiedPathTraversalFindings, finding)
+				}
+			}
+			pathtraversalResult.Findings = verifiedPathTraversalFindings
+			pathtraversalResult.Summary.VulnerabilitiesFound = len(verifiedPathTraversalFindings)
 		}
 
 		intermediateResult.XSS = xssResult
 		intermediateResult.SQLi = sqliResult
 		intermediateResult.CSRF = csrfResult
 		intermediateResult.SSRF = ssrfResult
+		intermediateResult.Redirect = redirectResult
+		intermediateResult.CMDi = cmdiResult
+		intermediateResult.PathTraversal = pathtraversalResult
 	}
 
 	// Create unified result
@@ -512,8 +659,8 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.CSRF,
 		intermediateResult.SSRF,
 		intermediateResult.Redirect,
-		nil, // CMDi not implemented in discovery scan
-		nil, // PathTraversal not implemented in discovery scan
+		intermediateResult.CMDi,
+		intermediateResult.PathTraversal,
 		nil, // WebSocket scanning (will be added later)
 		intermediateResult.Errors,
 	)
@@ -555,6 +702,27 @@ func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target Discove
 
 // scanTargetForSSRF scans a single discovered target for SSRF vulnerabilities.
 func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) []SSRFFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}
+
+// scanTargetForRedirect scans a single discovered target for Open Redirect vulnerabilities.
+func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) []RedirectFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}
+
+// scanTargetForCMDi scans a single discovered target for Command Injection vulnerabilities.
+func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) []CMDiFinding {
+	// Simply run a full scan on the target URL with its discovered parameters
+	result := scanner.Scan(ctx, target.URL)
+	return result.Findings
+}
+
+// scanTargetForPathTraversal scans a single discovered target for Path Traversal vulnerabilities.
+func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) []PathTraversalFinding {
 	// Simply run a full scan on the target URL with its discovered parameters
 	result := scanner.Scan(ctx, target.URL)
 	return result.Findings
