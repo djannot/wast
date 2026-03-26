@@ -21,20 +21,20 @@ const (
 // UnifiedScanResult represents a comprehensive aggregation of all scan results
 // with correlation and risk scoring for AI agent consumption.
 type UnifiedScanResult struct {
-	Target       string              `json:"target" yaml:"target"`
-	PassiveOnly  bool                `json:"passive_only" yaml:"passive_only"`
-	Headers      *HeaderScanResult   `json:"headers,omitempty" yaml:"headers,omitempty"`
-	SQLi         *SQLiScanResult     `json:"sqli,omitempty" yaml:"sqli,omitempty"`
-	XSS          *XSSScanResult      `json:"xss,omitempty" yaml:"xss,omitempty"`
-	CSRF         *CSRFScanResult     `json:"csrf,omitempty" yaml:"csrf,omitempty"`
-	SSRF         *SSRFScanResult         `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
-	Redirect     *RedirectScanResult     `json:"redirect,omitempty" yaml:"redirect,omitempty"`
-	CMDi         *CMDiScanResult         `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
+	Target        string                   `json:"target" yaml:"target"`
+	PassiveOnly   bool                     `json:"passive_only" yaml:"passive_only"`
+	Headers       *HeaderScanResult        `json:"headers,omitempty" yaml:"headers,omitempty"`
+	SQLi          *SQLiScanResult          `json:"sqli,omitempty" yaml:"sqli,omitempty"`
+	XSS           *XSSScanResult           `json:"xss,omitempty" yaml:"xss,omitempty"`
+	CSRF          *CSRFScanResult          `json:"csrf,omitempty" yaml:"csrf,omitempty"`
+	SSRF          *SSRFScanResult          `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
+	Redirect      *RedirectScanResult      `json:"redirect,omitempty" yaml:"redirect,omitempty"`
+	CMDi          *CMDiScanResult          `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
 	PathTraversal *PathTraversalScanResult `json:"pathtraversal,omitempty" yaml:"pathtraversal,omitempty"`
-	Correlations []CorrelatedFinding     `json:"correlations,omitempty" yaml:"correlations,omitempty"`
-	RiskScore    RiskScore           `json:"risk_score" yaml:"risk_score"`
-	Summary      UnifiedSummary      `json:"summary" yaml:"summary"`
-	Errors       []string            `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Correlations  []CorrelatedFinding      `json:"correlations,omitempty" yaml:"correlations,omitempty"`
+	RiskScore     RiskScore                `json:"risk_score" yaml:"risk_score"`
+	Summary       UnifiedSummary           `json:"summary" yaml:"summary"`
+	Errors        []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // CorrelatedFinding represents related vulnerabilities across different scanners

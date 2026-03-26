@@ -466,10 +466,10 @@ func containsPasswdSignature(body string) bool {
 func containsShadowSignature(body string) bool {
 	// Look for typical /etc/shadow patterns (encrypted password hashes)
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`root:\$[0-9]\$`),                                    // Shadow password hash
-		regexp.MustCompile(`[a-z]+:\$[0-9]\$[a-zA-Z0-9./]+\$[a-zA-Z0-9./]+:`),  // Full shadow entry
-		regexp.MustCompile(`[a-z]+:!:`),                                         // Locked account
-		regexp.MustCompile(`[a-z]+:\*:`),                                        // Disabled password
+		regexp.MustCompile(`root:\$[0-9]\$`),                                  // Shadow password hash
+		regexp.MustCompile(`[a-z]+:\$[0-9]\$[a-zA-Z0-9./]+\$[a-zA-Z0-9./]+:`), // Full shadow entry
+		regexp.MustCompile(`[a-z]+:!:`),                                       // Locked account
+		regexp.MustCompile(`[a-z]+:\*:`),                                      // Disabled password
 	}
 
 	for _, pattern := range patterns {

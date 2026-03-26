@@ -26,13 +26,13 @@ type ScanConfig struct {
 // IntermediateScanResult represents the combined results of all security scans
 // before creating the unified result.
 type IntermediateScanResult struct {
-	Target      string
-	PassiveOnly bool
-	Headers     *HeaderScanResult
-	XSS         *XSSScanResult
-	SQLi        *SQLiScanResult
-	CSRF        *CSRFScanResult
-	SSRF        *SSRFScanResult
+	Target        string
+	PassiveOnly   bool
+	Headers       *HeaderScanResult
+	XSS           *XSSScanResult
+	SQLi          *SQLiScanResult
+	CSRF          *CSRFScanResult
+	SSRF          *SSRFScanResult
 	Redirect      *RedirectScanResult
 	CMDi          *CMDiScanResult
 	PathTraversal *PathTraversalScanResult
@@ -41,12 +41,12 @@ type IntermediateScanResult struct {
 
 // ScanStats tracks statistics about the verification process.
 type ScanStats struct {
-	TotalXSSFindings      int
-	TotalSQLiFindings     int
-	TotalCSRFFindings     int
-	TotalSSRFFindings     int
-	TotalRedirectFindings     int
-	TotalCMDiFindings         int
+	TotalXSSFindings           int
+	TotalSQLiFindings          int
+	TotalCSRFFindings          int
+	TotalSSRFFindings          int
+	TotalRedirectFindings      int
+	TotalCMDiFindings          int
 	TotalPathTraversalFindings int
 }
 
