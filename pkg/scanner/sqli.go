@@ -3,6 +3,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"io"
 	"net/http"
@@ -397,8 +398,23 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 	return result
 }
 
-// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
-// This is used for testing forms that accept POST requests.
+// ScanPOST scans a URL for SQL injection vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common parameter names
+//     (id, user, page, product) with default values.
+//
+// Returns:
+//   - A SQLiScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
 func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *SQLiScanResult {
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
@@ -435,7 +451,7 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
 	for paramName := range params {
-		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, params[paramName])
+		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, params)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
 			baselineTiming[paramName] = duration
@@ -457,14 +473,14 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 			if payload.Type == "time-based" {
 				// Time-based detection
 				baseline := baselineTiming[paramName]
-				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline)
+				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
 			} else if payload.CompareBaseline {
 				// Boolean-based detection
 				baseline := baselineResponses[paramName]
-				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline)
+				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
 			} else {
 				// Error-based detection
-				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload)
+				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, params)
 			}
 
 			result.Summary.TotalTests++
@@ -562,16 +578,12 @@ func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 
 // getBaselineWithTimingPOST makes a POST request with the original parameter value to establish a baseline
 // and measures the request duration for time-based detection.
-func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, paramValue string) (*baselineResponse, time.Duration) {
-	// Use original value if it exists, otherwise use a safe default
-	originalValue := paramValue
-	if originalValue == "" {
-		originalValue = "1"
-	}
-
-	// Create form data with the original parameter value
+func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
+	// Create form data with ALL parameters
 	formData := url.Values{}
-	formData.Set(paramName, originalValue)
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -604,10 +616,13 @@ func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 		return nil, 0
 	}
 
+	// Calculate proper hash of response body
+	hash := md5.Sum(body)
+
 	baseline := &baselineResponse{
 		StatusCode:  resp.StatusCode,
 		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
+		BodyHash:    fmt.Sprintf("%x", hash),
 		ContainsKey: string(body),
 	}
 
@@ -728,9 +743,13 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 }
 
 // makeRequestPOST is a helper to make a POST request with a specific payload
-func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string) (*responseCharacteristics, error) {
-	// Create form data with the payload
+func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string, allParameters map[string]string) (*responseCharacteristics, error) {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payloadValue)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -1026,8 +1045,8 @@ func (s *SQLiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 }
 
 // testErrorBasedPOST tests a single parameter with an error-based SQL injection payload using POST.
-func (s *SQLiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload) *SQLiFinding {
-	testResp, err := s.makeRequestPOST(ctx, baseURL, paramName, payload.Payload)
+func (s *SQLiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, allParameters map[string]string) *SQLiFinding {
+	testResp, err := s.makeRequestPOST(ctx, baseURL, paramName, payload.Payload, allParameters)
 	if err != nil {
 		return nil
 	}
@@ -1056,7 +1075,7 @@ func (s *SQLiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 }
 
 // testBooleanBasedPOST tests a single parameter with a boolean-based SQL injection payload using POST.
-func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse) *SQLiFinding {
+func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse, allParameters map[string]string) *SQLiFinding {
 	if baseline == nil {
 		return nil
 	}
@@ -1074,7 +1093,7 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		truePayload = strings.ReplaceAll(payload.Payload, "'1'='2", "'1'='1")
 	} else {
 		// For other payloads, just do single test
-		testResp, err := s.makeRequestPOST(ctx, baseURL, paramName, payload.Payload)
+		testResp, err := s.makeRequestPOST(ctx, baseURL, paramName, payload.Payload, allParameters)
 		if err != nil {
 			return nil
 		}
@@ -1134,12 +1153,12 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 	}
 
 	// Test both true and false conditions
-	trueResp, err := s.makeRequestPOST(ctx, baseURL, paramName, truePayload)
+	trueResp, err := s.makeRequestPOST(ctx, baseURL, paramName, truePayload, allParameters)
 	if err != nil {
 		return nil
 	}
 
-	falseResp, err := s.makeRequestPOST(ctx, baseURL, paramName, falsePayload)
+	falseResp, err := s.makeRequestPOST(ctx, baseURL, paramName, falsePayload, allParameters)
 	if err != nil {
 		return nil
 	}
@@ -1203,9 +1222,13 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 }
 
 // testTimeBasedPOST tests a single parameter with a time-based SQL injection payload using POST.
-func (s *SQLiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baselineDuration time.Duration) *SQLiFinding {
-	// Create form data with the test payload
+func (s *SQLiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baselineDuration time.Duration, allParameters map[string]string) *SQLiFinding {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payload.Payload)
 
 	// Create the request

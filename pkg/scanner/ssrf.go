@@ -343,8 +343,23 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 	return result
 }
 
-// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
-// This is used for testing forms that accept POST requests.
+// ScanPOST scans a URL for SSRF vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common parameter names
+//     (url, uri, path, dest, redirect, file, callback) with empty default values.
+//
+// Returns:
+//   - An SSRFScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
 func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *SSRFScanResult {
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
@@ -391,7 +406,7 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 				}
 			}
 
-			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload)
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
 			result.Summary.TotalTests++
 
 			if finding != nil {
@@ -494,9 +509,13 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 }
 
 // testParameterPOST tests a single parameter with a specific SSRF payload using POST.
-func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload) *SSRFFinding {
-	// Create form data with the test payload
+func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload, allParameters map[string]string) *SSRFFinding {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payload.Payload)
 
 	// Create the request

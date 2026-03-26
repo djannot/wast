@@ -3,6 +3,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"io"
 	"net/http"
@@ -461,8 +462,23 @@ func (s *CMDiScanner) Scan(ctx context.Context, targetURL string) *CMDiScanResul
 	return result
 }
 
-// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
-// This is used for testing forms that accept POST requests.
+// ScanPOST scans a URL for command injection vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common vulnerable
+//     parameter names with default values.
+//
+// Returns:
+//   - A CMDiScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
 func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *CMDiScanResult {
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
@@ -496,8 +512,8 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	// Get baseline responses and timing for detection
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
-	for paramName, paramValue := range params {
-		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, paramValue)
+	for paramName := range params {
+		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, params)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
 			baselineTiming[paramName] = duration
@@ -519,10 +535,10 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 			if payload.Type == "time-based" {
 				// Time-based detection
 				baseline := baselineTiming[paramName]
-				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline)
+				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
 			} else {
 				// Error-based detection
-				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload)
+				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, params)
 			}
 
 			result.Summary.TotalTests++
@@ -606,16 +622,12 @@ func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 
 // getBaselineWithTimingPOST makes a POST request with the original parameter value to establish a baseline
 // and measures the request duration for time-based detection.
-func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, paramValue string) (*baselineResponse, time.Duration) {
-	// Use original value if it exists, otherwise use a safe default
-	originalValue := paramValue
-	if originalValue == "" {
-		originalValue = "test"
-	}
-
-	// Create form data with the original parameter value
+func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
+	// Create form data with ALL parameters
 	formData := url.Values{}
-	formData.Set(paramName, originalValue)
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -648,10 +660,13 @@ func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 		return nil, 0
 	}
 
+	// Calculate proper hash of response body
+	hash := md5.Sum(body)
+
 	baseline := &baselineResponse{
 		StatusCode:  resp.StatusCode,
 		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
+		BodyHash:    fmt.Sprintf("%x", hash),
 		ContainsKey: string(body),
 	}
 
@@ -826,9 +841,13 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 }
 
 // testErrorBasedPOST tests a single parameter with an error-based command injection payload using POST.
-func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload) *CMDiFinding {
-	// Create form data with the test payload
+func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string) *CMDiFinding {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payload.Payload)
 
 	// Create the request
@@ -891,9 +910,13 @@ func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 }
 
 // testTimeBasedPOST tests a single parameter with a time-based command injection payload using POST.
-func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration) *CMDiFinding {
-	// Create form data with the test payload
+func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration, allParameters map[string]string) *CMDiFinding {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payload.Payload)
 
 	// Create the request

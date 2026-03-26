@@ -274,8 +274,23 @@ func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult 
 	return result
 }
 
-// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
-// This is used for testing forms that accept POST requests.
+// ScanPOST scans a URL for XSS vulnerabilities using POST form data.
+// Unlike Scan(), which tests GET query parameters, ScanPOST sends payloads in
+// the request body as application/x-www-form-urlencoded data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The URL to test (should not include query parameters)
+//   - parameters: Form parameters and their original values. When testing each
+//     parameter, all other parameters are included with their original values
+//     to ensure proper form validation. If empty, tests common parameter names
+//     (q, search, query, input) with empty default values.
+//
+// Returns:
+//   - An XSSScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
 func (s *XSSScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *XSSScanResult {
 	// Create tracing span if tracer is available
 	if s.tracer != nil {
@@ -319,7 +334,7 @@ func (s *XSSScanner) ScanPOST(ctx context.Context, targetURL string, parameters 
 				}
 			}
 
-			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload)
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
 			result.Summary.TotalTests++
 
 			if finding != nil {
@@ -527,9 +542,13 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 }
 
 // testParameterPOST tests a single parameter for XSS vulnerability using POST.
-func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload xssPayload) *XSSFinding {
-	// Create form data with the test payload
+func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload xssPayload, allParameters map[string]string) *XSSFinding {
+	// Create form data with ALL parameters
 	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
 	formData.Set(paramName, payload.Payload)
 
 	// Create the request
