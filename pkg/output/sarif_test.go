@@ -364,6 +364,253 @@ func TestOutputSARIF(t *testing.T) {
 			},
 		},
 		{
+			name: "SSRF Finding",
+			data: CommandResult{
+				Success: true,
+				Command: "scan",
+				Data: map[string]interface{}{
+					"target": "https://example.com",
+					"ssrf": map[string]interface{}{
+						"target": "https://example.com",
+						"findings": []interface{}{
+							map[string]interface{}{
+								"url":         "https://example.com/fetch?url=http://169.254.169.254",
+								"parameter":   "url",
+								"payload":     "http://169.254.169.254/latest/meta-data/",
+								"type":        "cloud-metadata",
+								"severity":    "high",
+								"description": "SSRF allows access to cloud metadata endpoint",
+								"remediation": "Implement URL allowlist validation",
+								"evidence":    "Response contains AWS metadata",
+								"confidence":  "high",
+							},
+						},
+						"summary": map[string]interface{}{},
+					},
+				},
+			},
+			wantErr: false,
+			check: func(t *testing.T, output string) {
+				var sarif SARIFReport
+				if err := json.Unmarshal([]byte(output), &sarif); err != nil {
+					t.Fatalf("Failed to parse SARIF output: %v", err)
+				}
+
+				if len(sarif.Runs) != 1 {
+					t.Fatalf("Expected 1 run, got %d", len(sarif.Runs))
+				}
+
+				if len(sarif.Runs[0].Results) != 1 {
+					t.Fatalf("Expected 1 result, got %d", len(sarif.Runs[0].Results))
+				}
+
+				result := sarif.Runs[0].Results[0]
+				if result.RuleID != RuleIDSSRF {
+					t.Errorf("Expected rule ID %s, got %s", RuleIDSSRF, result.RuleID)
+				}
+
+				if result.Level != "error" {
+					t.Errorf("Expected level error for high severity, got %s", result.Level)
+				}
+
+				if !strings.Contains(result.Message.Text, "SSRF") {
+					t.Errorf("Expected message to contain 'SSRF', got %s", result.Message.Text)
+				}
+
+				if !strings.Contains(result.Message.Text, "url") {
+					t.Errorf("Expected message to contain parameter 'url', got %s", result.Message.Text)
+				}
+
+				if len(result.Locations) != 1 {
+					t.Fatalf("Expected 1 location, got %d", len(result.Locations))
+				}
+
+				expectedURI := "https://example.com/fetch?url=http://169.254.169.254"
+				if result.Locations[0].PhysicalLocation.ArtifactLocation.URI != expectedURI {
+					t.Errorf("Expected URI %s, got %s", expectedURI, result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+				}
+
+				// Check properties
+				if props := result.Properties; props != nil {
+					if param, ok := props["parameter"].(string); !ok || param != "url" {
+						t.Errorf("Expected parameter property 'url', got %v", props["parameter"])
+					}
+					if confidence, ok := props["confidence"].(string); !ok || confidence != "high" {
+						t.Errorf("Expected confidence property 'high', got %v", props["confidence"])
+					}
+					if ssrfType, ok := props["type"].(string); !ok || ssrfType != "cloud-metadata" {
+						t.Errorf("Expected type property 'cloud-metadata', got %v", props["type"])
+					}
+				}
+			},
+		},
+		{
+			name: "Open Redirect Finding",
+			data: CommandResult{
+				Success: true,
+				Command: "scan",
+				Data: map[string]interface{}{
+					"target": "https://example.com",
+					"redirect": map[string]interface{}{
+						"target": "https://example.com",
+						"findings": []interface{}{
+							map[string]interface{}{
+								"url":         "https://example.com/redirect?target=https://evil.com",
+								"parameter":   "target",
+								"payload":     "https://evil.com",
+								"type":        "header-based",
+								"severity":    "medium",
+								"description": "Open redirect allows arbitrary external redirects",
+								"remediation": "Validate redirect URLs against allowlist",
+								"evidence":    "Location header redirects to external domain",
+								"confidence":  "high",
+							},
+						},
+						"summary": map[string]interface{}{},
+					},
+				},
+			},
+			wantErr: false,
+			check: func(t *testing.T, output string) {
+				var sarif SARIFReport
+				if err := json.Unmarshal([]byte(output), &sarif); err != nil {
+					t.Fatalf("Failed to parse SARIF output: %v", err)
+				}
+
+				if len(sarif.Runs) != 1 {
+					t.Fatalf("Expected 1 run, got %d", len(sarif.Runs))
+				}
+
+				if len(sarif.Runs[0].Results) != 1 {
+					t.Fatalf("Expected 1 result, got %d", len(sarif.Runs[0].Results))
+				}
+
+				result := sarif.Runs[0].Results[0]
+				if result.RuleID != RuleIDRedirect {
+					t.Errorf("Expected rule ID %s, got %s", RuleIDRedirect, result.RuleID)
+				}
+
+				if result.Level != "warning" {
+					t.Errorf("Expected level warning for medium severity, got %s", result.Level)
+				}
+
+				if !strings.Contains(result.Message.Text, "Redirect") {
+					t.Errorf("Expected message to contain 'Redirect', got %s", result.Message.Text)
+				}
+
+				if !strings.Contains(result.Message.Text, "target") {
+					t.Errorf("Expected message to contain parameter 'target', got %s", result.Message.Text)
+				}
+
+				if len(result.Locations) != 1 {
+					t.Fatalf("Expected 1 location, got %d", len(result.Locations))
+				}
+
+				expectedURI := "https://example.com/redirect?target=https://evil.com"
+				if result.Locations[0].PhysicalLocation.ArtifactLocation.URI != expectedURI {
+					t.Errorf("Expected URI %s, got %s", expectedURI, result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+				}
+
+				// Check properties
+				if props := result.Properties; props != nil {
+					if param, ok := props["parameter"].(string); !ok || param != "target" {
+						t.Errorf("Expected parameter property 'target', got %v", props["parameter"])
+					}
+					if confidence, ok := props["confidence"].(string); !ok || confidence != "high" {
+						t.Errorf("Expected confidence property 'high', got %v", props["confidence"])
+					}
+					if redirectType, ok := props["type"].(string); !ok || redirectType != "header-based" {
+						t.Errorf("Expected type property 'header-based', got %v", props["type"])
+					}
+				}
+			},
+		},
+		{
+			name: "Command Injection Finding",
+			data: CommandResult{
+				Success: true,
+				Command: "scan",
+				Data: map[string]interface{}{
+					"target": "https://example.com",
+					"cmdi": map[string]interface{}{
+						"target": "https://example.com",
+						"findings": []interface{}{
+							map[string]interface{}{
+								"url":         "https://example.com/exec?cmd=whoami",
+								"parameter":   "cmd",
+								"payload":     "whoami; cat /etc/passwd",
+								"type":        "time-based",
+								"os_type":     "linux",
+								"severity":    "high",
+								"description": "Command injection allows arbitrary command execution",
+								"remediation": "Avoid passing user input to system commands",
+								"evidence":    "Time delay indicates command execution",
+								"confidence":  "high",
+							},
+						},
+						"summary": map[string]interface{}{},
+					},
+				},
+			},
+			wantErr: false,
+			check: func(t *testing.T, output string) {
+				var sarif SARIFReport
+				if err := json.Unmarshal([]byte(output), &sarif); err != nil {
+					t.Fatalf("Failed to parse SARIF output: %v", err)
+				}
+
+				if len(sarif.Runs) != 1 {
+					t.Fatalf("Expected 1 run, got %d", len(sarif.Runs))
+				}
+
+				if len(sarif.Runs[0].Results) != 1 {
+					t.Fatalf("Expected 1 result, got %d", len(sarif.Runs[0].Results))
+				}
+
+				result := sarif.Runs[0].Results[0]
+				if result.RuleID != RuleIDCMDi {
+					t.Errorf("Expected rule ID %s, got %s", RuleIDCMDi, result.RuleID)
+				}
+
+				if result.Level != "error" {
+					t.Errorf("Expected level error for high severity, got %s", result.Level)
+				}
+
+				if !strings.Contains(result.Message.Text, "Command Injection") {
+					t.Errorf("Expected message to contain 'Command Injection', got %s", result.Message.Text)
+				}
+
+				if !strings.Contains(result.Message.Text, "cmd") {
+					t.Errorf("Expected message to contain parameter 'cmd', got %s", result.Message.Text)
+				}
+
+				if len(result.Locations) != 1 {
+					t.Fatalf("Expected 1 location, got %d", len(result.Locations))
+				}
+
+				expectedURI := "https://example.com/exec?cmd=whoami"
+				if result.Locations[0].PhysicalLocation.ArtifactLocation.URI != expectedURI {
+					t.Errorf("Expected URI %s, got %s", expectedURI, result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+				}
+
+				// Check properties
+				if props := result.Properties; props != nil {
+					if param, ok := props["parameter"].(string); !ok || param != "cmd" {
+						t.Errorf("Expected parameter property 'cmd', got %v", props["parameter"])
+					}
+					if confidence, ok := props["confidence"].(string); !ok || confidence != "high" {
+						t.Errorf("Expected confidence property 'high', got %v", props["confidence"])
+					}
+					if cmdiType, ok := props["type"].(string); !ok || cmdiType != "time-based" {
+						t.Errorf("Expected type property 'time-based', got %v", props["type"])
+					}
+					if osType, ok := props["osType"].(string); !ok || osType != "linux" {
+						t.Errorf("Expected osType property 'linux', got %v", props["osType"])
+					}
+				}
+			},
+		},
+		{
 			name: "Multiple Findings",
 			data: CommandResult{
 				Success: true,
