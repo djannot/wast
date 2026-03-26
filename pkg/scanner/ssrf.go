@@ -28,6 +28,15 @@ type SSRFScanner struct {
 	tracer      trace.Tracer
 }
 
+// ssrfBaselineResponse stores characteristics of a baseline HTTP response
+// for comparison against payload responses to reduce false positives.
+type ssrfBaselineResponse struct {
+	StatusCode int
+	BodyLength int
+	Body       string
+	Signatures []string // signatures found in baseline
+}
+
 // SSRFScanResult represents the result of an SSRF vulnerability scan.
 type SSRFScanResult struct {
 	Target   string        `json:"target" yaml:"target"`
@@ -271,6 +280,128 @@ func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
 	return s
 }
 
+// fetchBaseline retrieves a baseline response from the target URL without any payload injection.
+// This is used to compare against responses with SSRF payloads to reduce false positives.
+func (s *SSRFScanner) fetchBaseline(ctx context.Context, targetURL string, method string, formData url.Values) *ssrfBaselineResponse {
+	var req *http.Request
+	var err error
+
+	if method == http.MethodPost && formData != nil {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(formData.Encode()))
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	} else {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			return nil
+		}
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Collect signatures present in baseline
+	signatures := s.collectSignatures(bodyStr)
+
+	return &ssrfBaselineResponse{
+		StatusCode: resp.StatusCode,
+		BodyLength: len(body),
+		Body:       bodyStr,
+		Signatures: signatures,
+	}
+}
+
+// collectSignatures extracts all detectable signatures from a response body.
+func (s *SSRFScanner) collectSignatures(body string) []string {
+	signatures := make([]string, 0)
+	bodyLower := strings.ToLower(body)
+
+	// Check for AWS metadata signatures
+	awsSignatures := []string{"ami-id", "instance-id", "instance-type", "local-hostname", "local-ipv4", "public-hostname", "public-ipv4", "security-groups", "iam/security-credentials"}
+	for _, sig := range awsSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "aws:"+sig)
+		}
+	}
+
+	// Check for GCP metadata signatures
+	gcpSignatures := []string{"computemetadata", "project-id", "machine-type", "service-accounts", "attributes/"}
+	for _, sig := range gcpSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "gcp:"+sig)
+		}
+	}
+
+	// Check for Azure metadata signatures
+	azureSignatures := []string{"vmid", "subscriptionid", "resourcegroupname", "ostype"}
+	for _, sig := range azureSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "azure:"+sig)
+		}
+	}
+
+	// Check for Kubernetes signatures
+	k8sSignatures := []string{"apiversion", "kind", "metadata", "namespace", "items", "serviceaccounttoken"}
+	for _, sig := range k8sSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "k8s:"+sig)
+		}
+	}
+
+	// Check for localhost signatures
+	localhostSignatures := []string{"localhost", "127.0.0.1", "::1", "[::1]"}
+	for _, sig := range localhostSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "localhost:"+sig)
+		}
+	}
+
+	// Check for internal service signatures
+	internalServiceSignatures := []string{"apache", "nginx", "tomcat", "jenkins", "grafana", "prometheus", "elasticsearch", "kibana", "rabbitmq", "redis", "memcached", "etcd", "consul"}
+	for _, sig := range internalServiceSignatures {
+		if strings.Contains(bodyLower, sig) {
+			signatures = append(signatures, "service:"+sig)
+		}
+	}
+
+	// Check for file access signatures
+	fileSignatures := []string{"root:x:", "/bin/bash", "/bin/sh", "etc/passwd", "[boot loader]", "c:\\windows"}
+	for _, sig := range fileSignatures {
+		if strings.Contains(strings.ToLower(body), strings.ToLower(sig)) {
+			signatures = append(signatures, "file:"+sig)
+		}
+	}
+
+	// Check for private IP patterns
+	if containsPrivateIPPatterns(body) {
+		signatures = append(signatures, "private-ip")
+	}
+
+	return signatures
+}
+
 // Scan performs an SSRF vulnerability scan on the given target URL.
 func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResult {
 	// Create tracing span if tracer is available
@@ -307,6 +438,9 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 		params.Set("callback", "")
 	}
 
+	// Fetch baseline response for comparison
+	baseline := s.fetchBaseline(ctx, targetURL, http.MethodGet, nil)
+
 	// Test each parameter with each payload
 	for paramName := range params {
 		for _, payload := range ssrfPayloads {
@@ -318,7 +452,7 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 				}
 			}
 
-			finding := s.testParameter(ctx, parsedURL, paramName, payload)
+			finding := s.testParameter(ctx, parsedURL, paramName, payload, baseline)
 			result.Summary.TotalTests++
 
 			if finding != nil {
@@ -395,6 +529,13 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 		}
 	}
 
+	// Fetch baseline response for comparison
+	formData := url.Values{}
+	for k, v := range params {
+		formData.Set(k, v)
+	}
+	baseline := s.fetchBaseline(ctx, parsedURL.String(), http.MethodPost, formData)
+
 	// Test each parameter with each payload
 	for paramName := range params {
 		for _, payload := range ssrfPayloads {
@@ -406,7 +547,7 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 				}
 			}
 
-			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params, baseline)
 			result.Summary.TotalTests++
 
 			if finding != nil {
@@ -432,7 +573,7 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 }
 
 // testParameter tests a single parameter with a specific SSRF payload.
-func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload) *SSRFFinding {
+func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload, baseline *ssrfBaselineResponse) *SSRFFinding {
 	// Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
@@ -487,7 +628,7 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 	bodyStr := string(body)
 
 	// Analyze the response for SSRF indicators
-	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration)
+	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration, baseline)
 
 	// Only report if there's medium or high confidence
 	if confidence != "low" && confidence != "" {
@@ -509,7 +650,7 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 }
 
 // testParameterPOST tests a single parameter with a specific SSRF payload using POST.
-func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload, allParameters map[string]string) *SSRFFinding {
+func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload, allParameters map[string]string, baseline *ssrfBaselineResponse) *SSRFFinding {
 	// Create form data with ALL parameters
 	formData := url.Values{}
 	for k, v := range allParameters {
@@ -567,7 +708,7 @@ func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 	bodyStr := string(body)
 
 	// Analyze the response for SSRF indicators
-	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration)
+	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration, baseline)
 
 	// Only report if there's medium or high confidence
 	if confidence != "low" && confidence != "" {
@@ -589,31 +730,89 @@ func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 }
 
 // analyzeSSRFResponse analyzes the HTTP response to determine if SSRF is possible.
-func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payload ssrfPayload, duration time.Duration) (confidence string, evidence string) {
+// It compares the response against a baseline to reduce false positives.
+func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payload ssrfPayload, duration time.Duration, baseline *ssrfBaselineResponse) (confidence string, evidence string) {
+	// If we have a baseline, compare key characteristics
+	if baseline != nil {
+		// Check if status code changed significantly
+		statusChanged := resp.StatusCode != baseline.StatusCode
+
+		// Check if body length changed significantly (more than 10%)
+		bodyLengthDiff := float64(len(body)-baseline.BodyLength) / float64(baseline.BodyLength+1)
+		significantLengthChange := bodyLengthDiff > 0.1 || bodyLengthDiff < -0.1
+
+		// If status code and body length are the same or very similar, and body is similar,
+		// this is likely the application ignoring the parameter
+		if !statusChanged && !significantLengthChange {
+			// Check if the body is substantially the same
+			if body == baseline.Body {
+				// Exact same response - almost certainly a false positive
+				return "", ""
+			}
+
+			// Collect signatures in current response
+			currentSignatures := s.collectSignatures(body)
+
+			// Check if all signatures present were also in baseline
+			allSignaturesInBaseline := true
+			for _, sig := range currentSignatures {
+				found := false
+				for _, baseSig := range baseline.Signatures {
+					if sig == baseSig {
+						found = true
+						break
+					}
+				}
+				if !found {
+					allSignaturesInBaseline = false
+					break
+				}
+			}
+
+			// If all signatures were already present in baseline, this is likely a false positive
+			if allSignaturesInBaseline && len(currentSignatures) > 0 {
+				return "", ""
+			}
+		}
+	}
+
 	// Check for status codes that indicate successful internal requests
 	if resp.StatusCode == http.StatusOK {
 		// Look for cloud metadata signatures
 		if payload.Target == "aws-metadata" {
 			// AWS metadata often returns plain text with specific patterns
 			if containsAWSMetadataSignature(body) {
+				// Check if these signatures were NOT in baseline
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "aws") {
+					return "", ""
+				}
 				return "high", "Response contains AWS metadata service signatures"
 			}
 		}
 
 		if payload.Target == "gcp-metadata" {
 			if containsGCPMetadataSignature(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "gcp") {
+					return "", ""
+				}
 				return "high", "Response contains GCP metadata service signatures"
 			}
 		}
 
 		if payload.Target == "azure-metadata" {
 			if containsAzureMetadataSignature(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "azure") {
+					return "", ""
+				}
 				return "high", "Response contains Azure metadata service signatures"
 			}
 		}
 
 		if payload.Target == "k8s-metadata" {
 			if containsKubernetesMetadataSignature(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "k8s") {
+					return "", ""
+				}
 				return "high", "Response contains Kubernetes API signatures"
 			}
 		}
@@ -622,10 +821,16 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		if payload.Target == "localhost" {
 			// Look for common localhost service responses
 			if containsLocalhostSignature(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "localhost") {
+					return "", ""
+				}
 				return "high", "Response contains localhost service signatures"
 			}
 			// Check for private network patterns
 			if containsPrivateIPPatterns(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "private-ip") {
+					return "", ""
+				}
 				return "medium", "Response contains private IP address patterns"
 			}
 		}
@@ -633,6 +838,9 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		// Check for file protocol access
 		if payload.Target == "file-protocol" {
 			if containsFileAccessSignature(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "file") {
+					return "", ""
+				}
 				return "high", "Response contains file system access indicators"
 			}
 		}
@@ -641,6 +849,10 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		if payload.Target == "private-network" {
 			// Only report if we detect actual private network content
 			if containsPrivateIPPatterns(body) || containsInternalServiceSignatures(body) {
+				// Check if these signatures were already in baseline
+				if baseline != nil && (s.signaturesInBaseline(baseline.Signatures, "private-ip") || s.signaturesInBaseline(baseline.Signatures, "service")) {
+					return "", ""
+				}
 				return "medium", fmt.Sprintf("Received response from private network address with internal content indicators (status: %d, size: %d bytes)", resp.StatusCode, len(body))
 			}
 		}
@@ -649,6 +861,9 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		if strings.HasSuffix(payload.Target, "-protocol") {
 			// Only report if there's evidence the protocol was actually processed
 			if containsFileAccessSignature(body) || containsProtocolSmugglingSignatures(body) {
+				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "file") {
+					return "", ""
+				}
 				return "medium", fmt.Sprintf("Application may have processed %s protocol in URL parameter", strings.TrimSuffix(payload.Target, "-protocol"))
 			}
 		}
@@ -665,6 +880,20 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 	}
 
 	return "", ""
+}
+
+// signaturesInBaseline checks if any signatures with the given prefix are present in baseline.
+func (s *SSRFScanner) signaturesInBaseline(baselineSignatures []string, prefix string) bool {
+	for _, sig := range baselineSignatures {
+		// Handle special case for "private-ip" which doesn't have a colon
+		if prefix == "private-ip" && sig == "private-ip" {
+			return true
+		}
+		if strings.HasPrefix(sig, prefix+":") {
+			return true
+		}
+	}
+	return false
 }
 
 // containsAWSMetadataSignature checks if response contains AWS metadata signatures.
@@ -1067,7 +1296,8 @@ func (s *SSRFScanner) VerifyFinding(ctx context.Context, finding *SSRFFinding, c
 		bodyStr := string(body)
 
 		// Check if variant produces similar SSRF indicators
-		confidence, _ := s.analyzeSSRFResponse(resp, bodyStr, ssrfPayload{Target: extractTargetType(finding.Payload)}, requestDuration)
+		// Note: verification doesn't use baseline comparison
+		confidence, _ := s.analyzeSSRFResponse(resp, bodyStr, ssrfPayload{Target: extractTargetType(finding.Payload)}, requestDuration, nil)
 		if confidence == "high" || confidence == "medium" {
 			successCount++
 		}

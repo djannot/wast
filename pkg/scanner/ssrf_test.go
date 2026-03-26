@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -589,7 +590,7 @@ local-ipv4`
 
 	payload := ssrfPayload{Target: "aws-metadata"}
 
-	confidence, evidence := scanner.analyzeSSRFResponse(resp, body, payload, 100*time.Millisecond)
+	confidence, evidence := scanner.analyzeSSRFResponse(resp, body, payload, 100*time.Millisecond, nil)
 
 	if confidence != "high" {
 		t.Errorf("Expected high confidence for AWS metadata, got %s", confidence)
@@ -625,7 +626,7 @@ func TestSSRFScanner_AnalyzeSSRFResponse_KubernetesMetadata(t *testing.T) {
 
 	payload := ssrfPayload{Target: "k8s-metadata"}
 
-	confidence, evidence := scanner.analyzeSSRFResponse(resp, body, payload, 100*time.Millisecond)
+	confidence, evidence := scanner.analyzeSSRFResponse(resp, body, payload, 100*time.Millisecond, nil)
 
 	if confidence != "high" {
 		t.Errorf("Expected high confidence for Kubernetes metadata, got %s", confidence)
@@ -847,5 +848,302 @@ func TestSSRFScanner_ContainsFileAccessSignature(t *testing.T) {
 				t.Errorf("containsFileAccessSignature(%s) = %v, expected %v", tt.body, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSSRFScanner_BaselineComparison_ReducesFalsePositives(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure baseline response - a normal page that happens to contain "nginx"
+	baselineResponse := `<html><head><title>My Site</title></head><body>
+		<p>Welcome to my site! Powered by nginx web server.</p>
+		<footer>Running on apache infrastructure</footer>
+	</body></html>`
+
+	// The baseline URL (no query params or with original values)
+	mock.responses["https://example.com"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineResponse)),
+		Header:     make(http.Header),
+	}
+
+	// Configure all SSRF payload responses to return THE SAME content
+	// (app ignores unknown parameters)
+	for _, payload := range ssrfPayloads {
+		testURL := fmt.Sprintf("https://example.com?url=%s", payload.Payload)
+		mock.responses[testURL] = &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(baselineResponse)),
+			Header:     make(http.Header),
+		}
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT report false positives when baseline and response are identical
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no vulnerabilities (false positives), but found %d", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive finding: %s - %s", finding.Parameter, finding.Evidence)
+		}
+	}
+}
+
+func TestSSRFScanner_BaselineComparison_DetectsRealSSRF(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure baseline response - normal page
+	baselineResponse := `<html><head><title>My Site</title></head><body>
+		<p>Welcome to my site!</p>
+	</body></html>`
+
+	mock.responses["https://example.com/proxy?url=test"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineResponse)),
+		Header:     make(http.Header),
+	}
+
+	// Configure AWS metadata response - different from baseline
+	awsMetadataResponse := `ami-id
+ami-launch-index
+instance-id
+instance-type
+local-ipv4
+security-groups`
+
+	mock.responses["https://example.com/proxy?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(awsMetadataResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/proxy?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect real SSRF when response differs from baseline
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SSRF vulnerability (real positive)")
+	}
+
+	// Find the AWS metadata finding
+	var awsFinding *SSRFFinding
+	for i := range result.Findings {
+		if strings.Contains(result.Findings[i].Description, "AWS") {
+			awsFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if awsFinding == nil {
+		t.Error("Expected to find AWS metadata vulnerability")
+	}
+}
+
+func TestSSRFScanner_FetchBaseline_GET(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	baselineBody := "<html><body>Test content with nginx</body></html>"
+	mock.responses["https://example.com/test"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineBody)),
+		Header:     make(http.Header),
+	}
+
+	ctx := context.Background()
+	baseline := scanner.fetchBaseline(ctx, "https://example.com/test", http.MethodGet, nil)
+
+	if baseline == nil {
+		t.Fatal("fetchBaseline returned nil")
+	}
+
+	if baseline.StatusCode != http.StatusOK {
+		t.Errorf("Expected status code 200, got %d", baseline.StatusCode)
+	}
+
+	if baseline.BodyLength != len(baselineBody) {
+		t.Errorf("Expected body length %d, got %d", len(baselineBody), baseline.BodyLength)
+	}
+
+	if baseline.Body != baselineBody {
+		t.Errorf("Expected body to be preserved")
+	}
+
+	// Check that signatures were collected
+	if len(baseline.Signatures) == 0 {
+		t.Error("Expected some signatures to be collected from baseline")
+	}
+
+	// Check that nginx signature was found
+	found := false
+	for _, sig := range baseline.Signatures {
+		if strings.Contains(sig, "nginx") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected to find nginx signature in baseline")
+	}
+}
+
+func TestSSRFScanner_FetchBaseline_POST(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	baselineBody := "<html><body>POST response</body></html>"
+
+	// Note: The mock needs to match on the exact URL for POST
+	mock.responses["https://example.com/form"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineBody)),
+		Header:     make(http.Header),
+	}
+
+	ctx := context.Background()
+	formData := url.Values{}
+	formData.Set("field1", "value1")
+	formData.Set("field2", "value2")
+
+	baseline := scanner.fetchBaseline(ctx, "https://example.com/form", http.MethodPost, formData)
+
+	if baseline == nil {
+		t.Fatal("fetchBaseline returned nil")
+	}
+
+	if baseline.StatusCode != http.StatusOK {
+		t.Errorf("Expected status code 200, got %d", baseline.StatusCode)
+	}
+
+	// Verify that a POST request was made
+	if len(mock.requests) == 0 {
+		t.Fatal("Expected at least one request to be made")
+	}
+
+	lastRequest := mock.requests[len(mock.requests)-1]
+	if lastRequest.Method != http.MethodPost {
+		t.Errorf("Expected POST request, got %s", lastRequest.Method)
+	}
+
+	if lastRequest.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+		t.Errorf("Expected Content-Type to be application/x-www-form-urlencoded, got %s", lastRequest.Header.Get("Content-Type"))
+	}
+}
+
+func TestSSRFScanner_CollectSignatures(t *testing.T) {
+	scanner := NewSSRFScanner()
+
+	tests := []struct {
+		name              string
+		body              string
+		expectedPrefixes  []string
+	}{
+		{
+			name: "AWS metadata signatures",
+			body: "ami-id: ami-12345\ninstance-id: i-67890\nlocal-ipv4: 10.0.0.1",
+			expectedPrefixes: []string{"aws:"},
+		},
+		{
+			name: "nginx signature",
+			body: "<html><body>Powered by nginx</body></html>",
+			expectedPrefixes: []string{"service:"},
+		},
+		{
+			name: "localhost signature",
+			body: "Connection to 127.0.0.1 established",
+			expectedPrefixes: []string{"localhost:"},
+		},
+		{
+			name: "private IP",
+			body: "Server at 192.168.1.1",
+			expectedPrefixes: []string{"private-ip"},
+		},
+		{
+			name: "file access",
+			body: "root:x:0:0:root:/root:/bin/bash",
+			expectedPrefixes: []string{"file:"},
+		},
+		{
+			name: "kubernetes API",
+			body: `{"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default"}}`,
+			expectedPrefixes: []string{"k8s:"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signatures := scanner.collectSignatures(tt.body)
+
+			if len(signatures) == 0 {
+				t.Error("Expected to collect some signatures")
+			}
+
+			for _, prefix := range tt.expectedPrefixes {
+				found := false
+				for _, sig := range signatures {
+					if prefix == "private-ip" {
+						if sig == "private-ip" {
+							found = true
+							break
+						}
+					} else if strings.HasPrefix(sig, prefix) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected to find signature with prefix %s, got signatures: %v", prefix, signatures)
+				}
+			}
+		})
+	}
+}
+
+func TestSSRFScanner_SignaturesInBaseline(t *testing.T) {
+	scanner := NewSSRFScanner()
+
+	baselineSignatures := []string{
+		"service:nginx",
+		"service:apache",
+		"localhost:127.0.0.1",
+		"private-ip",
+	}
+
+	tests := []struct {
+		prefix   string
+		expected bool
+	}{
+		{"service", true},
+		{"localhost", true},
+		{"aws", false},
+		{"gcp", false},
+		{"file", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			result := scanner.signaturesInBaseline(baselineSignatures, tt.prefix)
+			if result != tt.expected {
+				t.Errorf("signaturesInBaseline(%s) = %v, expected %v", tt.prefix, result, tt.expected)
+			}
+		})
+	}
+
+	// Test special case for "private-ip" which doesn't have a colon
+	if !scanner.signaturesInBaseline([]string{"private-ip"}, "private-ip") {
+		t.Error("Expected to find private-ip signature")
 	}
 }
