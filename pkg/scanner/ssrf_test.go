@@ -1147,3 +1147,98 @@ func TestSSRFScanner_SignaturesInBaseline(t *testing.T) {
 		t.Error("Expected to find private-ip signature")
 	}
 }
+
+// TestSSRFScanner_PerParameterBaseline verifies that the scanner uses per-parameter baselines
+// instead of a single URL baseline. This prevents false positives when testing invented parameters.
+func TestSSRFScanner_PerParameterBaseline_InventedParameters(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Simulate an app that responds differently based on whether the 'url' parameter exists
+	// This is a common pattern - apps may require parameters and show errors when missing
+
+	// Baseline WITH the parameter (benign value) - normal response
+	baselineResponse := `<html><body>
+		<h1>Proxy Service</h1>
+		<p>Ready to fetch content</p>
+	</body></html>`
+
+	// Response when SSRF payload is used - SAME structure and content
+	// The app simply ignores the url parameter value (doesn't echo it)
+	ssrfPayloadResponse := `<html><body>
+		<h1>Proxy Service</h1>
+		<p>Ready to fetch content</p>
+	</body></html>`
+
+	// Set up responses for baseline with benign value
+	mock.responses["https://example.com/proxy?url=https%3A%2F%2Fexample.com"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineResponse)),
+		Header:     make(http.Header),
+	}
+
+	// Set up responses for each SSRF payload
+	for _, payload := range ssrfPayloads {
+		testURL := fmt.Sprintf("https://example.com/proxy?url=%s", url.QueryEscape(payload.Payload))
+		// App accepts any URL-like value and shows it - no actual SSRF vulnerability
+		mock.responses[testURL] = &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(ssrfPayloadResponse)),
+			Header:     make(http.Header),
+		}
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	// URL without parameters - scanner will invent "url" parameter
+	result := scanner.Scan(ctx, "https://example.com/proxy")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// With per-parameter baseline, this should NOT produce false positives
+	// because the baseline (with url=https://example.com) and test responses are similar
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no false positives with per-parameter baseline, but found %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: param=%s, payload=%s, evidence=%s", finding.Parameter, finding.Payload, finding.Evidence)
+		}
+	}
+}
+
+// TestSSRFScanner_PerParameterBaseline_POST verifies per-parameter baselines work for POST requests
+func TestSSRFScanner_PerParameterBaseline_POST(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Baseline response with benign url parameter value
+	baselineResponse := `<html><body>Proxy active</body></html>`
+
+	// Configure mock to return same response for baseline and test
+	// This simulates an app that accepts any URL value without actually making SSRF requests
+	mock.responses["https://example.com/api/fetch"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	params := map[string]string{
+		"url": "",
+	}
+	result := scanner.ScanPOST(ctx, "https://example.com/api/fetch", params)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should not produce false positives since responses are identical
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no false positives with per-parameter baseline in POST, but found %d", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: param=%s, payload=%s", finding.Parameter, finding.Payload)
+		}
+	}
+}
