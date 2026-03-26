@@ -2004,12 +2004,12 @@ func TestSQLiScanner_AdaptiveThresholds_VeryFewWords(t *testing.T) {
 // TestSQLiScanner_DVWA_EnhancedDetection tests the enhanced detection with various DVWA response patterns
 func TestSQLiScanner_DVWA_EnhancedDetection(t *testing.T) {
 	tests := []struct {
-		name             string
-		baselineHTML     string
-		trueHTML         string
-		falseHTML        string
-		shouldDetect     bool
-		detectionReason  string
+		name            string
+		baselineHTML    string
+		trueHTML        string
+		falseHTML       string
+		shouldDetect    bool
+		detectionReason string
 	}{
 		{
 			name: "DVWA table with data rows - true has more rows",
@@ -2032,7 +2032,7 @@ func TestSQLiScanner_DVWA_EnhancedDetection(t *testing.T) {
 					<tr><td>ID</td><td>Name</td></tr>
 				</table>
 			</body></html>`,
-			shouldDetect: true,
+			shouldDetect:    true,
 			detectionReason: "structural elements differ (true has 3 data rows, false has 0)",
 		},
 		{
@@ -2058,15 +2058,15 @@ Surname: Me</pre>
 			falseHTML: `<html><body>
 				<pre></pre>
 			</body></html>`,
-			shouldDetect: true,
+			shouldDetect:    true,
 			detectionReason: "word count differs significantly and results pattern differs",
 		},
 		{
-			name: "DVWA minimal response - just table headers vs data",
-			baselineHTML: `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr></table></body></html>`,
-			trueHTML: `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr><tr><td>user1</td></tr><tr><td>user2</td></tr></table></body></html>`,
-			falseHTML: `<html><body><table><tr><th>User</th></tr></table></body></html>`,
-			shouldDetect: true,
+			name:            "DVWA minimal response - just table headers vs data",
+			baselineHTML:    `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr></table></body></html>`,
+			trueHTML:        `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr><tr><td>user1</td></tr><tr><td>user2</td></tr></table></body></html>`,
+			falseHTML:       `<html><body><table><tr><th>User</th></tr></table></body></html>`,
+			shouldDetect:    true,
 			detectionReason: "false has empty table (headers only), true has data",
 		},
 	}
