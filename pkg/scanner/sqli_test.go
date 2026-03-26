@@ -1670,3 +1670,333 @@ func TestCountWords(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectNoResultsPattern tests the detection of "no results" patterns
+func TestDetectNoResultsPattern(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected bool
+	}{
+		{
+			name:     "explicit no results text",
+			body:     "<html><body><p>No results found</p></body></html>",
+			expected: true,
+		},
+		{
+			name:     "zero results text",
+			body:     "<html><body><p>0 results</p></body></html>",
+			expected: true,
+		},
+		{
+			name:     "no records text",
+			body:     "<html><body><p>No records available</p></body></html>",
+			expected: true,
+		},
+		{
+			name:     "empty table with header only",
+			body:     "<html><body><table><tr><th>ID</th><th>Name</th></tr></table></body></html>",
+			expected: true,
+		},
+		{
+			name:     "table with data rows",
+			body:     "<html><body><table><tr><th>ID</th><th>Name</th></tr><tr><td>1</td><td>John</td></tr><tr><td>2</td><td>Jane</td></tr></table></body></html>",
+			expected: false,
+		},
+		{
+			name:     "normal content with results",
+			body:     "<html><body><p>Found 5 results</p><ul><li>Item 1</li><li>Item 2</li></ul></body></html>",
+			expected: false,
+		},
+		{
+			name:     "empty table (no rows at all)",
+			body:     "<html><body><table></table></body></html>",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detectNoResultsPattern(tt.body)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestHasResultsData tests the detection of actual data in responses
+func TestHasResultsData(t *testing.T) {
+	tests := []struct {
+		name               string
+		body               string
+		structuralElements int
+		expected           bool
+	}{
+		{
+			name:               "table with multiple rows",
+			body:               "<table><tr><td>1</td></tr><tr><td>2</td></tr><tr><td>3</td></tr></table>",
+			structuralElements: 3,
+			expected:           true,
+		},
+		{
+			name:               "empty table",
+			body:               "<table><tr><th>Header</th></tr></table>",
+			structuralElements: 1,
+			expected:           false, // Only header row, no data - detectNoResultsPattern catches it
+		},
+		{
+			name:               "no results message",
+			body:               "<p>No results found</p>",
+			structuralElements: 0,
+			expected:           false,
+		},
+		{
+			name:               "very few words",
+			body:               "<p>None</p>",
+			structuralElements: 0,
+			expected:           false,
+		},
+		{
+			name:               "normal content",
+			body:               "<div>Product ID 1: Widget. Price: $10. Description: A useful tool.</div>",
+			structuralElements: 0,
+			expected:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasResultsData(tt.body, tt.structuralElements)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v for body: %s", tt.expected, result, tt.body)
+			}
+		})
+	}
+}
+
+// TestSQLiScanner_AdaptiveThresholds_SmallResponses tests adaptive thresholds for small responses
+func TestSQLiScanner_AdaptiveThresholds_SmallResponses(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Small baseline response (< 1KB)
+	baselineHTML := `<html><body><p>User ID 1</p></body></html>`
+
+	// True payload - slightly more content (small difference but significant for small page)
+	truePayloadHTML := `<html><body><p>User ID 1</p><p>User ID 2</p><p>User ID 3</p></body></html>`
+
+	// False payload - no results
+	falsePayloadHTML := `<html><body><p>No user found</p></body></html>`
+
+	mock.responses["https://example.com/user?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/user?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect SQL injection with adaptive thresholds for small responses
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SQL injection vulnerability using adaptive thresholds for small responses")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	}
+
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		if finding.Confidence != "high" && finding.Confidence != "medium" {
+			t.Errorf("Expected high or medium confidence, got: %s", finding.Confidence)
+		}
+	}
+}
+
+// TestSQLiScanner_DVWA_LowSecurity_Realistic tests with realistic DVWA low security responses
+func TestSQLiScanner_DVWA_LowSecurity_Realistic(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Realistic DVWA baseline response for id=1
+	baselineHTML := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Vulnerability: SQL Injection :: Damn Vulnerable Web Application (DVWA) v1.10</title>
+</head>
+<body>
+<div id="wrapper">
+<div id="main_body">
+<h1>SQL Injection</h1>
+<div class="body_padded">
+<form action="#" method="GET">
+User ID:
+<input type="text" name="id" value="1">
+<input type="submit" name="Submit" value="Submit">
+</form>
+<br />
+<table>
+<tr><td>ID</td><td>First name</td><td>Surname</td></tr>
+<tr><td>1</td><td>admin</td><td>admin</td></tr>
+</table>
+</div>
+</div>
+</div>
+</body>
+</html>`
+
+	// True payload (1' OR '1'='1) returns all users
+	truePayloadHTML := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Vulnerability: SQL Injection :: Damn Vulnerable Web Application (DVWA) v1.10</title>
+</head>
+<body>
+<div id="wrapper">
+<div id="main_body">
+<h1>SQL Injection</h1>
+<div class="body_padded">
+<form action="#" method="GET">
+User ID:
+<input type="text" name="id" value="1' OR '1'='1">
+<input type="submit" name="Submit" value="Submit">
+</form>
+<br />
+<table>
+<tr><td>ID</td><td>First name</td><td>Surname</td></tr>
+<tr><td>1</td><td>admin</td><td>admin</td></tr>
+<tr><td>2</td><td>Gordon</td><td>Brown</td></tr>
+<tr><td>3</td><td>Hack</td><td>Me</td></tr>
+<tr><td>4</td><td>Pablo</td><td>Picasso</td></tr>
+<tr><td>5</td><td>Bob</td><td>Smith</td></tr>
+</table>
+</div>
+</div>
+</div>
+</body>
+</html>`
+
+	// False payload (1' OR '1'='2) returns no users
+	falsePayloadHTML := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Vulnerability: SQL Injection :: Damn Vulnerable Web Application (DVWA) v1.10</title>
+</head>
+<body>
+<div id="wrapper">
+<div id="main_body">
+<h1>SQL Injection</h1>
+<div class="body_padded">
+<form action="#" method="GET">
+User ID:
+<input type="text" name="id" value="1' OR '1'='2">
+<input type="submit" name="Submit" value="Submit">
+</form>
+<br />
+<table>
+<tr><td>ID</td><td>First name</td><td>Surname</td></tr>
+</table>
+</div>
+</div>
+</div>
+</body>
+</html>`
+
+	mock.responses["http://127.0.0.1/dvwa/vulnerabilities/sqli/?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://127.0.0.1/dvwa/vulnerabilities/sqli/?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// This is the critical test - must detect DVWA SQLi
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("CRITICAL: Failed to detect SQL injection in DVWA-style scenario")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+		t.Logf("This is the exact scenario described in issue #153")
+	} else {
+		t.Logf("Successfully detected %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+	}
+
+	// Verify detection details
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		t.Logf("Detection method: %s", finding.Evidence)
+		t.Logf("Confidence: %s", finding.Confidence)
+
+		// Should have high confidence for this clear differential behavior
+		if finding.Confidence != "high" {
+			t.Logf("Note: Expected high confidence for DVWA detection, got: %s", finding.Confidence)
+		}
+
+		// Evidence should mention structural or content differences
+		hasContentEvidence := strings.Contains(finding.Evidence, "structural") ||
+			strings.Contains(finding.Evidence, "word count") ||
+			strings.Contains(finding.Evidence, "content hash") ||
+			strings.Contains(finding.Evidence, "results")
+
+		if !hasContentEvidence {
+			t.Errorf("Expected evidence to mention content-based detection, got: %s", finding.Evidence)
+		}
+	}
+}
+
+// TestSQLiScanner_AdaptiveThresholds_VeryFewWords tests detection with minimal word differences
+func TestSQLiScanner_AdaptiveThresholds_VeryFewWords(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Minimal baseline
+	baselineHTML := `<html><body>User 1</body></html>`
+
+	// True payload - slightly more
+	truePayloadHTML := `<html><body>User 1 User 2</body></html>`
+
+	// False payload - even less
+	falsePayloadHTML := `<html><body>None</body></html>`
+
+	mock.responses["https://api.example.com/user?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://api.example.com/user?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// With adaptive thresholds, even 1-2 word differences should be detected
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SQL injection with minimal word count differences")
+	}
+}
