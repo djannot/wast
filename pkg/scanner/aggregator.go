@@ -31,10 +31,36 @@ type UnifiedScanResult struct {
 	Redirect      *RedirectScanResult      `json:"redirect,omitempty" yaml:"redirect,omitempty"`
 	CMDi          *CMDiScanResult          `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
 	PathTraversal *PathTraversalScanResult `json:"pathtraversal,omitempty" yaml:"pathtraversal,omitempty"`
+	WebSocket     *WebSocketScanResult     `json:"websocket,omitempty" yaml:"websocket,omitempty"`
 	Correlations  []CorrelatedFinding      `json:"correlations,omitempty" yaml:"correlations,omitempty"`
 	RiskScore     RiskScore                `json:"risk_score" yaml:"risk_score"`
 	Summary       UnifiedSummary           `json:"summary" yaml:"summary"`
 	Errors        []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
+}
+
+// WebSocketScanResult represents WebSocket security scan results (simplified for aggregator).
+type WebSocketScanResult struct {
+	Findings []WebSocketFinding `json:"findings" yaml:"findings"`
+	Summary  WebSocketSummary   `json:"summary" yaml:"summary"`
+}
+
+// WebSocketFinding represents a WebSocket security finding (simplified for aggregator).
+type WebSocketFinding struct {
+	URL         string `json:"url" yaml:"url"`
+	FindingType string `json:"finding_type" yaml:"finding_type"`
+	Severity    string `json:"severity" yaml:"severity"`
+	Description string `json:"description" yaml:"description"`
+	Confidence  string `json:"confidence" yaml:"confidence"`
+	RuleID      string `json:"rule_id" yaml:"rule_id"`
+}
+
+// WebSocketSummary provides summary statistics for WebSocket findings.
+type WebSocketSummary struct {
+	TotalEndpoints      int `json:"total_endpoints" yaml:"total_endpoints"`
+	VulnerableEndpoints int `json:"vulnerable_endpoints" yaml:"vulnerable_endpoints"`
+	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
+	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
+	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
 }
 
 // CorrelatedFinding represents related vulnerabilities across different scanners
@@ -67,7 +93,7 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:        target,
 		PassiveOnly:   passiveOnly,
@@ -79,6 +105,7 @@ func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanRe
 		Redirect:      redirect,
 		CMDi:          cmdi,
 		PathTraversal: pathtraversal,
+		WebSocket:     websocket,
 		Correlations:  make([]CorrelatedFinding, 0),
 		Errors:        errors,
 	}
@@ -334,6 +361,18 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	}
 	breakdown["redirect"] = min(redirectScore, 25) // Cap at 25 points
 
+	// Score WebSocket vulnerabilities
+	websocketScore := 0
+	if u.WebSocket != nil {
+		for _, finding := range u.WebSocket.Findings {
+			score := u.severityToScore(finding.Severity)
+			websocketScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
+	breakdown["websocket"] = min(websocketScore, 20) // Cap at 20 points
+
 	// Score header misconfigurations
 	misconfigScore := 0
 	if u.Headers != nil {
@@ -452,6 +491,13 @@ func (u *UnifiedScanResult) generateSummary() {
 
 	if u.PathTraversal != nil {
 		for _, finding := range u.PathTraversal.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
+	if u.WebSocket != nil {
+		for _, finding := range u.WebSocket.Findings {
 			summary.TotalFindings++
 			severityCounts[finding.Severity]++
 		}

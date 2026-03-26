@@ -169,6 +169,8 @@ wast scan https://example.com --output sarif > scan.sarif && code scan.sarif
 | Missing X-Content-Type-Options | WAST-HDR-004 | CWE-693 |
 | Insecure Cookie | WAST-COOKIE-001 | CWE-614 |
 | Insecure CORS Policy | WAST-CORS-001 | CWE-942 |
+| Insecure WebSocket Protocol | WAST-WS-001 | CWE-319 |
+| Missing WebSocket Origin Validation | WAST-WS-002 | CWE-346 |
 
 ### Verbosity Control
 
