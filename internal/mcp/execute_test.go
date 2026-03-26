@@ -49,7 +49,7 @@ func TestExecuteRecon(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result := executeRecon(ctx, tt.target, tt.timeout, tt.includeSubdomains, nil)
+			result := executeRecon(ctx, tt.target, tt.timeout, tt.includeSubdomains, nil, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -93,7 +93,7 @@ func TestExecuteReconContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// Use a timeout longer than context to ensure context cancellation is tested
-	result := executeRecon(ctx, "example.com", 30*time.Second, true, nil)
+	result := executeRecon(ctx, "example.com", 30*time.Second, true, nil, nil)
 
 	// Result should still be returned even if context is canceled
 	if result == nil {
@@ -172,7 +172,7 @@ func TestExecuteScan(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, false, 2, 5, 5, authConfig, rateLimitConfig, nil)
+			result := executeScan(ctx, tt.target, tt.timeout, tt.safeMode, tt.verifyFindings, false, 2, 5, 5, authConfig, rateLimitConfig, nil, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -242,7 +242,7 @@ func TestExecuteScanWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, 5, authConfig, rateLimitConfig, nil)
+	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, 5, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with auth returned nil")
@@ -268,7 +268,7 @@ func TestExecuteScanWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 5.0,
 	}
 
-	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, 5, authConfig, rateLimitConfig, nil)
+	result := executeScan(ctx, "https://example.com", 30, true, false, false, 2, 5, 5, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeScan with rate limit returned nil")
@@ -338,7 +338,7 @@ func TestExecuteCrawl(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig, nil)
+			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig, nil, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -370,7 +370,7 @@ func TestExecuteCrawlWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig, nil)
+	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with auth returned nil")
@@ -387,7 +387,7 @@ func TestExecuteCrawlWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 2.0,
 	}
 
-	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig, nil)
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with rate limit returned nil")

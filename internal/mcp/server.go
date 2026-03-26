@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
@@ -39,12 +40,28 @@ type RPCError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// JSONRPCNotification represents a JSON-RPC 2.0 notification (no ID field).
+type JSONRPCNotification struct {
+	JSONRPC string      `json:"jsonrpc"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params,omitempty"`
+}
+
+// ProgressNotification represents progress information for long-running operations.
+type ProgressNotification struct {
+	Phase     string `json:"phase"`     // e.g., "crawling", "scanning", "recon"
+	Completed int    `json:"completed"` // items processed
+	Total     int    `json:"total"`     // total items (if known, 0 if unknown)
+	Message   string `json:"message"`   // human-readable status
+}
+
 // Server represents an MCP server instance.
 type Server struct {
-	reader io.Reader
-	writer io.Writer
-	tools  map[string]Tool
-	tracer trace.Tracer
+	reader      io.Reader
+	writer      io.Writer
+	tools       map[string]Tool
+	tracer      trace.Tracer
+	writerMutex sync.Mutex // protects concurrent writes to writer
 }
 
 // Tool represents an MCP tool implementation.
@@ -223,6 +240,9 @@ func formatToolResult(result interface{}) string {
 
 // sendResponse sends a JSON-RPC success response.
 func (s *Server) sendResponse(id interface{}, result interface{}) {
+	s.writerMutex.Lock()
+	defer s.writerMutex.Unlock()
+
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -239,8 +259,41 @@ func (s *Server) sendResponse(id interface{}, result interface{}) {
 	fmt.Fprintln(s.writer, string(data))
 }
 
+// sendNotification sends a JSON-RPC notification (no response expected).
+func (s *Server) sendNotification(method string, params interface{}) {
+	s.writerMutex.Lock()
+	defer s.writerMutex.Unlock()
+
+	notif := JSONRPCNotification{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+
+	data, err := json.Marshal(notif)
+	if err != nil {
+		// Silently fail on notification marshal errors
+		return
+	}
+	fmt.Fprintln(s.writer, string(data))
+}
+
+// sendProgress sends a progress notification to the MCP client.
+func (s *Server) sendProgress(phase string, completed, total int, message string) {
+	progress := ProgressNotification{
+		Phase:     phase,
+		Completed: completed,
+		Total:     total,
+		Message:   message,
+	}
+	s.sendNotification("notifications/progress", progress)
+}
+
 // sendError sends a JSON-RPC error response.
 func (s *Server) sendError(id interface{}, code int, message string, data interface{}) {
+	s.writerMutex.Lock()
+	defer s.writerMutex.Unlock()
+
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -271,7 +324,7 @@ func (t *ReconTool) Name() string {
 }
 
 func (t *ReconTool) Description() string {
-	return "Perform reconnaissance on a target domain. Includes DNS enumeration, subdomain discovery, and TLS certificate analysis."
+	return "Perform reconnaissance on a target domain. Includes DNS enumeration, subdomain discovery, and TLS certificate analysis. Progress notifications are sent during each phase of reconnaissance."
 }
 
 func (t *ReconTool) InputSchema() map[string]interface{} {
@@ -322,8 +375,13 @@ func (t *ReconTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		}
 	}
 
+	// Create progress callback
+	progressCallback := func(phase, message string) {
+		t.server.sendProgress(phase, 0, 0, message)
+	}
+
 	// Execute recon command logic
-	result := executeRecon(ctx, args.Target, timeout, args.IncludeSubdomains, t.server.tracer)
+	result := executeRecon(ctx, args.Target, timeout, args.IncludeSubdomains, t.server.tracer, progressCallback)
 
 	return result, nil
 }
@@ -338,7 +396,7 @@ func (t *ScanTool) Name() string {
 }
 
 func (t *ScanTool) Description() string {
-	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing (SQLi, XSS, CSRF, SSRF). Use discover=true to first crawl the target and discover forms/endpoints, then scan all discovered attack surfaces."
+	return "Run security vulnerability scans on a target. Defaults to safe mode (passive checks only). Use active=true to enable active vulnerability testing (SQLi, XSS, CSRF, SSRF). Use discover=true to first crawl the target and discover forms/endpoints, then scan all discovered attack surfaces. Progress notifications are sent during discovery and scanning phases for long-running operations."
 }
 
 func (t *ScanTool) InputSchema() map[string]interface{} {
@@ -506,8 +564,17 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
+	// Create progress callback
+	progressCallback := func(completed, total int, phase string) {
+		message := fmt.Sprintf("%s: %d", phase, completed)
+		if total > 0 {
+			message = fmt.Sprintf("%s: %d/%d", phase, completed, total)
+		}
+		t.server.sendProgress(phase, completed, total, message)
+	}
+
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback)
 
 	return result, nil
 }
@@ -522,7 +589,7 @@ func (t *CrawlTool) Name() string {
 }
 
 func (t *CrawlTool) Description() string {
-	return "Crawl a web application to discover URLs, endpoints, and content. Respects robots.txt by default."
+	return "Crawl a web application to discover URLs, endpoints, and content. Respects robots.txt by default. Progress notifications are sent as pages are visited during crawling."
 }
 
 func (t *CrawlTool) InputSchema() map[string]interface{} {
@@ -674,8 +741,14 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
+	// Create progress callback
+	progressCallback := func(visited, discovered int, phase string) {
+		message := fmt.Sprintf("crawling: visited %d pages, discovered %d links", visited, discovered)
+		t.server.sendProgress(phase, visited, 0, message)
+	}
+
 	// Execute crawl command logic
-	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer)
+	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback)
 
 	return result, nil
 }

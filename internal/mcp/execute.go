@@ -29,8 +29,11 @@ type ReconResult struct {
 // Kept for backward compatibility.
 type CompleteScanResult = scanner.IntermediateScanResult
 
+// ReconProgressCallback is a function called to report progress during reconnaissance.
+type ReconProgressCallback func(phase string, message string)
+
 // executeRecon performs reconnaissance on a target domain.
-func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool, tracer trace.Tracer) interface{} {
+func executeRecon(ctx context.Context, target string, timeout time.Duration, includeSubdomains bool, tracer trace.Tracer, progressCallback ReconProgressCallback) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -39,11 +42,17 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 	}
 
 	// Perform DNS enumeration
+	if progressCallback != nil {
+		progressCallback("dns", "Performing DNS enumeration")
+	}
 	enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 	dnsResult := enumerator.Enumerate(target)
 
 	// Perform subdomain discovery if enabled
 	if includeSubdomains {
+		if progressCallback != nil {
+			progressCallback("subdomain_discovery", "Discovering subdomains")
+		}
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
@@ -54,6 +63,9 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 	}
 
 	// Perform TLS certificate analysis
+	if progressCallback != nil {
+		progressCallback("tls", "Analyzing TLS certificate")
+	}
 	analyzer := tls.NewCertAnalyzer(tls.WithTimeout(timeout))
 	tlsResult := analyzer.Analyze(target)
 
@@ -67,7 +79,7 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback scanner.ProgressCallback) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -87,10 +99,11 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 				RateLimitConfig: rateLimitConfig,
 				Tracer:          tracer,
 			},
-			CrawlDepth:      depth,
-			Concurrency:     concurrency,
-			ScanConcurrency: scanConcurrency,
-			Discover:        true,
+			CrawlDepth:       depth,
+			Concurrency:      concurrency,
+			ScanConcurrency:  scanConcurrency,
+			Discover:         true,
+			ProgressCallback: progressCallback,
 		}
 		unifiedResult, _ := scanner.ExecuteDiscoveryScan(ctx, discoveryCfg)
 		return unifiedResult
@@ -114,7 +127,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 }
 
 // executeCrawl performs web crawling on a target URL.
-func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback crawler.ProgressCallback) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -144,6 +157,11 @@ func executeCrawl(ctx context.Context, target string, depth int, timeout time.Du
 	// Add tracer if configured
 	if tracer != nil {
 		opts = append(opts, crawler.WithTracer(tracer))
+	}
+
+	// Add progress callback if configured
+	if progressCallback != nil {
+		opts = append(opts, crawler.WithProgressCallback(progressCallback))
 	}
 
 	c := crawler.NewCrawler(opts...)
