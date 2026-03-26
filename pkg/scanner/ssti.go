@@ -52,11 +52,11 @@ type SSTIFinding struct {
 
 // SSTISummary provides an overview of the SSTI scan results.
 type SSTISummary struct {
-	TotalTests          int `json:"total_tests" yaml:"total_tests"`
+	TotalTests           int `json:"total_tests" yaml:"total_tests"`
 	VulnerabilitiesFound int `json:"vulnerabilities_found" yaml:"vulnerabilities_found"`
-	HighSeverityCount   int `json:"high_severity_count" yaml:"high_severity_count"`
-	MediumSeverityCount int `json:"medium_severity_count" yaml:"medium_severity_count"`
-	LowSeverityCount    int `json:"low_severity_count" yaml:"low_severity_count"`
+	HighSeverityCount    int `json:"high_severity_count" yaml:"high_severity_count"`
+	MediumSeverityCount  int `json:"medium_severity_count" yaml:"medium_severity_count"`
+	LowSeverityCount     int `json:"low_severity_count" yaml:"low_severity_count"`
 }
 
 // sstiPayload represents a test payload for SSTI detection.
@@ -65,7 +65,7 @@ type sstiPayload struct {
 	TemplateEngine string // "jinja2", "twig", "freemarker", "thymeleaf", "generic"
 	Severity       string
 	Description    string
-	ExpectedResult string // What to look for in the response (e.g., "49" for 7*7)
+	ExpectedResult string            // What to look for in the response (e.g., "49" for 7*7)
 	Validator      func(string) bool // Custom validation function
 }
 
