@@ -374,25 +374,73 @@ const (
 // Returns the context type and whether the payload is in an executable form.
 func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, string) {
 	// First, check if the exact payload appears verbatim in the response
+	// Note: This uses strings.Index which finds only the FIRST occurrence.
+	// Known limitation: If the payload appears multiple times in different contexts
+	// (e.g., once encoded, once unencoded), we only analyze the first occurrence.
 	idx := strings.Index(body, payload)
 	if idx == -1 {
 		// Payload not found verbatim, try to find evidence instead
 		return ContextUnknown, false, "low"
 	}
 
+	// Extract context around the payload for early validation
+	// (same extraction logic used later)
+	start := idx - 200
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(payload) + 200
+	if end > len(body) {
+		end = len(body)
+	}
+	contextSnippet := body[start:end]
+	beforePayload := body[start:idx]
+	afterPayload := body[idx:]
+
 	// Early detection: If payload contains executable tags and appears verbatim, it's likely executable
 	// This handles DVWA-style trivial reflected XSS
-	if strings.Contains(payload, "<script") && strings.Contains(body, payload) {
+	// Note: We already verified the payload is present verbatim (idx != -1), so no need to check again
+	// However, we need to check it's not in a non-executable context (HTML comment, textarea, etc.)
+
+	// Check if payload is inside HTML comment - not executable
+	if strings.Contains(contextSnippet, "<!--") && strings.Index(contextSnippet, "<!--") < strings.Index(contextSnippet, payload) {
+		// Check if comment is closed after payload
+		if strings.Contains(afterPayload, "-->") {
+			// Payload is inside a comment - skip early detection, let detailed analysis handle it
+			goto detailedAnalysis
+		}
+	}
+
+	// Check if payload is inside textarea - not directly executable
+	if strings.Contains(beforePayload, "<textarea") && !strings.Contains(beforePayload, "</textarea>") {
+		// Payload is inside textarea - skip early detection
+		goto detailedAnalysis
+	}
+
+	if strings.Contains(payload, "<script") {
 		return ContextHTMLBody, true, "high"
 	}
+	// Note: Event handler detection is also done in detailed analysis below.
+	// We keep both: early detection catches common DVWA-style patterns quickly,
+	// while detailed analysis (lines 472-478) provides more accurate context for edge cases.
+	// Both return ContextHTMLBody for consistency, though detailed analysis may refine
+	// to ContextHTMLAttribute if the payload is detected as an attribute value.
 	if (strings.Contains(payload, "onerror") || strings.Contains(payload, "onload")) &&
-	   (strings.Contains(payload, "<img") || strings.Contains(payload, "<svg")) &&
-	   strings.Contains(body, payload) {
+	   (strings.Contains(payload, "<img") || strings.Contains(payload, "<svg")) {
+		return ContextHTMLBody, true, "high"
+	}
+	// iframe with javascript: protocol is also highly suspicious
+	if strings.Contains(payload, "<iframe") && strings.Contains(payload, "javascript:") {
 		return ContextHTMLBody, true, "high"
 	}
 
+detailedAnalysis:
+
 	// Now check if payload is HTML-encoded (would neutralize XSS)
 	// This check comes AFTER checking for verbatim reflection
+	// Note: This only checks common entity encodings (decimal entities like &#39;).
+	// Hex entities (&#x27;) and other encodings like &apos; are not checked.
+	// This is a conservative approach to avoid false negatives.
 	htmlEncodedPayload := strings.ReplaceAll(payload, "<", "&lt;")
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, ">", "&gt;")
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "\"", "&quot;")
@@ -402,16 +450,8 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 		return ContextHTMLBody, false, "low" // Payload is HTML-encoded, not executable
 	}
 
-	// Extract context around the payload (200 chars before and after)
-	start := idx - 200
-	if start < 0 {
-		start = 0
-	}
-	end := idx + len(payload) + 200
-	if end > len(body) {
-		end = len(body)
-	}
-	context := body[start:end]
+	// Use the context snippet we already extracted for early detection
+	context := contextSnippet
 
 	// Check if payload is inside script tags (high confidence)
 	scriptTagPattern := regexp.MustCompile(`(?i)<script[^>]*>[\s\S]*?</script>`)
@@ -448,8 +488,13 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	if strings.Contains(payload, "<script") || strings.Contains(payload, "<img") || strings.Contains(payload, "<svg") || strings.Contains(payload, "<iframe") {
 		tagPattern := regexp.MustCompile(`<(script|img|svg|iframe)[^>]*>`)
 		if tagPattern.MatchString(payload) {
-			// Check if the tag is actually rendered (not inside a string or comment)
+			// Check if the tag is actually rendered (not inside a string, comment, or textarea)
 			if !strings.Contains(context, "<!--") && !strings.Contains(context, "*/") {
+				// Check if payload is inside textarea (not directly executable)
+				if strings.Contains(beforePayload, "<textarea") && !strings.Contains(beforePayload, "</textarea>") {
+					// Payload is inside textarea - report as low confidence
+					return ContextHTMLBody, false, "low"
+				}
 				return ContextHTMLBody, true, "high"
 			}
 		}
