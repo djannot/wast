@@ -44,6 +44,8 @@ const (
 	SpanNameScanCMDi = "wast.scanner.cmdi"
 	// SpanNameScanPathTraversal is the span name for Path Traversal scanning
 	SpanNameScanPathTraversal = "wast.scanner.pathtraversal"
+	// SpanNameScanSSTI is the span name for SSTI scanning
+	SpanNameScanSSTI = "wast.scanner.ssti"
 	// SpanNameHTTPRequest is the span name for individual HTTP requests
 	SpanNameHTTPRequest = "wast.http.request"
 	// SpanNameCrawl is the span name for crawling operations
