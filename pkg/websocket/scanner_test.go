@@ -650,10 +650,10 @@ func TestPerformActiveTests(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/socket"
 
 	tests := []struct {
-		name          string
-		endpoint      WebSocketEndpoint
-		wantFindings  int
-		checkFinding  func(*testing.T, []WebSocketFinding)
+		name         string
+		endpoint     WebSocketEndpoint
+		wantFindings int
+		checkFinding func(*testing.T, []WebSocketFinding)
 	}{
 		{
 			name: "insecure endpoint with active tests",
@@ -1256,7 +1256,7 @@ func TestScanActiveMode(t *testing.T) {
 
 	scanner := NewSecurityScanner(
 		WithActiveMode(true),
-		WithScannerTimeout(2 * time.Second),
+		WithScannerTimeout(2*time.Second),
 	)
 
 	detectionResult := &DetectionResult{
