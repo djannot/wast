@@ -450,6 +450,20 @@ func TestScanTargetForPOSTMethod(t *testing.T) {
 		t.Error("Expected scanTargetForSSRF to return findings for POST method")
 	}
 
+	// Test Redirect with POST method
+	redirectScanner := NewRedirectScanner(WithRedirectTimeout(30 * time.Second))
+	redirectFindings := scanTargetForRedirect(ctx, redirectScanner, postTarget)
+	if redirectFindings == nil {
+		t.Error("Expected scanTargetForRedirect to return findings for POST method")
+	}
+
+	// Test PathTraversal with POST method
+	pathtraversalScanner := NewPathTraversalScanner(WithPathTraversalTimeout(30 * time.Second))
+	pathtraversalFindings := scanTargetForPathTraversal(ctx, pathtraversalScanner, postTarget)
+	if pathtraversalFindings == nil {
+		t.Error("Expected scanTargetForPathTraversal to return findings for POST method")
+	}
+
 	// Test GET method still works
 	getTarget := DiscoveredTarget{
 		URL:    "http://example.com/search?q=test",
@@ -463,5 +477,196 @@ func TestScanTargetForPOSTMethod(t *testing.T) {
 	sqliGetFindings := scanTargetForSQLi(ctx, sqliScanner, getTarget)
 	if sqliGetFindings == nil {
 		t.Error("Expected scanTargetForSQLi to return findings for GET method")
+	}
+}
+
+// TestExtractDiscoveredTargets_POSTForms tests extraction of POST forms with all parameters
+func TestExtractDiscoveredTargets_POSTForms(t *testing.T) {
+	crawlResult := &crawler.CrawlResult{
+		Target: "https://example.com",
+		Forms: []crawler.FormInfo{
+			{
+				Action: "https://example.com/login",
+				Method: "POST",
+				Fields: []crawler.FormFieldInfo{
+					{Name: "username", Type: "text", Value: "", Required: true},
+					{Name: "password", Type: "password", Value: "", Required: true},
+					{Name: "remember", Type: "checkbox", Value: "1", Required: false},
+				},
+				Page: "https://example.com/login",
+			},
+			{
+				Action: "https://example.com/search",
+				Method: "POST",
+				Fields: []crawler.FormFieldInfo{
+					{Name: "q", Type: "text", Value: "", Required: false},
+					{Name: "category", Type: "select", Value: "all", Required: false},
+					{Name: "hidden_token", Type: "hidden", Value: "abc123", Required: false}, // Should be skipped
+				},
+				Page: "https://example.com",
+			},
+		},
+		InternalLinks: []crawler.LinkInfo{},
+		Statistics: crawler.CrawlStats{
+			TotalURLs:    1,
+			InternalURLs: 1,
+			FormsFound:   2,
+		},
+	}
+
+	targets := extractDiscoveredTargets("https://example.com", crawlResult)
+
+	// Should extract 2 forms (password and hidden fields are filtered)
+	if len(targets) != 2 {
+		t.Errorf("Expected 2 targets, got %d", len(targets))
+	}
+
+	// Check first form (login)
+	var loginTarget *DiscoveredTarget
+	for i := range targets {
+		if targets[i].URL == "https://example.com/login" {
+			loginTarget = &targets[i]
+			break
+		}
+	}
+
+	if loginTarget == nil {
+		t.Fatal("Login form target not found")
+	}
+
+	if loginTarget.Method != "POST" {
+		t.Errorf("Expected POST method, got %s", loginTarget.Method)
+	}
+
+	// Should have username and remember, but NOT password (filtered)
+	if len(loginTarget.Parameters) != 2 {
+		t.Errorf("Expected 2 parameters (username, remember), got %d: %v", len(loginTarget.Parameters), loginTarget.Parameters)
+	}
+
+	if _, hasUsername := loginTarget.Parameters["username"]; !hasUsername {
+		t.Error("Expected username parameter")
+	}
+
+	if _, hasRemember := loginTarget.Parameters["remember"]; !hasRemember {
+		t.Error("Expected remember parameter")
+	}
+
+	if _, hasPassword := loginTarget.Parameters["password"]; hasPassword {
+		t.Error("Password field should be filtered out")
+	}
+
+	// Check second form (search)
+	var searchTarget *DiscoveredTarget
+	for i := range targets {
+		if targets[i].URL == "https://example.com/search" {
+			searchTarget = &targets[i]
+			break
+		}
+	}
+
+	if searchTarget == nil {
+		t.Fatal("Search form target not found")
+	}
+
+	if searchTarget.Method != "POST" {
+		t.Errorf("Expected POST method, got %s", searchTarget.Method)
+	}
+
+	// Should have q and category, but NOT hidden_token (filtered)
+	if len(searchTarget.Parameters) != 2 {
+		t.Errorf("Expected 2 parameters (q, category), got %d: %v", len(searchTarget.Parameters), searchTarget.Parameters)
+	}
+
+	if _, hasQ := searchTarget.Parameters["q"]; !hasQ {
+		t.Error("Expected q parameter")
+	}
+
+	if _, hasCategory := searchTarget.Parameters["category"]; !hasCategory {
+		t.Error("Expected category parameter")
+	}
+
+	if _, hasHidden := searchTarget.Parameters["hidden_token"]; hasHidden {
+		t.Error("Hidden field should be filtered out")
+	}
+}
+
+// TestScanTargetRouting tests that different HTTP methods are routed correctly
+func TestScanTargetRouting(t *testing.T) {
+	ctx := context.Background()
+
+	postTarget := DiscoveredTarget{
+		URL:    "http://example.com/form",
+		Method: "POST",
+		Parameters: map[string]string{
+			"field1": "value1",
+			"field2": "value2",
+		},
+		Source: "test form",
+	}
+
+	getTarget := DiscoveredTarget{
+		URL:    "http://example.com/page?id=1",
+		Method: "GET",
+		Parameters: map[string]string{
+			"id": "1",
+		},
+		Source: "test link",
+	}
+
+	// Test that scanners handle both POST and GET
+	testCases := []struct {
+		name   string
+		target DiscoveredTarget
+	}{
+		{"POST method", postTarget},
+		{"GET method", getTarget},
+		{"post (lowercase)", DiscoveredTarget{URL: "http://example.com/form", Method: "post", Parameters: map[string]string{"field": "value"}, Source: "test"}},
+		{"Post (mixed case)", DiscoveredTarget{URL: "http://example.com/form", Method: "Post", Parameters: map[string]string{"field": "value"}, Source: "test"}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// XSS
+			xssScanner := NewXSSScanner(WithXSSTimeout(5 * time.Second))
+			xssFindings := scanTargetForXSS(ctx, xssScanner, tc.target)
+			if xssFindings == nil {
+				t.Error("XSS scanner should handle both POST and GET")
+			}
+
+			// SQLi
+			sqliScanner := NewSQLiScanner(WithSQLiTimeout(5 * time.Second))
+			sqliFindings := scanTargetForSQLi(ctx, sqliScanner, tc.target)
+			if sqliFindings == nil {
+				t.Error("SQLi scanner should handle both POST and GET")
+			}
+
+			// CMDi
+			cmdiScanner := NewCMDiScanner(WithCMDiTimeout(5 * time.Second))
+			cmdiFindings := scanTargetForCMDi(ctx, cmdiScanner, tc.target)
+			if cmdiFindings == nil {
+				t.Error("CMDi scanner should handle both POST and GET")
+			}
+
+			// SSRF
+			ssrfScanner := NewSSRFScanner(WithSSRFTimeout(5 * time.Second))
+			ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, tc.target)
+			if ssrfFindings == nil {
+				t.Error("SSRF scanner should handle both POST and GET")
+			}
+
+			// Redirect
+			redirectScanner := NewRedirectScanner(WithRedirectTimeout(5 * time.Second))
+			redirectFindings := scanTargetForRedirect(ctx, redirectScanner, tc.target)
+			if redirectFindings == nil {
+				t.Error("Redirect scanner should handle both POST and GET")
+			}
+
+			// PathTraversal
+			pathtraversalScanner := NewPathTraversalScanner(WithPathTraversalTimeout(5 * time.Second))
+			pathtraversalFindings := scanTargetForPathTraversal(ctx, pathtraversalScanner, tc.target)
+			if pathtraversalFindings == nil {
+				t.Error("PathTraversal scanner should handle both POST and GET")
+			}
+		})
 	}
 }

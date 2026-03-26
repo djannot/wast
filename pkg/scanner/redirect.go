@@ -355,6 +355,148 @@ func (s *RedirectScanner) Scan(ctx context.Context, targetURL string) *RedirectS
 	return result
 }
 
+// ScanPOST performs Open Redirect scanning with POST method using form-encoded parameters.
+func (s *RedirectScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *RedirectScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanRedirect)
+		defer span.End()
+	}
+
+	result := &RedirectScanResult{
+		Target:   targetURL,
+		Findings: make([]RedirectFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common redirect parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = map[string]string{
+			"url":         "",
+			"redirect":    "",
+			"next":        "",
+			"return":      "",
+			"goto":        "",
+			"target":      "",
+			"dest":        "",
+			"destination": "",
+			"returnUrl":   "",
+			"continue":    "",
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range redirectPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
+// testParameterPOST tests a single parameter with a specific redirect payload using POST method.
+func (s *RedirectScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload redirectPayload, allParameters map[string]string) *RedirectFinding {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body (if any)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Analyze the response for Open Redirect indicators
+	confidence, evidence := s.analyzeRedirectResponse(resp, bodyStr, payload)
+
+	// Only report if there's medium or high confidence
+	if confidence != "low" && confidence != "" {
+		finding := &RedirectFinding{
+			URL:         baseURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidence,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+			Confidence:  confidence,
+		}
+		return finding
+	}
+
+	return nil
+}
+
 // testParameter tests a single parameter with a specific redirect payload.
 func (s *RedirectScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload redirectPayload) *RedirectFinding {
 	// Create a copy of the URL with the test payload
