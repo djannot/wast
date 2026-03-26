@@ -691,10 +691,10 @@ func TestRedirectScanner_PayloadVariants(t *testing.T) {
 	scanner := NewRedirectScanner()
 
 	tests := []struct {
-		name         string
-		payload      string
-		payloadType  string
-		expectedMin  int
+		name        string
+		payload     string
+		payloadType string
+		expectedMin int
 	}{
 		{
 			name:        "protocol-relative variants",
