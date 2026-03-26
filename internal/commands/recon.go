@@ -9,6 +9,7 @@ import (
 	"github.com/djannot/wast/pkg/dns"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/tls"
+	"github.com/djannot/wast/pkg/urlutil"
 	"github.com/spf13/cobra"
 )
 
@@ -74,6 +75,16 @@ Examples:
 				formatter.Success("recon", "Reconnaissance command - available methods", result)
 				return
 			}
+
+			// Validate and normalize target domain
+			validatedDomain, err := urlutil.ValidateDomain(target)
+			if err != nil {
+				formatter.Failure("recon", "Invalid target domain", map[string]interface{}{
+					"error": err.Error(),
+				})
+				return
+			}
+			target = validatedDomain
 
 			// Perform DNS enumeration
 			enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))

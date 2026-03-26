@@ -14,6 +14,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/urlutil"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -365,6 +366,13 @@ func (t *ReconTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		return nil, fmt.Errorf("target is required")
 	}
 
+	// Validate and normalize domain
+	validatedDomain, err := urlutil.ValidateDomain(args.Target)
+	if err != nil {
+		return nil, err
+	}
+	args.Target = validatedDomain
+
 	// Parse timeout
 	timeout := 10 * time.Second
 	if args.Timeout != "" {
@@ -522,6 +530,13 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	if args.Target == "" {
 		return nil, fmt.Errorf("target is required")
 	}
+
+	// Validate and normalize target URL
+	validatedURL, err := urlutil.ValidateTargetURL(args.Target)
+	if err != nil {
+		return nil, err
+	}
+	args.Target = validatedURL
 
 	if args.Timeout <= 0 {
 		args.Timeout = 30
@@ -698,6 +713,13 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		return nil, fmt.Errorf("target is required")
 	}
 
+	// Validate and normalize target URL
+	validatedURL, err := urlutil.ValidateTargetURL(args.Target)
+	if err != nil {
+		return nil, err
+	}
+	args.Target = validatedURL
+
 	if args.Depth == 0 {
 		args.Depth = 3
 	}
@@ -862,6 +884,15 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 
 	if args.Target == "" && args.SpecFile == "" {
 		return nil, fmt.Errorf("either target or spec_file is required")
+	}
+
+	// Validate and normalize target URL if provided
+	if args.Target != "" {
+		validatedURL, err := urlutil.ValidateTargetURL(args.Target)
+		if err != nil {
+			return nil, err
+		}
+		args.Target = validatedURL
 	}
 
 	if args.Timeout <= 0 {
@@ -1049,6 +1080,13 @@ func (t *HeadersTool) Execute(ctx context.Context, params json.RawMessage) (inte
 	if args.Target == "" {
 		return nil, fmt.Errorf("target is required")
 	}
+
+	// Validate and normalize target URL
+	validatedURL, err := urlutil.ValidateTargetURL(args.Target)
+	if err != nil {
+		return nil, err
+	}
+	args.Target = validatedURL
 
 	if args.Timeout <= 0 {
 		args.Timeout = 30
