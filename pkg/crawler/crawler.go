@@ -414,14 +414,23 @@ func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.
 
 	// Add forms
 	mu.Lock()
+	pageURL, _ := url.Parse(item.url)
 	for _, form := range forms {
 		form.Page = item.url
-		// Resolve form action URL
+		// Resolve form action URL relative to the current page (not the base target)
 		if form.Action != "" && !strings.HasPrefix(form.Action, "http") {
 			actionURL, err := url.Parse(form.Action)
 			if err == nil {
-				form.Action = baseURL.ResolveReference(actionURL).String()
+				if pageURL != nil {
+					form.Action = pageURL.ResolveReference(actionURL).String()
+				} else {
+					form.Action = baseURL.ResolveReference(actionURL).String()
+				}
 			}
+		}
+		// If action is empty, use the current page URL (HTML spec default)
+		if form.Action == "" {
+			form.Action = item.url
 		}
 		result.Forms = append(result.Forms, form)
 	}

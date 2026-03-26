@@ -53,7 +53,7 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 		crawler.WithMaxDepth(cfg.CrawlDepth),
 		crawler.WithTimeout(time.Duration(cfg.Timeout) * time.Second),
 		crawler.WithUserAgent("WAST/1.0 (Web Application Security Testing)"),
-		crawler.WithRespectRobots(true),
+		crawler.WithRespectRobots(false),
 		crawler.WithConcurrency(cfg.Concurrency),
 	}
 
@@ -668,17 +668,49 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	return unifiedResult, stats
 }
 
+// buildURLWithParams constructs a URL with discovered parameters embedded as query params.
+// This ensures scanners test the actual parameters found during crawling instead of
+// falling back to invented/guessed parameter names.
+func buildURLWithParams(target DiscoveredTarget) string {
+	parsedURL, err := url.Parse(target.URL)
+	if err != nil {
+		return target.URL
+	}
+
+	// Strip fragment (e.g., "#" from form action="#") — it's not sent to the server
+	parsedURL.Fragment = ""
+
+	if len(target.Parameters) == 0 {
+		return parsedURL.String()
+	}
+
+	// Merge discovered parameters into the URL's query string.
+	// Existing query params from the URL take precedence.
+	q := parsedURL.Query()
+	for name, value := range target.Parameters {
+		if _, exists := q[name]; !exists {
+			if value == "" {
+				value = "1"
+			}
+			q.Set(name, value)
+		}
+	}
+	parsedURL.RawQuery = q.Encode()
+
+	return parsedURL.String()
+}
+
 // scanTargetForXSS scans a single discovered target for XSS vulnerabilities.
 func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) []XSSFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
 
 // scanTargetForSQLi scans a single discovered target for SQL injection vulnerabilities.
 func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) []SQLiFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
 
@@ -702,28 +734,28 @@ func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target Discove
 
 // scanTargetForSSRF scans a single discovered target for SSRF vulnerabilities.
 func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) []SSRFFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
 
 // scanTargetForRedirect scans a single discovered target for Open Redirect vulnerabilities.
 func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) []RedirectFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
 
 // scanTargetForCMDi scans a single discovered target for Command Injection vulnerabilities.
 func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) []CMDiFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
 
 // scanTargetForPathTraversal scans a single discovered target for Path Traversal vulnerabilities.
 func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) []PathTraversalFinding {
-	// Simply run a full scan on the target URL with its discovered parameters
-	result := scanner.Scan(ctx, target.URL)
+	targetURL := buildURLWithParams(target)
+	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
 }
