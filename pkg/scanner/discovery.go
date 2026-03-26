@@ -512,6 +512,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.CSRF,
 		intermediateResult.SSRF,
 		intermediateResult.Redirect,
+		nil, // CMDi not implemented in discovery scan
 		intermediateResult.Errors,
 	)
 
