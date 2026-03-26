@@ -1358,3 +1358,315 @@ func TestSQLiScanner_ScanPOST(t *testing.T) {
 		t.Error("Expected TotalTests > 0")
 	}
 }
+
+// TestSQLiScanner_ContentBasedDetection tests the new content-based detection features
+func TestSQLiScanner_ContentBasedDetection(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline response with one product
+	baselineHTML := `<html><body>
+		<h1>Products</h1>
+		<table>
+			<tr><td>Product 1</td><td>$10</td></tr>
+		</table>
+	</body></html>`
+
+	// True payload response - returns multiple products (different content, more rows)
+	truePayloadHTML := `<html><body>
+		<h1>Products</h1>
+		<table>
+			<tr><td>Product 1</td><td>$10</td></tr>
+			<tr><td>Product 2</td><td>$20</td></tr>
+			<tr><td>Product 3</td><td>$30</td></tr>
+			<tr><td>Product 4</td><td>$40</td></tr>
+		</table>
+	</body></html>`
+
+	// False payload response - returns no products (different content, fewer words)
+	falsePayloadHTML := `<html><body>
+		<h1>Products</h1>
+		<table>
+		</table>
+		<p>No results found</p>
+	</body></html>`
+
+	// Configure mock responses for differential analysis
+	mock.responses["https://example.com/product?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/product?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect SQL injection due to content-based differences
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SQL injection vulnerability using content-based detection")
+	}
+
+	// Check that findings contain evidence about content differences
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		if !strings.Contains(finding.Evidence, "differ") {
+			t.Errorf("Expected evidence to mention differences, got: %s", finding.Evidence)
+		}
+	}
+}
+
+// TestSQLiScanner_ContentBasedDetection_DVWA simulates DVWA-like responses
+func TestSQLiScanner_ContentBasedDetection_DVWA(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Simulate DVWA response with single user
+	baselineHTML := `<!DOCTYPE html>
+<html>
+<body>
+<div id="main">
+	<h1>User Details</h1>
+	<table>
+		<tr><td>ID</td><td>First Name</td><td>Surname</td></tr>
+		<tr><td>1</td><td>admin</td><td>admin</td></tr>
+	</table>
+</div>
+</body>
+</html>`
+
+	// True payload (OR 1=1) - returns all users
+	truePayloadHTML := `<!DOCTYPE html>
+<html>
+<body>
+<div id="main">
+	<h1>User Details</h1>
+	<table>
+		<tr><td>ID</td><td>First Name</td><td>Surname</td></tr>
+		<tr><td>1</td><td>admin</td><td>admin</td></tr>
+		<tr><td>2</td><td>Gordon</td><td>Brown</td></tr>
+		<tr><td>3</td><td>Hack</td><td>Me</td></tr>
+		<tr><td>4</td><td>Pablo</td><td>Picasso</td></tr>
+		<tr><td>5</td><td>Bob</td><td>Smith</td></tr>
+	</table>
+</div>
+</body>
+</html>`
+
+	// False payload (AND 1=2) - returns no users
+	falsePayloadHTML := `<!DOCTYPE html>
+<html>
+<body>
+<div id="main">
+	<h1>User Details</h1>
+	<table>
+		<tr><td>ID</td><td>First Name</td><td>Surname</td></tr>
+	</table>
+</div>
+</body>
+</html>`
+
+	mock.responses["https://dvwa.local/vulnerabilities/sqli/?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://dvwa.local/vulnerabilities/sqli/?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect SQL injection - this is the key test for DVWA-like scenarios
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SQL injection vulnerability in DVWA-like scenario")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	}
+
+	// Verify the detection method
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		// Should detect via structural elements (table rows) or word count
+		if !strings.Contains(finding.Evidence, "structural") && !strings.Contains(finding.Evidence, "word count") && !strings.Contains(finding.Evidence, "content hash") {
+			t.Errorf("Expected evidence to mention content-based detection method, got: %s", finding.Evidence)
+		}
+		if finding.Confidence != "high" && finding.Confidence != "medium" {
+			t.Errorf("Expected confidence to be high or medium, got: %s", finding.Confidence)
+		}
+	}
+}
+
+// TestSQLiScanner_ContentBasedDetection_NoFalsePositives ensures we don't over-detect
+func TestSQLiScanner_ContentBasedDetection_NoFalsePositives(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// All responses are identical - properly escaped SQL
+	identicalHTML := `<html><body>
+		<h1>Product Details</h1>
+		<p>Product ID: 1</p>
+		<p>Price: $10</p>
+	</body></html>`
+
+	mock.responses["https://example.com/safe?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(identicalHTML)),
+		Header:     make(http.Header),
+	}
+
+	// All payloads return the same response (no vulnerability)
+	mock.differentialResponse = true
+	mock.trueResponse = identicalHTML
+	mock.falseResponse = identicalHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/safe?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should NOT detect SQL injection when responses are identical
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no vulnerabilities (false positive), but found %d", result.Summary.VulnerabilitiesFound)
+		if len(result.Findings) > 0 {
+			t.Logf("False positive evidence: %s", result.Findings[0].Evidence)
+		}
+	}
+}
+
+// Test helper functions for content analysis
+func TestExtractBodyContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		html     string
+		expected string
+	}{
+		{
+			name:     "simple text",
+			html:     "<html><body>Hello World</body></html>",
+			expected: "Hello World",
+		},
+		{
+			name:     "with scripts and styles",
+			html:     "<html><head><script>alert('test')</script><style>.foo{}</style></head><body>Content</body></html>",
+			expected: "Content",
+		},
+		{
+			name:     "with multiple elements",
+			html:     "<html><body><h1>Title</h1><p>Paragraph</p><div>More text</div></body></html>",
+			expected: "Title Paragraph More text",
+		},
+		{
+			name:     "with whitespace",
+			html:     "<html><body>  Line 1  \n\n  Line 2  </body></html>",
+			expected: "Line 1 Line 2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractBodyContent(tt.html)
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCountStructuralElements(t *testing.T) {
+	tests := []struct {
+		name     string
+		html     string
+		expected int
+	}{
+		{
+			name:     "single table row",
+			html:     "<table><tr><td>Data</td></tr></table>",
+			expected: 1,
+		},
+		{
+			name:     "multiple table rows",
+			html:     "<table><tr><td>1</td></tr><tr><td>2</td></tr><tr><td>3</td></tr></table>",
+			expected: 3,
+		},
+		{
+			name:     "list items",
+			html:     "<ul><li>Item 1</li><li>Item 2</li></ul>",
+			expected: 2,
+		},
+		{
+			name:     "mixed elements",
+			html:     "<table><tr><td>Row</td></tr></table><ul><li>Item</li></ul>",
+			expected: 2,
+		},
+		{
+			name:     "no structural elements",
+			html:     "<p>Just a paragraph</p><span>And a span</span>",
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := countStructuralElements(tt.html)
+			if result != tt.expected {
+				t.Errorf("Expected %d structural elements, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCountWords(t *testing.T) {
+	tests := []struct {
+		name     string
+		html     string
+		expected int
+	}{
+		{
+			name:     "simple sentence",
+			html:     "<html><body>Hello world this is a test</body></html>",
+			expected: 6,
+		},
+		{
+			name:     "with HTML tags",
+			html:     "<html><body><p>One</p><p>Two</p><p>Three</p></body></html>",
+			expected: 3,
+		},
+		{
+			name:     "empty",
+			html:     "<html><body></body></html>",
+			expected: 0,
+		},
+		{
+			name:     "with scripts (should be ignored)",
+			html:     "<html><head><script>var x = 1;</script></head><body>Only these three words</body></html>",
+			expected: 4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := countWords(tt.html)
+			if result != tt.expected {
+				t.Errorf("Expected %d words, got %d", tt.expected, result)
+			}
+		})
+	}
+}
