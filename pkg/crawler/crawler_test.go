@@ -524,7 +524,6 @@ func TestCrawlResult_HasResults(t *testing.T) {
 	}
 }
 
-
 func TestNormalizeURL(t *testing.T) {
 	tests := []struct {
 		input string
