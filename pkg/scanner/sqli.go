@@ -32,7 +32,7 @@ const (
 	// Adaptive threshold settings
 	smallResponseSizeThreshold = 1024 // Responses < 1KB use more sensitive thresholds
 	fewStructuralElementsLimit = 10   // Responses with < 10 structural elements use sensitive thresholds
-	minWordCountForPercentage  = 20   // If baseline has < 20 words, use absolute difference instead of percentage
+	minWordCountForPercentage  = 10   // If baseline has < 10 words, use absolute difference instead of percentage (lowered from 20 for DVWA detection)
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -726,6 +726,8 @@ type responseCharacteristics struct {
 	ContentHash        string // MD5 hash of extracted body content
 	WordCount          int    // Number of words in the response
 	StructuralElements int    // Count of structural HTML elements (tr, li, etc.)
+	DataContent        string // Text extracted from data-bearing elements (td, th, pre)
+	DataWordCount      int    // Number of words in data content
 }
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
@@ -769,6 +771,69 @@ func extractBodyContent(htmlStr string) string {
 	}
 
 	extractText(doc)
+
+	// Normalize whitespace
+	content := strings.Join(strings.Fields(textBuilder.String()), " ")
+	return content
+}
+
+// extractDataContent extracts text content specifically from data-bearing elements (td, th, pre)
+// This is more targeted than extractBodyContent and helps detect DVWA-style responses
+// where the difference is only in the actual data cells, not the overall page structure
+func extractDataContent(htmlStr string) string {
+	// Limit input size to prevent memory exhaustion
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
+	}
+
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		// If parsing fails, return empty string
+		return ""
+	}
+
+	var textBuilder strings.Builder
+	var extractFromDataElements func(*html.Node)
+
+	extractFromDataElements = func(n *html.Node) {
+		// Only extract text from data-bearing elements
+		if n.Type == html.ElementNode && (n.Data == "td" || n.Data == "th" || n.Data == "pre") {
+			// Extract all text within this element
+			var innerText strings.Builder
+			var extractInnerText func(*html.Node)
+
+			extractInnerText = func(inner *html.Node) {
+				if inner.Type == html.TextNode {
+					text := strings.TrimSpace(inner.Data)
+					if text != "" {
+						if innerText.Len() > 0 {
+							innerText.WriteString(" ")
+						}
+						innerText.WriteString(text)
+					}
+				}
+				for c := inner.FirstChild; c != nil; c = c.NextSibling {
+					extractInnerText(c)
+				}
+			}
+
+			extractInnerText(n)
+
+			if innerText.Len() > 0 {
+				if textBuilder.Len() > 0 {
+					textBuilder.WriteString(" ")
+				}
+				textBuilder.WriteString(innerText.String())
+			}
+		}
+
+		// Continue traversing the tree
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			extractFromDataElements(c)
+		}
+	}
+
+	extractFromDataElements(doc)
 
 	// Normalize whitespace
 	content := strings.Join(strings.Fields(textBuilder.String()), " ")
@@ -913,7 +978,7 @@ func hasResultsData(body string, structuralElements int) bool {
 
 // analyzeResponse extracts all characteristics from a response
 // Optimized to extract body content only once
-func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int) {
+func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int, dataContent string, dataWordCount int) {
 	// Extract content once and reuse for both hash and word count
 	extractedContent := extractBodyContent(body)
 
@@ -930,6 +995,14 @@ func analyzeResponse(body string) (contentHash string, wordCount int, structural
 
 	// Count structural elements from raw HTML (needs tags)
 	structuralElements = countStructuralElements(body)
+
+	// Extract data content from data-bearing elements (td, th, pre)
+	dataContent = extractDataContent(body)
+	if dataContent == "" {
+		dataWordCount = 0
+	} else {
+		dataWordCount = len(strings.Fields(dataContent))
+	}
 
 	return
 }
@@ -969,7 +1042,7 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 	}
 
 	bodyStr := string(body)
-	contentHash, wordCount, structuralElements := analyzeResponse(bodyStr)
+	contentHash, wordCount, structuralElements, dataContent, dataWordCount := analyzeResponse(bodyStr)
 
 	return &responseCharacteristics{
 		StatusCode:         resp.StatusCode,
@@ -978,6 +1051,8 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 		ContentHash:        contentHash,
 		WordCount:          wordCount,
 		StructuralElements: structuralElements,
+		DataContent:        dataContent,
+		DataWordCount:      dataWordCount,
 	}, nil
 }
 
@@ -1020,7 +1095,7 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 	}
 
 	bodyStr := string(body)
-	contentHash, wordCount, structuralElements := analyzeResponse(bodyStr)
+	contentHash, wordCount, structuralElements, dataContent, dataWordCount := analyzeResponse(bodyStr)
 
 	return &responseCharacteristics{
 		StatusCode:         resp.StatusCode,
@@ -1029,6 +1104,8 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 		ContentHash:        contentHash,
 		WordCount:          wordCount,
 		StructuralElements: structuralElements,
+		DataContent:        dataContent,
+		DataWordCount:      dataWordCount,
 	}, nil
 }
 
@@ -1248,6 +1325,17 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 			detectionMethods = append(detectionMethods, "false condition returns data while true returns no results (inverted boolean SQLi)")
 			detectedVulnerability = true
 		}
+	}
+
+	// DVWA-style detection: Compare data content from data-bearing elements (td, th, pre)
+	// This catches cases where the overall page structure is identical but the actual data differs
+	dataContentDiffers := trueResp.DataContent != falseResp.DataContent
+	dataWordCountDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
+	dataWordCountDiffersSignificantly := dataWordCountDiff >= adaptiveWordCountThreshold
+
+	if dataContentDiffers && dataWordCountDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs (true: %d words, false: %d words, diff: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount, dataWordCountDiff))
+		detectedVulnerability = true
 	}
 
 	// For high confidence: true/false must behave differently via multiple methods
@@ -1608,6 +1696,17 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 			detectionMethods = append(detectionMethods, "false condition returns data while true returns no results (inverted boolean SQLi)")
 			detectedVulnerability = true
 		}
+	}
+
+	// DVWA-style detection: Compare data content from data-bearing elements (td, th, pre)
+	// This catches cases where the overall page structure is identical but the actual data differs
+	dataContentDiffers := trueResp.DataContent != falseResp.DataContent
+	dataWordCountDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
+	dataWordCountDiffersSignificantly := dataWordCountDiff >= adaptiveWordCountThreshold
+
+	if dataContentDiffers && dataWordCountDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs (true: %d words, false: %d words, diff: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount, dataWordCountDiff))
+		detectedVulnerability = true
 	}
 
 	// If true and false produce different responses, it's likely SQL injection
