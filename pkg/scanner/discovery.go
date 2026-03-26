@@ -514,6 +514,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.Redirect,
 		nil, // CMDi not implemented in discovery scan
 		nil, // PathTraversal not implemented in discovery scan
+		nil, // WebSocket scanning (will be added later)
 		intermediateResult.Errors,
 	)
 

@@ -427,6 +427,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.Redirect,
 		intermediateResult.CMDi,
 		intermediateResult.PathTraversal,
+		nil, // WebSocket results (to be added in discovery mode)
 		intermediateResult.Errors,
 	)
 
