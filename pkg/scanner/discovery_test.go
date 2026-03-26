@@ -208,7 +208,7 @@ func TestScanDiscoveredTargets_Concurrent(t *testing.T) {
 	concurrencyLevels := []int{1, 2, 5}
 	for _, concurrency := range concurrencyLevels {
 		t.Run(fmt.Sprintf("Concurrency_%d", concurrency), func(t *testing.T) {
-			result, stats := scanDiscoveredTargets(ctx, cfg, targets, concurrency)
+			result, stats := scanDiscoveredTargets(ctx, cfg, targets, concurrency, nil)
 
 			if result == nil {
 				t.Fatal("scanDiscoveredTargets returned nil result")
@@ -255,7 +255,7 @@ func TestScanDiscoveredTargets_ContextCancellation(t *testing.T) {
 	defer cancel()
 
 	// This should be cancelled quickly
-	result, _ := scanDiscoveredTargets(ctx, cfg, targets, 3)
+	result, _ := scanDiscoveredTargets(ctx, cfg, targets, 3, nil)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result even with cancellation")
@@ -294,7 +294,7 @@ func TestScanDiscoveredTargets_NoRaceConditions(t *testing.T) {
 	defer cancel()
 
 	// Run with high concurrency to stress test
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 10)
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 10, nil)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")
@@ -321,7 +321,7 @@ func TestScanDiscoveredTargets_EmptyTargets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5)
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")
