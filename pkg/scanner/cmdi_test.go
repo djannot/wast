@@ -249,8 +249,8 @@ func TestCMDiScanner_URLEncodedPayloads(t *testing.T) {
 	for _, finding := range result.Findings {
 		// Check for payloads with spaces that would be URL-encoded
 		if strings.Contains(finding.Payload, "; sleep") ||
-		   strings.Contains(finding.Payload, "| sleep") ||
-		   strings.Contains(finding.Payload, "&& sleep") {
+			strings.Contains(finding.Payload, "| sleep") ||
+			strings.Contains(finding.Payload, "&& sleep") {
 			foundSpacedPayload = true
 			if finding.Type != "time-based" {
 				t.Errorf("Expected time-based type for spaced payload, got %s", finding.Type)
