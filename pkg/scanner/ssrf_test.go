@@ -1047,38 +1047,38 @@ func TestSSRFScanner_CollectSignatures(t *testing.T) {
 	scanner := NewSSRFScanner()
 
 	tests := []struct {
-		name              string
-		body              string
-		expectedPrefixes  []string
+		name             string
+		body             string
+		expectedPrefixes []string
 	}{
 		{
-			name: "AWS metadata signatures",
-			body: "ami-id: ami-12345\ninstance-id: i-67890\nlocal-ipv4: 10.0.0.1",
+			name:             "AWS metadata signatures",
+			body:             "ami-id: ami-12345\ninstance-id: i-67890\nlocal-ipv4: 10.0.0.1",
 			expectedPrefixes: []string{"aws:"},
 		},
 		{
-			name: "nginx signature",
-			body: "<html><body>Powered by nginx</body></html>",
+			name:             "nginx signature",
+			body:             "<html><body>Powered by nginx</body></html>",
 			expectedPrefixes: []string{"service:"},
 		},
 		{
-			name: "localhost signature",
-			body: "Connection to 127.0.0.1 established",
+			name:             "localhost signature",
+			body:             "Connection to 127.0.0.1 established",
 			expectedPrefixes: []string{"localhost:"},
 		},
 		{
-			name: "private IP",
-			body: "Server at 192.168.1.1",
+			name:             "private IP",
+			body:             "Server at 192.168.1.1",
 			expectedPrefixes: []string{"private-ip"},
 		},
 		{
-			name: "file access",
-			body: "root:x:0:0:root:/root:/bin/bash",
+			name:             "file access",
+			body:             "root:x:0:0:root:/root:/bin/bash",
 			expectedPrefixes: []string{"file:"},
 		},
 		{
-			name: "kubernetes API",
-			body: `{"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default"}}`,
+			name:             "kubernetes API",
+			body:             `{"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default"}}`,
 			expectedPrefixes: []string{"k8s:"},
 		},
 	}
