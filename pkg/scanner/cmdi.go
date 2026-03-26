@@ -99,6 +99,13 @@ var cmdErrorPatterns = []*regexp.Regexp{
 }
 
 // cmdiPayloads is the list of safe detection payloads to test for command injection.
+//
+// SECURITY WARNING: This list contains ONLY non-destructive payloads for responsible
+// vulnerability detection. DO NOT add destructive commands (rm, del, wget, curl to external
+// hosts, etc.) as this scanner is designed for ethical security testing only. All payloads
+// use safe commands: sleep/timeout (time delays), id/whoami (read-only info), dir/type
+// (directory listing). Adding destructive payloads would violate responsible disclosure
+// practices and could cause harm to target systems.
 var cmdiPayloads = []cmdiPayload{
 	// Time-based Unix/Linux payloads
 	{
@@ -150,29 +157,30 @@ var cmdiPayloads = []cmdiPayload{
 		ExpectedDelay: 5 * time.Second,
 	},
 
-	// URL-encoded time-based payloads
+	// Additional separator variants for URL context
+	// Note: These will be automatically URL-encoded by the HTTP client
 	{
-		Payload:       "%3Bsleep+5",
+		Payload:       "; sleep 5",
 		Type:          "time-based",
 		OSType:        "unix",
 		Severity:      SeverityHigh,
-		Description:   "Time-based blind command injection detected using URL-encoded payload",
+		Description:   "Time-based blind command injection detected using semicolon with space",
 		ExpectedDelay: 5 * time.Second,
 	},
 	{
-		Payload:       "%7Csleep+5",
+		Payload:       "| sleep 5",
 		Type:          "time-based",
 		OSType:        "unix",
 		Severity:      SeverityHigh,
-		Description:   "Time-based blind command injection detected using URL-encoded payload (pipe)",
+		Description:   "Time-based blind command injection detected using pipe with space",
 		ExpectedDelay: 5 * time.Second,
 	},
 	{
-		Payload:       "%26%26sleep+5",
+		Payload:       "&& sleep 5",
 		Type:          "time-based",
 		OSType:        "unix",
 		Severity:      SeverityHigh,
-		Description:   "Time-based blind command injection detected using URL-encoded payload (AND)",
+		Description:   "Time-based blind command injection detected using AND with space",
 		ExpectedDelay: 5 * time.Second,
 	},
 
@@ -638,8 +646,12 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 	}
 
 	// Calculate threshold: baseline + expected delay - tolerance
-	// We use a tolerance of 1 second to account for network jitter
-	tolerance := 1 * time.Second
+	// We use a percentage-based tolerance (20% of expected delay) to account for network jitter
+	// This prevents false positives on slow networks while still detecting actual delays
+	tolerance := time.Duration(float64(expectedDelay) * 0.2)
+	if tolerance < 500*time.Millisecond {
+		tolerance = 500 * time.Millisecond // Minimum 500ms tolerance
+	}
 	minExpectedDuration := baselineDuration + expectedDelay - tolerance
 
 	// Check if the request took significantly longer than expected
@@ -859,7 +871,11 @@ func (s *CMDiScanner) VerifyFinding(ctx context.Context, finding *CMDiFinding, c
 
 			// Check if request took significantly longer (expected delay is typically 5 seconds)
 			expectedDelay := s.timeBasedDelay
-			tolerance := 1 * time.Second
+			// Use percentage-based tolerance (20% of expected delay) to account for network jitter
+			tolerance := time.Duration(float64(expectedDelay) * 0.2)
+			if tolerance < 500*time.Millisecond {
+				tolerance = 500 * time.Millisecond // Minimum 500ms tolerance
+			}
 			minExpectedDuration := baselineDuration + expectedDelay - tolerance
 
 			if requestDuration >= minExpectedDuration {

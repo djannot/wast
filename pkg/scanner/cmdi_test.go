@@ -223,12 +223,17 @@ func TestCMDiScanner_URLEncodedPayloads(t *testing.T) {
 				statusCode: 200,
 				body:       "Normal response",
 			},
-			"http://example.com/test?cmd=%3Bsleep+5": {
+			"http://example.com/test?cmd=%3B+sleep+5": {
 				statusCode: 200,
 				body:       "Delayed response",
 				delay:      5000 * time.Millisecond,
 			},
-			"http://example.com/test?cmd=%7Csleep+5": {
+			"http://example.com/test?cmd=%7C+sleep+5": {
+				statusCode: 200,
+				body:       "Delayed response",
+				delay:      5000 * time.Millisecond,
+			},
+			"http://example.com/test?cmd=%26%26+sleep+5": {
 				statusCode: 200,
 				body:       "Delayed response",
 				delay:      5000 * time.Millisecond,
@@ -239,19 +244,22 @@ func TestCMDiScanner_URLEncodedPayloads(t *testing.T) {
 	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
 	result := scanner.Scan(context.Background(), "http://example.com/test?cmd=test")
 
-	// Should detect URL-encoded payloads
-	foundEncoded := false
+	// Should detect payloads that get URL-encoded (contain special chars that will be encoded)
+	foundSpacedPayload := false
 	for _, finding := range result.Findings {
-		if strings.Contains(finding.Payload, "%") {
-			foundEncoded = true
+		// Check for payloads with spaces that would be URL-encoded
+		if strings.Contains(finding.Payload, "; sleep") ||
+		   strings.Contains(finding.Payload, "| sleep") ||
+		   strings.Contains(finding.Payload, "&& sleep") {
+			foundSpacedPayload = true
 			if finding.Type != "time-based" {
-				t.Errorf("Expected time-based type for URL-encoded payload, got %s", finding.Type)
+				t.Errorf("Expected time-based type for spaced payload, got %s", finding.Type)
 			}
 		}
 	}
 
-	if !foundEncoded {
-		t.Error("Expected to find URL-encoded command injection")
+	if !foundSpacedPayload {
+		t.Error("Expected to find command injection with spaced payloads that get URL-encoded")
 	}
 }
 
@@ -513,13 +521,28 @@ func TestCMDiScanner_VerifyFinding_TimeBased(t *testing.T) {
 				body:       "Delayed",
 				delay:      5050 * time.Millisecond,
 			},
+			"http://example.com/test?cmd=%7Csleep+5": {
+				statusCode: 200,
+				body:       "Delayed",
+				delay:      5050 * time.Millisecond,
+			},
+			"http://example.com/test?cmd=%3Bsleep+6": {
+				statusCode: 200,
+				body:       "Delayed",
+				delay:      6050 * time.Millisecond,
+			},
+			"http://example.com/test?cmd=%3Bsleep+4": {
+				statusCode: 200,
+				body:       "Delayed",
+				delay:      4050 * time.Millisecond,
+			},
 		},
 	}
 
 	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
 
 	finding := &CMDiFinding{
-		URL:       "http://example.com/test?cmd=%3Bsleep+5",
+		URL:       "http://example.com/test?cmd=test",
 		Parameter: "cmd",
 		Payload:   ";sleep 5",
 		Type:      "time-based",
