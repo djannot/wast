@@ -100,6 +100,7 @@ func (s *Server) registerTools() {
 	s.tools["wast_api"] = &APITool{server: s}
 	s.tools["wast_intercept"] = &InterceptTool{server: s}
 	s.tools["wast_headers"] = &HeadersTool{server: s}
+	s.tools["wast_verify"] = &VerifyTool{server: s}
 }
 
 // Run starts the MCP server and processes requests.
@@ -1104,6 +1105,203 @@ func (t *HeadersTool) Execute(ctx context.Context, params json.RawMessage) (inte
 
 	// Execute headers scan logic
 	result := executeHeaders(ctx, args.Target, args.Timeout, authConfig, rateLimitConfig, t.server.tracer)
+
+	return result, nil
+}
+
+// VerifyTool implements the wast_verify MCP tool.
+type VerifyTool struct {
+	server *Server
+}
+
+func (t *VerifyTool) Name() string {
+	return "wast_verify"
+}
+
+func (t *VerifyTool) Description() string {
+	return "Verify individual security findings before reporting them. Re-tests findings with payload variants to reduce false positives. Supports verification of SQLi, XSS, SSRF, CMDi, Path Traversal, Redirect, and CSRF findings."
+}
+
+func (t *VerifyTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"finding_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Type of finding to verify",
+				"enum":        []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"},
+			},
+			"finding_url": map[string]interface{}{
+				"type":        "string",
+				"description": "URL where the finding was detected",
+			},
+			"parameter": map[string]interface{}{
+				"type":        "string",
+				"description": "Vulnerable parameter name",
+			},
+			"payload": map[string]interface{}{
+				"type":        "string",
+				"description": "Original payload that triggered the finding",
+			},
+			"max_retries": map[string]interface{}{
+				"type":        "integer",
+				"description": "Maximum verification attempts",
+				"default":     3,
+			},
+			"delay": map[string]interface{}{
+				"type":        "string",
+				"description": "Delay between verification attempts (e.g., '100ms', '1s')",
+				"default":     "100ms",
+			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"login_url": map[string]interface{}{
+				"type":        "string",
+				"description": "Login endpoint URL for automated authentication",
+			},
+			"login_user": map[string]interface{}{
+				"type":        "string",
+				"description": "Username for automated login",
+			},
+			"login_pass": map[string]interface{}{
+				"type":        "string",
+				"description": "Password for automated login (WARNING: will be visible in MCP logs. Consider using environment variables instead via CLI)",
+			},
+			"login_user_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for username (default: 'username')",
+				"default":     "username",
+			},
+			"login_pass_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Form field name for password (default: 'password')",
+				"default":     "password",
+			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
+		},
+		"required": []string{"finding_type", "finding_url", "parameter", "payload"},
+	}
+}
+
+func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args struct {
+		FindingType       string   `json:"finding_type"`
+		FindingURL        string   `json:"finding_url"`
+		Parameter         string   `json:"parameter"`
+		Payload           string   `json:"payload"`
+		MaxRetries        int      `json:"max_retries"`
+		Delay             string   `json:"delay"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		LoginURL          string   `json:"login_url"`
+		LoginUser         string   `json:"login_user"`
+		LoginPass         string   `json:"login_pass"`
+		LoginUserField    string   `json:"login_user_field"`
+		LoginPassField    string   `json:"login_pass_field"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
+	}
+
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	// Validate required fields
+	if args.FindingType == "" {
+		return nil, fmt.Errorf("finding_type is required")
+	}
+	if args.FindingURL == "" {
+		return nil, fmt.Errorf("finding_url is required")
+	}
+	if args.Parameter == "" {
+		return nil, fmt.Errorf("parameter is required")
+	}
+	if args.Payload == "" {
+		return nil, fmt.Errorf("payload is required")
+	}
+
+	// Validate finding_type
+	validTypes := map[string]bool{
+		"sqli": true, "xss": true, "ssrf": true, "cmdi": true,
+		"pathtraversal": true, "redirect": true, "csrf": true,
+	}
+	if !validTypes[args.FindingType] {
+		return nil, fmt.Errorf("invalid finding_type: %s (must be one of: sqli, xss, ssrf, cmdi, pathtraversal, redirect, csrf)", args.FindingType)
+	}
+
+	// Validate and normalize target URL
+	validatedURL, err := urlutil.ValidateTargetURL(args.FindingURL)
+	if err != nil {
+		return nil, err
+	}
+	args.FindingURL = validatedURL
+
+	// Set defaults
+	if args.MaxRetries <= 0 {
+		args.MaxRetries = 3
+	}
+	if args.Delay == "" {
+		args.Delay = "100ms"
+	}
+
+	// Parse delay
+	delay, err := time.ParseDuration(args.Delay)
+	if err != nil {
+		return nil, fmt.Errorf("invalid delay: %w", err)
+	}
+
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
+
+	// Add login configuration if provided
+	if args.LoginURL != "" {
+		authConfig.Login = &auth.LoginConfig{
+			LoginURL:      args.LoginURL,
+			Username:      args.LoginUser,
+			Password:      args.LoginPass,
+			UsernameField: args.LoginUserField,
+			PasswordField: args.LoginPassField,
+		}
+		// Perform login to capture session cookies
+		if err := authConfig.PerformLogin(ctx); err != nil {
+			return nil, fmt.Errorf("automated login failed: %w", err)
+		}
+	}
+
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
+
+	// Execute verify logic
+	result, err := executeVerify(ctx, args.FindingType, args.FindingURL, args.Parameter, args.Payload, args.MaxRetries, delay, authConfig, rateLimitConfig, t.server.tracer)
+	if err != nil {
+		return nil, err
+	}
 
 	return result, nil
 }

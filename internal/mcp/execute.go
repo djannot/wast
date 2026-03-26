@@ -371,3 +371,133 @@ func executeHeaders(ctx context.Context, target string, timeout int, authConfig 
 
 	return result
 }
+
+// executeVerify verifies an individual security finding with payload variants.
+func executeVerify(ctx context.Context, findingType string, findingURL string, parameter string, payload string, maxRetries int, delay time.Duration, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) (interface{}, error) {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.verify")
+		defer span.End()
+	}
+
+	// Create verification config
+	verifyConfig := scanner.VerificationConfig{
+		Enabled:    true,
+		MaxRetries: maxRetries,
+		Delay:      delay,
+	}
+
+	// Common scanner options
+	timeout := 30 * time.Second
+
+	// Create rate limiter if configured
+	var rateLimiter ratelimit.Limiter
+	if rateLimitConfig.IsEnabled() {
+		rateLimiter = ratelimit.NewLimiterFromConfig(rateLimitConfig)
+	}
+
+	// Execute verification based on finding type
+	switch findingType {
+	case "ssrf":
+		ssrfScanner := scanner.NewSSRFScanner(
+			scanner.WithSSRFTimeout(timeout),
+			scanner.WithSSRFAuth(authConfig),
+			scanner.WithSSRFRateLimiter(rateLimiter),
+			scanner.WithSSRFTracer(tracer),
+		)
+		finding := &scanner.SSRFFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return ssrfScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "sqli":
+		sqliScanner := scanner.NewSQLiScanner(
+			scanner.WithSQLiTimeout(timeout),
+			scanner.WithSQLiAuth(authConfig),
+			scanner.WithSQLiRateLimiter(rateLimiter),
+			scanner.WithSQLiTracer(tracer),
+		)
+		finding := &scanner.SQLiFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return sqliScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "xss":
+		xssScanner := scanner.NewXSSScanner(
+			scanner.WithXSSTimeout(timeout),
+			scanner.WithXSSAuth(authConfig),
+			scanner.WithXSSRateLimiter(rateLimiter),
+			scanner.WithXSSTracer(tracer),
+		)
+		finding := &scanner.XSSFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return xssScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "cmdi":
+		cmdiScanner := scanner.NewCMDiScanner(
+			scanner.WithCMDiTimeout(timeout),
+			scanner.WithCMDiAuth(authConfig),
+			scanner.WithCMDiRateLimiter(rateLimiter),
+			scanner.WithCMDiTracer(tracer),
+		)
+		finding := &scanner.CMDiFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return cmdiScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "pathtraversal":
+		pathTraversalScanner := scanner.NewPathTraversalScanner(
+			scanner.WithPathTraversalTimeout(timeout),
+			scanner.WithPathTraversalAuth(authConfig),
+			scanner.WithPathTraversalRateLimiter(rateLimiter),
+			scanner.WithPathTraversalTracer(tracer),
+		)
+		finding := &scanner.PathTraversalFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return pathTraversalScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "redirect":
+		redirectScanner := scanner.NewRedirectScanner(
+			scanner.WithRedirectTimeout(timeout),
+			scanner.WithRedirectAuth(authConfig),
+			scanner.WithRedirectRateLimiter(rateLimiter),
+			scanner.WithRedirectTracer(tracer),
+		)
+		finding := &scanner.RedirectFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return redirectScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "csrf":
+		csrfScanner := scanner.NewCSRFScanner(
+			scanner.WithCSRFTimeout(timeout),
+			scanner.WithCSRFAuth(authConfig),
+			scanner.WithCSRFRateLimiter(rateLimiter),
+			scanner.WithCSRFTracer(tracer),
+		)
+		finding := &scanner.CSRFFinding{
+			FormAction: findingURL,
+			FormPage:   findingURL,
+			Type:       parameter, // For CSRF, parameter is the finding type (missing_token, missing_samesite, etc.)
+		}
+		return csrfScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	default:
+		return nil, fmt.Errorf("unsupported finding type: %s", findingType)
+	}
+}

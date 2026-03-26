@@ -19,7 +19,7 @@ func TestNewServer(t *testing.T) {
 	}
 
 	// Verify tools are registered
-	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers"}
+	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers", "wast_verify"}
 	for _, toolName := range expectedTools {
 		if _, ok := server.tools[toolName]; !ok {
 			t.Errorf("Expected tool %s to be registered", toolName)
@@ -70,8 +70,8 @@ func TestToolsListRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("Tools is not a list")
 	}
-	if len(toolsList) != 6 {
-		t.Errorf("Expected 6 tools, got %d", len(toolsList))
+	if len(toolsList) != 7 {
+		t.Errorf("Expected 7 tools, got %d", len(toolsList))
 	}
 }
 
@@ -2187,5 +2187,146 @@ func TestConcurrentProgressNotifications(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
 	if len(lines) != numNotifications {
 		t.Errorf("Expected %d notifications, got %d", numNotifications, len(lines))
+	}
+}
+
+func TestVerifyToolSchema(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	if tool.Name() != "wast_verify" {
+		t.Errorf("Expected name wast_verify, got %s", tool.Name())
+	}
+
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+
+	schema := tool.InputSchema()
+	if schema == nil {
+		t.Fatal("Schema should not be nil")
+	}
+
+	// Verify required fields
+	props, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("properties should be a map")
+	}
+
+	requiredFields := []string{"finding_type", "finding_url", "parameter", "payload"}
+	for _, field := range requiredFields {
+		if _, ok := props[field]; !ok {
+			t.Errorf("Schema should have %s property", field)
+		}
+	}
+
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatal("required should be a string array")
+	}
+
+	if len(required) != 4 {
+		t.Errorf("Expected 4 required fields, got %d", len(required))
+	}
+
+	// Verify finding_type has enum constraint
+	findingType, ok := props["finding_type"].(map[string]interface{})
+	if !ok {
+		t.Fatal("finding_type should be a map")
+	}
+
+	enum, ok := findingType["enum"].([]string)
+	if !ok {
+		t.Fatal("finding_type should have enum constraint")
+	}
+
+	expectedTypes := []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+	if len(enum) != len(expectedTypes) {
+		t.Errorf("Expected %d finding types in enum, got %d", len(expectedTypes), len(enum))
+	}
+}
+
+func TestVerifyToolValidation(t *testing.T) {
+	server := NewServer()
+	tool := &VerifyTool{server: server}
+
+	tests := []struct {
+		name        string
+		params      map[string]interface{}
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "missing finding_type",
+			params: map[string]interface{}{
+				"finding_url": "http://example.com/test",
+				"parameter":   "id",
+				"payload":     "' OR '1'='1",
+			},
+			expectError: true,
+			errorMsg:    "finding_type is required",
+		},
+		{
+			name: "missing finding_url",
+			params: map[string]interface{}{
+				"finding_type": "sqli",
+				"parameter":    "id",
+				"payload":      "' OR '1'='1",
+			},
+			expectError: true,
+			errorMsg:    "finding_url is required",
+		},
+		{
+			name: "missing parameter",
+			params: map[string]interface{}{
+				"finding_type": "sqli",
+				"finding_url":  "http://example.com/test",
+				"payload":      "' OR '1'='1",
+			},
+			expectError: true,
+			errorMsg:    "parameter is required",
+		},
+		{
+			name: "missing payload",
+			params: map[string]interface{}{
+				"finding_type": "sqli",
+				"finding_url":  "http://example.com/test",
+				"parameter":    "id",
+			},
+			expectError: true,
+			errorMsg:    "payload is required",
+		},
+		{
+			name: "invalid finding_type",
+			params: map[string]interface{}{
+				"finding_type": "invalid_type",
+				"finding_url":  "http://example.com/test",
+				"parameter":    "id",
+				"payload":      "test",
+			},
+			expectError: true,
+			errorMsg:    "invalid finding_type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			paramsJSON, err := json.Marshal(tt.params)
+			if err != nil {
+				t.Fatalf("Failed to marshal params: %v", err)
+			}
+
+			_, err = tool.Execute(context.Background(), paramsJSON)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error containing '%s', got no error", tt.errorMsg)
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("Expected error containing '%s', got '%s'", tt.errorMsg, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
 	}
 }
