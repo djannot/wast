@@ -31,6 +31,7 @@ type UnifiedScanResult struct {
 	Redirect      *RedirectScanResult      `json:"redirect,omitempty" yaml:"redirect,omitempty"`
 	CMDi          *CMDiScanResult          `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
 	PathTraversal *PathTraversalScanResult `json:"pathtraversal,omitempty" yaml:"pathtraversal,omitempty"`
+	SSTI          *SSTIScanResult          `json:"ssti,omitempty" yaml:"ssti,omitempty"`
 	WebSocket     *WebSocketScanResult     `json:"websocket,omitempty" yaml:"websocket,omitempty"`
 	Correlations  []CorrelatedFinding      `json:"correlations,omitempty" yaml:"correlations,omitempty"`
 	RiskScore     RiskScore                `json:"risk_score" yaml:"risk_score"`
@@ -93,7 +94,7 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, ssti *SSTIScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:        target,
 		PassiveOnly:   passiveOnly,
@@ -105,6 +106,7 @@ func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanRe
 		Redirect:      redirect,
 		CMDi:          cmdi,
 		PathTraversal: pathtraversal,
+		SSTI:          ssti,
 		WebSocket:     websocket,
 		Correlations:  make([]CorrelatedFinding, 0),
 		Errors:        errors,
@@ -326,6 +328,14 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 			confidenceCount++
 		}
 	}
+	if u.SSTI != nil {
+		for _, finding := range u.SSTI.Findings {
+			score := u.severityToScore(finding.Severity)
+			injectionScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
 	breakdown["injection"] = min(injectionScore, 40) // Cap at 40 points
 
 	// Score CSRF vulnerabilities
@@ -496,6 +506,13 @@ func (u *UnifiedScanResult) generateSummary() {
 		}
 	}
 
+	if u.SSTI != nil {
+		for _, finding := range u.SSTI.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
 	if u.WebSocket != nil {
 		for _, finding := range u.WebSocket.Findings {
 			summary.TotalFindings++
@@ -551,6 +568,18 @@ func (u *UnifiedScanResult) generatePriorityActions() []string {
 		}
 		if highSeverityCMDi > 0 {
 			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity Command Injection vulnerabilities - avoid system commands, use parameterized APIs", highSeverityCMDi))
+		}
+	}
+
+	if u.SSTI != nil && len(u.SSTI.Findings) > 0 {
+		highSeveritySSTI := 0
+		for _, finding := range u.SSTI.Findings {
+			if finding.Severity == SeverityHigh {
+				highSeveritySSTI++
+			}
+		}
+		if highSeveritySSTI > 0 {
+			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity SSTI vulnerabilities - avoid passing user input to template engines", highSeveritySSTI))
 		}
 	}
 

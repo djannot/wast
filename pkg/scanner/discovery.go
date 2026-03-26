@@ -661,6 +661,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.Redirect,
 		intermediateResult.CMDi,
 		intermediateResult.PathTraversal,
+		intermediateResult.SSTI,
 		nil, // WebSocket scanning (will be added later)
 		intermediateResult.Errors,
 	)

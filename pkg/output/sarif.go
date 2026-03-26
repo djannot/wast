@@ -118,6 +118,7 @@ const (
 	RuleIDCookie       = "WAST-COOKIE-001"
 	RuleIDCORS         = "WAST-CORS-001"
 	RuleIDLFI          = "WAST-LFI-001"
+	RuleIDSSTI         = "WAST-SSTI-001"
 )
 
 // CWE references for common vulnerabilities
@@ -132,6 +133,7 @@ const (
 	CWECookie   = "CWE-614"
 	CWECORS     = "CWE-942"
 	CWELFI      = "CWE-22"
+	CWESSTI     = "CWE-94"
 )
 
 // outputSARIF outputs data as SARIF 2.1.0 format.
@@ -230,6 +232,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 	// Process PathTraversal if present
 	if pathtraversal, ok := data["pathtraversal"].(map[string]interface{}); ok {
 		processPathTraversalMap(pathtraversal, &run)
+	}
+
+	// Process SSTI if present
+	if ssti, ok := data["ssti"].(map[string]interface{}); ok {
+		processSSTIMap(ssti, &run)
 	}
 
 	report.Runs = append(report.Runs, run)
@@ -476,6 +483,23 @@ func buildAllRules() []SARIFRule {
 				"tags": []string{CWELFI, "security", "lfi", "path-traversal", "file-inclusion"},
 			},
 		},
+		{
+			ID:   RuleIDSSTI,
+			Name: "ServerSideTemplateInjection",
+			ShortDescription: SARIFMessage{
+				Text: "Server-Side Template Injection (SSTI) vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application passes user-controlled input to template engines without proper sanitization, allowing attackers to inject malicious template code. This can lead to Remote Code Execution (RCE), information disclosure, and complete system compromise. Common vulnerable engines include Jinja2, Twig, Freemarker, Thymeleaf, Velocity, and ERB.",
+			},
+			Help: SARIFMessage{
+				Text:     "Avoid passing user input directly to template engines. Use sandboxed template environments. Implement strict input validation. Consider using logic-less template engines.",
+				Markdown: "**Remediation:** Avoid passing user input directly to template engines. If dynamic templating is required, use a sandboxed environment with strict controls. Implement input validation and use template engines in 'safe mode' if available. Consider using logic-less templates (e.g., Mustache) that don't allow code execution. Never allow users to control template selection or content. Use Content Security Policy (CSP) headers as defense in depth. Validate and sanitize all template-related parameters server-side.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWESSTI, "security", "ssti", "template-injection", "rce"},
+			},
+		},
 	}
 }
 
@@ -616,6 +640,19 @@ func processPathTraversalMap(pathtraversal map[string]interface{}, run *SARIFRun
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createPathTraversalResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processSSTIMap(ssti map[string]interface{}, run *SARIFRun) {
+	if findings, ok := ssti["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createSSTIResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -1001,6 +1038,43 @@ func createPathTraversalResult(finding map[string]interface{}) *SARIFResult {
 			"payload":    payload,
 			"type":       lfiType,
 			"confidence": confidence,
+		},
+	}
+}
+
+func createSSTIResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	templateEngine := getStringValue(finding, "template_engine")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDSSTI,
+		RuleIndex: getRuleIndex(RuleIDSSTI),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("Server-Side Template Injection vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**SSTI (%s)**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\nConfidence: %s\n\n**Remediation:** %s", templateEngine, parameter, payload, description, evidence, confidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":       parameter,
+			"payload":         payload,
+			"template_engine": templateEngine,
+			"confidence":      confidence,
 		},
 	}
 }

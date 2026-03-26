@@ -36,6 +36,7 @@ type IntermediateScanResult struct {
 	Redirect      *RedirectScanResult
 	CMDi          *CMDiScanResult
 	PathTraversal *PathTraversalScanResult
+	SSTI          *SSTIScanResult
 	Errors        []string
 }
 
@@ -48,6 +49,7 @@ type ScanStats struct {
 	TotalRedirectFindings      int
 	TotalCMDiFindings          int
 	TotalPathTraversalFindings int
+	TotalSSTIFindings          int
 }
 
 // ExecuteScan performs the complete scan workflow.
@@ -79,6 +81,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	pathtraversalOpts := []PathTraversalOption{
 		WithPathTraversalTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	sstiOpts := []SSTIOption{
+		WithSSTITimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -90,6 +95,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
+		sstiOpts = append(sstiOpts, WithSSTIAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -102,6 +108,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
+		sstiOpts = append(sstiOpts, WithSSTIRateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -114,6 +121,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
 		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
+		sstiOpts = append(sstiOpts, WithSSTITracer(cfg.Tracer))
 	}
 
 	// Create scanners
@@ -147,6 +155,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		redirectScanner := NewRedirectScanner(redirectOpts...)
 		cmdiScanner := NewCMDiScanner(cmdiOpts...)
 		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
+		sstiScanner := NewSSTIScanner(sstiOpts...)
 
 		var wg sync.WaitGroup
 		var xssResult *XSSScanResult
@@ -156,9 +165,10 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		var redirectResult *RedirectScanResult
 		var cmdiResult *CMDiScanResult
 		var pathtraversalResult *PathTraversalScanResult
+		var sstiResult *SSTIScanResult
 
 		// Run scans in parallel
-		wg.Add(7)
+		wg.Add(8)
 		go func() {
 			defer wg.Done()
 			xssResult = xssScanner.Scan(ctx, cfg.Target)
@@ -187,6 +197,10 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			defer wg.Done()
 			pathtraversalResult = pathtraversalScanner.Scan(ctx, cfg.Target)
 		}()
+		go func() {
+			defer wg.Done()
+			sstiResult = sstiScanner.Scan(ctx, cfg.Target)
+		}()
 		wg.Wait()
 
 		// Verify findings if enabled
@@ -205,6 +219,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			stats.TotalRedirectFindings = len(redirectResult.Findings)
 			stats.TotalCMDiFindings = len(cmdiResult.Findings)
 			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
+			stats.TotalSSTIFindings = len(sstiResult.Findings)
 
 			// Verify XSS findings
 			for i := range xssResult.Findings {
@@ -318,6 +333,22 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				}
 			}
 
+			// Verify SSTI findings
+			for i := range sstiResult.Findings {
+				result, err := sstiScanner.VerifyFinding(ctx, &sstiResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					sstiResult.Findings[i].Verified = result.Verified
+					// Update confidence based on verification
+					if result.Verified && result.Confidence > 0.8 {
+						sstiResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						sstiResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						sstiResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings when verification is enabled
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -381,6 +412,15 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			}
 			pathtraversalResult.Findings = verifiedPathTraversalFindings
 			pathtraversalResult.Summary.VulnerabilitiesFound = len(verifiedPathTraversalFindings)
+
+			verifiedSSTIFindings := make([]SSTIFinding, 0)
+			for _, finding := range sstiResult.Findings {
+				if finding.Verified {
+					verifiedSSTIFindings = append(verifiedSSTIFindings, finding)
+				}
+			}
+			sstiResult.Findings = verifiedSSTIFindings
+			sstiResult.Summary.VulnerabilitiesFound = len(verifiedSSTIFindings)
 		}
 
 		intermediateResult.XSS = xssResult
@@ -390,6 +430,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.Redirect = redirectResult
 		intermediateResult.CMDi = cmdiResult
 		intermediateResult.PathTraversal = pathtraversalResult
+		intermediateResult.SSTI = sstiResult
 
 		// Aggregate errors from active scans
 		if len(xssResult.Errors) > 0 {
@@ -413,6 +454,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		if len(pathtraversalResult.Errors) > 0 {
 			intermediateResult.Errors = append(intermediateResult.Errors, pathtraversalResult.Errors...)
 		}
+		if len(sstiResult.Errors) > 0 {
+			intermediateResult.Errors = append(intermediateResult.Errors, sstiResult.Errors...)
+		}
 	}
 
 	// Create unified result with correlation and risk scoring
@@ -427,6 +471,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.Redirect,
 		intermediateResult.CMDi,
 		intermediateResult.PathTraversal,
+		intermediateResult.SSTI,
 		nil, // WebSocket results (to be added in discovery mode)
 		intermediateResult.Errors,
 	)
