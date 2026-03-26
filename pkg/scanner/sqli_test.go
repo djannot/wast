@@ -2164,3 +2164,97 @@ func TestSQLiScanner_hasResultsData_EnhancedDetection(t *testing.T) {
 		})
 	}
 }
+
+// TestSQLiScanner_MinimalDataDifference tests detection when HTML structure is identical
+// but only the data content within table cells differs (typical DVWA scenario)
+func TestSQLiScanner_MinimalDataDifference(t *testing.T) {
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline: Single user in table
+	baselineHTML := `<!DOCTYPE html>
+<html>
+<head><title>SQL Injection Test</title></head>
+<body>
+<h1>User Search</h1>
+<table>
+<tr><th>ID</th><th>Name</th><th>Email</th></tr>
+<tr><td>1</td><td>John Doe</td><td>john@example.com</td></tr>
+</table>
+</body>
+</html>`
+
+	// True payload: Multiple users (OR '1'='1' returns all records)
+	truePayloadHTML := `<!DOCTYPE html>
+<html>
+<head><title>SQL Injection Test</title></head>
+<body>
+<h1>User Search</h1>
+<table>
+<tr><th>ID</th><th>Name</th><th>Email</th></tr>
+<tr><td>1</td><td>John Doe</td><td>john@example.com</td></tr>
+<tr><td>2</td><td>Jane Smith</td><td>jane@example.com</td></tr>
+<tr><td>3</td><td>Bob Wilson</td><td>bob@example.com</td></tr>
+</table>
+</body>
+</html>`
+
+	// False payload: No users (AND '1'='2' returns no records)
+	falsePayloadHTML := `<!DOCTYPE html>
+<html>
+<head><title>SQL Injection Test</title></head>
+<body>
+<h1>User Search</h1>
+<table>
+<tr><th>ID</th><th>Name</th><th>Email</th></tr>
+</table>
+</body>
+</html>`
+
+	mock.responses["https://webapp.test/search?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineHTML)),
+		Header:     make(http.Header),
+	}
+
+	mock.differentialResponse = true
+	mock.trueResponse = truePayloadHTML
+	mock.falseResponse = falsePayloadHTML
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://webapp.test/search?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect the vulnerability even with minimal structural difference
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Failed to detect SQL injection with minimal data difference")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	} else {
+		t.Logf("Successfully detected %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+	}
+
+	// Verify that data content comparison was used
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		t.Logf("Detection evidence: %s", finding.Evidence)
+		t.Logf("Confidence: %s", finding.Confidence)
+
+		// Should mention data content or structural elements in evidence
+		hasDataEvidence := strings.Contains(finding.Evidence, "data content") ||
+			strings.Contains(finding.Evidence, "structural elements") ||
+			strings.Contains(finding.Evidence, "word count")
+
+		if !hasDataEvidence {
+			t.Errorf("Expected evidence to mention data-based detection, got: %s", finding.Evidence)
+		}
+
+		// Should have at least medium confidence
+		if finding.Confidence != "high" && finding.Confidence != "medium" {
+			t.Errorf("Expected medium or high confidence, got: %s", finding.Confidence)
+		}
+	}
+}
