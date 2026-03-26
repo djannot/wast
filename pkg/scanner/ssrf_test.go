@@ -1242,3 +1242,224 @@ func TestSSRFScanner_PerParameterBaseline_POST(t *testing.T) {
 		}
 	}
 }
+
+// TestSSRFScanner_FalsePositive_IgnoredParameter tests that the scanner doesn't report
+// false positives when testing invented parameters on URLs without query params.
+// This is the primary test case for issue #163.
+func TestSSRFScanner_FalsePositive_IgnoredParameter(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Application response that ignores unknown parameters
+	// Returns the same content regardless of what parameter value is provided
+	normalResponse := `<html>
+<head><title>My App</title></head>
+<body>
+<h1>Welcome</h1>
+<div class="content">
+<p>This is a normal application page.</p>
+<ul>
+<li>Item 1</li>
+<li>Item 2</li>
+<li>Item 3</li>
+</ul>
+</div>
+</body>
+</html>`
+
+	// Configure mock to return identical response for all requests
+	// This simulates an app that simply ignores unknown query parameters
+	mock.responses["https://example.com/page"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(normalResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	// Scan a URL with no query parameters - scanner will invent common params like "url", "uri", etc.
+	result := scanner.Scan(ctx, "https://example.com/page")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// The key assertion: should NOT report any vulnerabilities
+	// Even though the app returns 200 OK for payloads like "?url=http://127.0.0.1",
+	// the enhanced baseline comparison should detect that responses are identical
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no false positives when parameter is ignored, but found %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: param=%s, payload=%s, confidence=%s, evidence=%s",
+				finding.Parameter, finding.Payload, finding.Confidence, finding.Evidence)
+		}
+	}
+}
+
+// TestSSRFScanner_FalsePositive_ContentHashComparison tests that content hash
+// comparison prevents false positives when responses are semantically identical.
+func TestSSRFScanner_FalsePositive_ContentHashComparison(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Application response with dynamic timestamp that changes slightly
+	// but content remains the same
+	createResponse := func() string {
+		return `<html>
+<head><title>App</title></head>
+<body>
+<h1>Dashboard</h1>
+<p>Welcome to the application</p>
+<table>
+<tr><th>Name</th><th>Value</th></tr>
+<tr><td>Status</td><td>Active</td></tr>
+<tr><td>Users</td><td>42</td></tr>
+</table>
+</body>
+</html>`
+	}
+
+	// Configure mock to return semantically identical content
+	mock.responses["https://example.com/dashboard"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(createResponse())),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/dashboard")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should not report false positives since content hash should match
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no false positives with identical content, but found %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: param=%s, payload=%s, evidence=%s",
+				finding.Parameter, finding.Payload, finding.Evidence)
+		}
+	}
+}
+
+// TestSSRFScanner_TruePositive_ActualSSRF verifies that legitimate SSRF is still detected
+// after the enhanced baseline comparison improvements.
+func TestSSRFScanner_TruePositive_ActualSSRF(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Normal baseline response with benign URL
+	normalResponse := `<html><body><h1>Fetching URL</h1><p>Request in progress...</p></body></html>`
+
+	// SSRF response - significantly different, contains AWS metadata
+	ssrfResponse := `ami-id
+ami-12345
+instance-id
+i-abcdef123
+instance-type
+t2.micro
+local-hostname
+ip-10-0-0-1.ec2.internal
+local-ipv4
+10.0.0.1`
+
+	// Baseline request with benign URL
+	mock.responses["https://example.com/proxy?url=https%3A%2F%2Fexample.com"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(normalResponse)),
+		Header:     make(http.Header),
+	}
+
+	// SSRF payload request
+	mock.responses["https://example.com/proxy?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(ssrfResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/proxy?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect the SSRF vulnerability
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to detect SSRF vulnerability with AWS metadata response")
+	}
+
+	// Find the AWS metadata finding
+	var awsFinding *SSRFFinding
+	for i := range result.Findings {
+		if strings.Contains(result.Findings[i].Description, "AWS") {
+			awsFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if awsFinding == nil {
+		t.Fatal("Expected to find AWS metadata SSRF vulnerability")
+	}
+
+	if awsFinding.Confidence != "high" {
+		t.Errorf("Expected high confidence for AWS metadata SSRF, got %s", awsFinding.Confidence)
+	}
+}
+
+// customMockSSRFClient is a mock with custom behavior for testing minimal differences
+type customMockSSRFClient struct {
+	requestCount int
+	response1    string
+	response2    string
+}
+
+func (m *customMockSSRFClient) Do(req *http.Request) (*http.Response, error) {
+	m.requestCount++
+	var body string
+	if m.requestCount%2 == 1 {
+		body = m.response1
+	} else {
+		body = m.response2
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestSSRFScanner_FalsePositive_MinimalDifferences tests that minor response
+// differences (like whitespace or timestamps) don't trigger false positives.
+func TestSSRFScanner_FalsePositive_MinimalDifferences(t *testing.T) {
+	// Responses with minor whitespace differences but same content
+	response1 := `<html><body><h1>Page</h1><p>Content here</p></body></html>`
+	response2 := `<html><body><h1>Page</h1> <p>Content here</p> </body></html>`
+
+	mock := &customMockSSRFClient{
+		response1: response1,
+		response2: response2,
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/page")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should not report false positives for minor whitespace differences
+	// Content hash should be identical after normalization
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Expected no false positives with minor whitespace differences, but found %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+		for _, finding := range result.Findings {
+			t.Logf("False positive: param=%s, payload=%s, evidence=%s",
+				finding.Parameter, finding.Payload, finding.Evidence)
+		}
+	}
+}

@@ -31,10 +31,13 @@ type SSRFScanner struct {
 // ssrfBaselineResponse stores characteristics of a baseline HTTP response
 // for comparison against payload responses to reduce false positives.
 type ssrfBaselineResponse struct {
-	StatusCode int
-	BodyLength int
-	Body       string
-	Signatures []string // signatures found in baseline
+	StatusCode         int
+	BodyLength         int
+	Body               string
+	Signatures         []string // signatures found in baseline
+	ContentHash        string   // MD5 hash of extracted body content
+	WordCount          int      // Number of words in the response
+	StructuralElements int      // Count of structural HTML elements (tr, li, etc.)
 }
 
 // SSRFScanResult represents the result of an SSRF vulnerability scan.
@@ -325,11 +328,19 @@ func (s *SSRFScanner) fetchBaseline(ctx context.Context, targetURL string, metho
 	// Collect signatures present in baseline
 	signatures := s.collectSignatures(bodyStr)
 
+	// Compute content characteristics for enhanced comparison
+	contentHash := computeContentHash(bodyStr)
+	wordCount := countWords(bodyStr)
+	structuralElements := countStructuralElements(bodyStr)
+
 	return &ssrfBaselineResponse{
-		StatusCode: resp.StatusCode,
-		BodyLength: len(body),
-		Body:       bodyStr,
-		Signatures: signatures,
+		StatusCode:         resp.StatusCode,
+		BodyLength:         len(body),
+		Body:               bodyStr,
+		Signatures:         signatures,
+		ContentHash:        contentHash,
+		WordCount:          wordCount,
+		StructuralElements: structuralElements,
 	}
 }
 
@@ -740,8 +751,13 @@ func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 // analyzeSSRFResponse analyzes the HTTP response to determine if SSRF is possible.
 // It compares the response against a baseline to reduce false positives.
 func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payload ssrfPayload, duration time.Duration, baseline *ssrfBaselineResponse) (confidence string, evidence string) {
-	// If we have a baseline, compare key characteristics
+	// If we have a baseline, perform enhanced differential analysis
 	if baseline != nil {
+		// Compute characteristics for current response
+		currentContentHash := computeContentHash(body)
+		currentWordCount := countWords(body)
+		currentStructuralElements := countStructuralElements(body)
+
 		// Check if status code changed significantly
 		statusChanged := resp.StatusCode != baseline.StatusCode
 
@@ -749,10 +765,35 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		bodyLengthDiff := float64(len(body)-baseline.BodyLength) / float64(baseline.BodyLength+1)
 		significantLengthChange := bodyLengthDiff > 0.1 || bodyLengthDiff < -0.1
 
-		// If status code and body length are the same or very similar, and body is similar,
-		// this is likely the application ignoring the parameter
-		if !statusChanged && !significantLengthChange {
-			// Check if the body is substantially the same
+		// Enhanced content comparison using content hash
+		contentIdentical := currentContentHash == baseline.ContentHash
+
+		// Check if word count changed significantly
+		wordCountDiff := 0
+		if baseline.WordCount > 0 {
+			wordCountDiff = currentWordCount - baseline.WordCount
+			if wordCountDiff < 0 {
+				wordCountDiff = -wordCountDiff
+			}
+		}
+		significantWordCountChange := wordCountDiff > 3 // At least 3 words difference
+
+		// Check if structural elements changed
+		structuralDiff := currentStructuralElements - baseline.StructuralElements
+		if structuralDiff < 0 {
+			structuralDiff = -structuralDiff
+		}
+		significantStructuralChange := structuralDiff > 1 // At least 1 element difference
+
+		// If content hash matches, responses are semantically identical - definitely a false positive
+		if contentIdentical {
+			return "", ""
+		}
+
+		// If status code, length, word count, and structure are all similar,
+		// the application is likely just ignoring the parameter
+		if !statusChanged && !significantLengthChange && !significantWordCountChange && !significantStructuralChange {
+			// Check if the body is exactly the same
 			if body == baseline.Body {
 				// Exact same response - almost certainly a false positive
 				return "", ""
@@ -779,6 +820,12 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 
 			// If all signatures were already present in baseline, this is likely a false positive
 			if allSignaturesInBaseline && len(currentSignatures) > 0 {
+				return "", ""
+			}
+
+			// If none of the key metrics changed significantly and no new signatures appeared,
+			// this is very likely a false positive (application ignoring the parameter)
+			if len(currentSignatures) == 0 {
 				return "", ""
 			}
 		}
