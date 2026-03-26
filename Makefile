@@ -49,6 +49,13 @@ test:
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 	@echo "Tests complete"
 
+# Run integration tests
+.PHONY: test-integration
+test-integration:
+	@echo "Running integration tests..."
+	$(GOTEST) -v -tags=integration -race ./internal/mcp/
+	@echo "Integration tests complete"
+
 # Run tests with coverage report
 .PHONY: test-coverage
 test-coverage: test
@@ -123,16 +130,17 @@ help:
 	@echo "  make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all           Build the binary (default)"
-	@echo "  build         Build the binary"
-	@echo "  build-all     Build for multiple platforms"
-	@echo "  test          Run tests with coverage"
-	@echo "  test-coverage Generate HTML coverage report"
-	@echo "  lint          Run linters"
-	@echo "  fmt           Format code"
-	@echo "  fmt-check     Check code formatting"
-	@echo "  deps          Download dependencies"
-	@echo "  clean         Remove build artifacts"
-	@echo "  install       Install binary to GOPATH/bin"
-	@echo "  run           Build and run the application"
-	@echo "  help          Show this help message"
+	@echo "  all              Build the binary (default)"
+	@echo "  build            Build the binary"
+	@echo "  build-all        Build for multiple platforms"
+	@echo "  test             Run tests with coverage"
+	@echo "  test-coverage    Generate HTML coverage report"
+	@echo "  test-integration Run integration tests"
+	@echo "  lint             Run linters"
+	@echo "  fmt              Format code"
+	@echo "  fmt-check        Check code formatting"
+	@echo "  deps             Download dependencies"
+	@echo "  clean            Remove build artifacts"
+	@echo "  install          Install binary to GOPATH/bin"
+	@echo "  run              Build and run the application"
+	@echo "  help             Show this help message"
