@@ -29,6 +29,7 @@ type UnifiedScanResult struct {
 	CSRF         *CSRFScanResult     `json:"csrf,omitempty" yaml:"csrf,omitempty"`
 	SSRF         *SSRFScanResult     `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
 	Redirect     *RedirectScanResult `json:"redirect,omitempty" yaml:"redirect,omitempty"`
+	CMDi         *CMDiScanResult     `json:"cmdi,omitempty" yaml:"cmdi,omitempty"`
 	Correlations []CorrelatedFinding `json:"correlations,omitempty" yaml:"correlations,omitempty"`
 	RiskScore    RiskScore           `json:"risk_score" yaml:"risk_score"`
 	Summary      UnifiedSummary      `json:"summary" yaml:"summary"`
@@ -65,7 +66,7 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:       target,
 		PassiveOnly:  passiveOnly,
@@ -75,6 +76,7 @@ func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanRe
 		CSRF:         csrf,
 		SSRF:         ssrf,
 		Redirect:     redirect,
+		CMDi:         cmdi,
 		Correlations: make([]CorrelatedFinding, 0),
 		Errors:       errors,
 	}
@@ -194,6 +196,64 @@ func (u *UnifiedScanResult) correlateFindings() {
 			}
 		}
 	}
+
+	// Correlation 5: CMDi + SSRF (indicates server-side processing vulnerability)
+	if u.CMDi != nil && u.SSRF != nil {
+		// Build a map of parameters with CMDi
+		cmdiParams := make(map[string]CMDiFinding)
+		for _, finding := range u.CMDi.Findings {
+			key := fmt.Sprintf("%s:%s", finding.URL, finding.Parameter)
+			cmdiParams[key] = finding
+		}
+
+		// Check for SSRF on same parameters
+		for _, ssrfFinding := range u.SSRF.Findings {
+			key := fmt.Sprintf("%s:%s", ssrfFinding.URL, ssrfFinding.Parameter)
+			if cmdiFinding, found := cmdiParams[key]; found {
+				correlationID++
+				correlation := CorrelatedFinding{
+					ID:             fmt.Sprintf("CORR-%d", correlationID),
+					PrimaryFinding: cmdiFinding,
+					RelatedFindings: []interface{}{
+						ssrfFinding,
+					},
+					EffectiveSeverity: SeverityHigh,
+					Confidence:        u.calculateConfidence(cmdiFinding.Confidence, u.parseConfidenceString(ssrfFinding.Confidence)),
+					Explanation:       fmt.Sprintf("Parameter '%s' is vulnerable to both Command Injection and SSRF, indicating severe server-side processing vulnerabilities. This enables complete system compromise.", ssrfFinding.Parameter),
+				}
+				u.Correlations = append(u.Correlations, correlation)
+			}
+		}
+	}
+
+	// Correlation 6: CMDi + SQLi (multiple injection types on same parameter)
+	if u.CMDi != nil && u.SQLi != nil {
+		// Build a map of parameters with CMDi
+		cmdiParams := make(map[string]CMDiFinding)
+		for _, finding := range u.CMDi.Findings {
+			key := fmt.Sprintf("%s:%s", finding.URL, finding.Parameter)
+			cmdiParams[key] = finding
+		}
+
+		// Check for SQLi on same parameters
+		for _, sqliFinding := range u.SQLi.Findings {
+			key := fmt.Sprintf("%s:%s", sqliFinding.URL, sqliFinding.Parameter)
+			if cmdiFinding, found := cmdiParams[key]; found {
+				correlationID++
+				correlation := CorrelatedFinding{
+					ID:             fmt.Sprintf("CORR-%d", correlationID),
+					PrimaryFinding: cmdiFinding,
+					RelatedFindings: []interface{}{
+						sqliFinding,
+					},
+					EffectiveSeverity: SeverityHigh,
+					Confidence:        u.calculateConfidence(cmdiFinding.Confidence, u.parseConfidenceString(sqliFinding.Confidence)),
+					Explanation:       fmt.Sprintf("Parameter '%s' is vulnerable to both Command Injection and SQL Injection, indicating no input validation whatsoever. Attacker can compromise both OS and database.", sqliFinding.Parameter),
+				}
+				u.Correlations = append(u.Correlations, correlation)
+			}
+		}
+	}
 }
 
 // calculateRiskScore computes overall risk score and breakdown by category.
@@ -203,7 +263,7 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	totalConfidence := 0.0
 	confidenceCount := 0
 
-	// Score injection vulnerabilities (SQLi, XSS)
+	// Score injection vulnerabilities (SQLi, XSS, CMDi)
 	injectionScore := 0
 	if u.SQLi != nil {
 		for _, finding := range u.SQLi.Findings {
@@ -215,6 +275,14 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 	}
 	if u.XSS != nil {
 		for _, finding := range u.XSS.Findings {
+			score := u.severityToScore(finding.Severity)
+			injectionScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
+	if u.CMDi != nil {
+		for _, finding := range u.CMDi.Findings {
 			score := u.severityToScore(finding.Severity)
 			injectionScore += score
 			totalConfidence += u.parseConfidenceString(finding.Confidence)
@@ -365,6 +433,13 @@ func (u *UnifiedScanResult) generateSummary() {
 		}
 	}
 
+	if u.CMDi != nil {
+		for _, finding := range u.CMDi.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
 	summary.HighSeverity = severityCounts[SeverityHigh]
 	summary.MediumSeverity = severityCounts[SeverityMedium]
 	summary.LowSeverity = severityCounts[SeverityLow]
@@ -401,6 +476,18 @@ func (u *UnifiedScanResult) generatePriorityActions() []string {
 		}
 		if highSeverityXSS > 0 {
 			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity XSS vulnerabilities - implement output encoding and CSP", highSeverityXSS))
+		}
+	}
+
+	if u.CMDi != nil && len(u.CMDi.Findings) > 0 {
+		highSeverityCMDi := 0
+		for _, finding := range u.CMDi.Findings {
+			if finding.Severity == SeverityHigh {
+				highSeverityCMDi++
+			}
+		}
+		if highSeverityCMDi > 0 {
+			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity Command Injection vulnerabilities - avoid system commands, use parameterized APIs", highSeverityCMDi))
 		}
 	}
 

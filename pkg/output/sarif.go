@@ -107,6 +107,7 @@ type SARIFInvocation struct {
 const (
 	RuleIDXSS          = "WAST-XSS-001"
 	RuleIDSQLi         = "WAST-SQLI-001"
+	RuleIDCMDi         = "WAST-CMDI-001"
 	RuleIDCSRF         = "WAST-CSRF-001"
 	RuleIDSSRF         = "WAST-SSRF-001"
 	RuleIDRedirect     = "WAST-REDIRECT-001"
@@ -122,6 +123,7 @@ const (
 const (
 	CWEXSS      = "CWE-79"
 	CWESQLi     = "CWE-89"
+	CWECMDi     = "CWE-78"
 	CWECSRF     = "CWE-352"
 	CWESSRF     = "CWE-918"
 	CWERedirect = "CWE-601"
@@ -218,6 +220,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 		processRedirectMap(redirect, &run)
 	}
 
+	// Process CMDi if present
+	if cmdi, ok := data["cmdi"].(map[string]interface{}); ok {
+		processCMDiMap(cmdi, &run)
+	}
+
 	report.Runs = append(report.Runs, run)
 	return report, nil
 }
@@ -273,6 +280,23 @@ func buildAllRules() []SARIFRule {
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWESQLi, "security", "sqli", "injection"},
+			},
+		},
+		{
+			ID:   RuleIDCMDi,
+			Name: "CommandInjection",
+			ShortDescription: SARIFMessage{
+				Text: "Command Injection vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application executes OS commands using unsanitized user input, allowing attackers to execute arbitrary commands on the server.",
+			},
+			Help: SARIFMessage{
+				Text:     "Use parameterized system calls or avoid passing user input to system commands. Implement strict input validation with allowlists. Consider using language-specific APIs instead of shell commands.",
+				Markdown: "**Remediation:** Use parameterized system calls or avoid passing user input to system commands. Implement strict input validation with allowlists. Consider using language-specific APIs instead of shell commands. If system commands are necessary, use built-in escaping functions and run with minimal privileges.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWECMDi, "security", "cmdi", "injection", "os-command"},
 			},
 		},
 		{
@@ -542,6 +566,19 @@ func processRedirectMap(redirect map[string]interface{}, run *SARIFRun) {
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createRedirectResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processCMDiMap(cmdi map[string]interface{}, run *SARIFRun) {
+	if findings, ok := cmdi["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createCMDiResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -855,6 +892,45 @@ func createRedirectResult(finding map[string]interface{}) *SARIFResult {
 	}
 }
 
+func createCMDiResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	cmdiType := getStringValue(finding, "type")
+	osType := getStringValue(finding, "os_type")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDCMDi,
+		RuleIndex: getRuleIndex(RuleIDCMDi),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("Command Injection vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**Command Injection (%s on %s)**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\n**Remediation:** %s", cmdiType, osType, parameter, payload, description, evidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"type":       cmdiType,
+			"osType":     osType,
+			"confidence": confidence,
+		},
+	}
+}
+
 // Helper functions for severity mapping and rule lookups
 
 func mapSeverityToLevel(severity string) string {
@@ -889,6 +965,7 @@ func getRuleIndex(ruleID string) int {
 	rules := []string{
 		RuleIDXSS,
 		RuleIDSQLi,
+		RuleIDCMDi,
 		RuleIDCSRF,
 		RuleIDSSRF,
 		RuleIDRedirect,
