@@ -405,3 +405,63 @@ func TestScanDiscoveredTargets_ActiveScanners(t *testing.T) {
 		t.Error("PathTraversal result should not be nil in active mode")
 	}
 }
+
+// TestScanTargetForPOSTMethod tests that POST targets are routed correctly
+func TestScanTargetForPOSTMethod(t *testing.T) {
+	ctx := context.Background()
+
+	// Test SQLi with POST method
+	sqliScanner := NewSQLiScanner(WithSQLiTimeout(30 * time.Second))
+	sqliScanner.client = newMockSQLiHTTPClient()
+
+	postTarget := DiscoveredTarget{
+		URL:    "http://example.com/login",
+		Method: "POST",
+		Parameters: map[string]string{
+			"username": "admin",
+			"password": "test",
+		},
+		Source: "form on /login",
+	}
+
+	sqliFindings := scanTargetForSQLi(ctx, sqliScanner, postTarget)
+	if sqliFindings == nil {
+		t.Error("Expected scanTargetForSQLi to return findings for POST method")
+	}
+
+	// Test XSS with POST method
+	xssScanner := NewXSSScanner(WithXSSTimeout(30 * time.Second))
+	xssFindings := scanTargetForXSS(ctx, xssScanner, postTarget)
+	if xssFindings == nil {
+		t.Error("Expected scanTargetForXSS to return findings for POST method")
+	}
+
+	// Test CMDi with POST method
+	cmdiScanner := NewCMDiScanner(WithCMDiTimeout(30 * time.Second))
+	cmdiFindings := scanTargetForCMDi(ctx, cmdiScanner, postTarget)
+	if cmdiFindings == nil {
+		t.Error("Expected scanTargetForCMDi to return findings for POST method")
+	}
+
+	// Test SSRF with POST method
+	ssrfScanner := NewSSRFScanner(WithSSRFTimeout(30 * time.Second))
+	ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, postTarget)
+	if ssrfFindings == nil {
+		t.Error("Expected scanTargetForSSRF to return findings for POST method")
+	}
+
+	// Test GET method still works
+	getTarget := DiscoveredTarget{
+		URL:    "http://example.com/search?q=test",
+		Method: "GET",
+		Parameters: map[string]string{
+			"q": "test",
+		},
+		Source: "link with query params",
+	}
+
+	sqliGetFindings := scanTargetForSQLi(ctx, sqliScanner, getTarget)
+	if sqliGetFindings == nil {
+		t.Error("Expected scanTargetForSQLi to return findings for GET method")
+	}
+}

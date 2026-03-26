@@ -461,6 +461,94 @@ func (s *CMDiScanner) Scan(ctx context.Context, targetURL string) *CMDiScanResul
 	return result
 }
 
+// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
+// This is used for testing forms that accept POST requests.
+func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *CMDiScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanCMDi)
+		defer span.End()
+	}
+
+	result := &CMDiScanResult{
+		Target:   targetURL,
+		Findings: make([]CMDiFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common vulnerable parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = make(map[string]string)
+		for _, paramName := range cmdiVulnerableParams {
+			params[paramName] = "test"
+		}
+	}
+
+	// Get baseline responses and timing for detection
+	baselineResponses := make(map[string]*baselineResponse)
+	baselineTiming := make(map[string]time.Duration)
+	for paramName, paramValue := range params {
+		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, paramValue)
+		if baseline != nil {
+			baselineResponses[paramName] = baseline
+			baselineTiming[paramName] = duration
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range cmdiPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			var finding *CMDiFinding
+			if payload.Type == "time-based" {
+				// Time-based detection
+				baseline := baselineTiming[paramName]
+				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline)
+			} else {
+				// Error-based detection
+				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload)
+			}
+
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
 // getBaselineWithTiming makes a request with the original parameter value to establish a baseline
 // and measures the request duration for time-based detection.
 func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.URL, paramName string) (*baselineResponse, time.Duration) {
@@ -484,6 +572,60 @@ func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 
 	req.Header.Set("User-Agent", s.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Measure request time
+	startTime := time.Now()
+	resp, err := s.client.Do(req)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		return nil, 0
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0
+	}
+
+	baseline := &baselineResponse{
+		StatusCode:  resp.StatusCode,
+		BodyLength:  len(body),
+		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
+		ContainsKey: string(body),
+	}
+
+	return baseline, duration
+}
+
+// getBaselineWithTimingPOST makes a POST request with the original parameter value to establish a baseline
+// and measures the request duration for time-based detection.
+func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, paramValue string) (*baselineResponse, time.Duration) {
+	// Use original value if it exists, otherwise use a safe default
+	originalValue := paramValue
+	if originalValue == "" {
+		originalValue = "test"
+	}
+
+	// Create form data with the original parameter value
+	formData := url.Values{}
+	formData.Set(paramName, originalValue)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, 0
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	// Apply authentication configuration
 	if s.authConfig != nil {
@@ -668,6 +810,165 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 
 		return &CMDiFinding{
 			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidenceMsg,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			OSType:      payload.OSType,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+			Confidence:  confidence,
+		}
+	}
+
+	return nil
+}
+
+// testErrorBasedPOST tests a single parameter with an error-based command injection payload using POST.
+func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload) *CMDiFinding {
+	// Create form data with the test payload
+	formData := url.Values{}
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check for shell error patterns in the response
+	for _, pattern := range cmdErrorPatterns {
+		if pattern.MatchString(bodyStr) {
+			// Command error detected!
+			match := pattern.FindString(bodyStr)
+			finding := &CMDiFinding{
+				URL:         baseURL.String(),
+				Parameter:   paramName,
+				Payload:     payload.Payload,
+				Evidence:    s.extractEvidence(bodyStr, match),
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				OSType:      payload.OSType,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  "high", // Error-based detection with shell errors is high confidence
+			}
+			return finding
+		}
+	}
+
+	return nil
+}
+
+// testTimeBasedPOST tests a single parameter with a time-based command injection payload using POST.
+func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration) *CMDiFinding {
+	// Create form data with the test payload
+	formData := url.Values{}
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Measure request time
+	startTime := time.Now()
+	resp, err := s.client.Do(req)
+	requestDuration := time.Since(startTime)
+
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body to check for shell errors
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check if there are shell errors
+	shellErrorFound := false
+	var errorMatch string
+	for _, pattern := range cmdErrorPatterns {
+		if pattern.MatchString(bodyStr) {
+			shellErrorFound = true
+			errorMatch = pattern.FindString(bodyStr)
+			break
+		}
+	}
+
+	// Determine the expected delay
+	expectedDelay := payload.ExpectedDelay
+	if expectedDelay == 0 {
+		expectedDelay = s.timeBasedDelay
+	}
+
+	// Calculate threshold
+	tolerance := 1 * time.Second
+	minExpectedDuration := baselineDuration + expectedDelay - tolerance
+
+	// Check if the request took significantly longer than expected
+	if requestDuration >= minExpectedDuration {
+		confidence := "high"
+		evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based command injection",
+			requestDuration, baselineDuration, expectedDelay)
+
+		// If shell error is also present, mention it in evidence
+		if shellErrorFound {
+			evidenceMsg += fmt.Sprintf("; Shell error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
+			confidence = "high"
+		}
+
+		return &CMDiFinding{
+			URL:         baseURL.String(),
 			Parameter:   paramName,
 			Payload:     payload.Payload,
 			Evidence:    evidenceMsg,

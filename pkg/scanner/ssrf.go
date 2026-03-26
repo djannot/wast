@@ -343,6 +343,79 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 	return result
 }
 
+// ScanPOST scans a URL by sending payloads as POST form data instead of GET query parameters.
+// This is used for testing forms that accept POST requests.
+func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *SSRFScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSSRF)
+		defer span.End()
+	}
+
+	result := &SSRFScanResult{
+		Target:   targetURL,
+		Findings: make([]SSRFFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = map[string]string{
+			"url":      "",
+			"uri":      "",
+			"path":     "",
+			"dest":     "",
+			"redirect": "",
+			"file":     "",
+			"callback": "",
+		}
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range ssrfPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
 // testParameter tests a single parameter with a specific SSRF payload.
 func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload) *SSRFFinding {
 	// Create a copy of the URL with the test payload
@@ -405,6 +478,82 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 	if confidence != "low" && confidence != "" {
 		finding := &SSRFFinding{
 			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     payload.Payload,
+			Evidence:    evidence,
+			Severity:    payload.Severity,
+			Type:        payload.Type,
+			Description: payload.Description,
+			Remediation: s.getRemediation(),
+			Confidence:  confidence,
+		}
+		return finding
+	}
+
+	return nil
+}
+
+// testParameterPOST tests a single parameter with a specific SSRF payload using POST.
+func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload ssrfPayload) *SSRFFinding {
+	// Create form data with the test payload
+	formData := url.Values{}
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Measure request time for timing-based detection
+	startTime := time.Now()
+
+	// Send the request
+	resp, err := s.client.Do(req)
+
+	requestDuration := time.Since(startTime)
+
+	// Handle request errors - this might indicate SSRF attempt was blocked
+	if err != nil {
+		// Check if error indicates network timeout or connection refused
+		// These could be signs that SSRF was attempted but blocked
+		if isNetworkError(err) {
+			// Don't report false positives on network errors
+			return nil
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Analyze the response for SSRF indicators
+	confidence, evidence := s.analyzeSSRFResponse(resp, bodyStr, payload, requestDuration)
+
+	// Only report if there's medium or high confidence
+	if confidence != "low" && confidence != "" {
+		finding := &SSRFFinding{
+			URL:         baseURL.String(),
 			Parameter:   paramName,
 			Payload:     payload.Payload,
 			Evidence:    evidence,

@@ -703,6 +703,12 @@ func buildURLWithParams(target DiscoveredTarget) string {
 
 // scanTargetForXSS scans a single discovered target for XSS vulnerabilities.
 func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) []XSSFinding {
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -710,6 +716,12 @@ func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target Discovere
 
 // scanTargetForSQLi scans a single discovered target for SQL injection vulnerabilities.
 func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) []SQLiFinding {
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -735,6 +747,12 @@ func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target Discove
 
 // scanTargetForSSRF scans a single discovered target for SSRF vulnerabilities.
 func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) []SSRFFinding {
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -742,6 +760,7 @@ func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target Discove
 
 // scanTargetForRedirect scans a single discovered target for Open Redirect vulnerabilities.
 func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) []RedirectFinding {
+	// Redirect scanner doesn't have POST support yet, only scan GET requests
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -749,6 +768,12 @@ func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target
 
 // scanTargetForCMDi scans a single discovered target for Command Injection vulnerabilities.
 func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) []CMDiFinding {
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return result.Findings
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
@@ -756,6 +781,7 @@ func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target Discove
 
 // scanTargetForPathTraversal scans a single discovered target for Path Traversal vulnerabilities.
 func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) []PathTraversalFinding {
+	// Path traversal scanner doesn't have POST support yet, only scan GET requests
 	targetURL := buildURLWithParams(target)
 	result := scanner.Scan(ctx, targetURL)
 	return result.Findings
