@@ -9,6 +9,7 @@ import (
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/urlutil"
 	"github.com/spf13/cobra"
 )
 
@@ -80,6 +81,16 @@ Examples:
 			}
 
 			target := args[0]
+
+			// Validate and normalize target URL
+			validatedURL, err := urlutil.ValidateTargetURL(target)
+			if err != nil {
+				formatter.Failure("crawl", "Invalid target URL", map[string]interface{}{
+					"error": err.Error(),
+				})
+				return
+			}
+			target = validatedURL
 
 			// Create crawler with configured options
 			opts := []crawler.Option{

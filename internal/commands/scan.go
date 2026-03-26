@@ -7,6 +7,7 @@ import (
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
+	"github.com/djannot/wast/pkg/urlutil"
 	"github.com/spf13/cobra"
 )
 
@@ -142,6 +143,16 @@ Examples:
 				formatter.Success("scan", "Scan command - available capabilities", result)
 				return
 			}
+
+			// Validate and normalize target URL
+			validatedURL, err := urlutil.ValidateTargetURL(target)
+			if err != nil {
+				formatter.Failure("scan", "Invalid target URL", map[string]interface{}{
+					"error": err.Error(),
+				})
+				return
+			}
+			target = validatedURL
 
 			// Display warning when active testing is enabled (only in text mode)
 			if !safeMode && formatter.Format() == output.FormatText {

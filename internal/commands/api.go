@@ -8,6 +8,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/urlutil"
 	"github.com/spf13/cobra"
 )
 
@@ -108,6 +109,17 @@ Examples:
 
 			// Target URL provided - perform API discovery
 			target := args[0]
+
+			// Validate and normalize target URL
+			validatedURL, err := urlutil.ValidateTargetURL(target)
+			if err != nil {
+				formatter.Failure("api", "Invalid target URL", map[string]interface{}{
+					"error": err.Error(),
+				})
+				return
+			}
+			target = validatedURL
+
 			runAPIDiscovery(formatter, authConfig, rateLimitConfig, target, timeout)
 		},
 	}
