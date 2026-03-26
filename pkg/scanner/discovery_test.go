@@ -63,6 +63,15 @@ func TestExecuteDiscoveryScan(t *testing.T) {
 	if result.SSRF != nil {
 		t.Error("SSRF result should be nil in safe mode")
 	}
+	if result.Redirect != nil {
+		t.Error("Redirect result should be nil in safe mode")
+	}
+	if result.CMDi != nil {
+		t.Error("CMDi result should be nil in safe mode")
+	}
+	if result.PathTraversal != nil {
+		t.Error("PathTraversal result should be nil in safe mode")
+	}
 }
 
 func TestExtractDiscoveredTargets(t *testing.T) {
@@ -334,5 +343,65 @@ func TestScanDiscoveredTargets_EmptyTargets(t *testing.T) {
 	// Should have scanned the base target
 	if result.Target != cfg.Target {
 		t.Errorf("Expected target %s, got %s", cfg.Target, result.Target)
+	}
+}
+
+func TestScanDiscoveredTargets_ActiveScanners(t *testing.T) {
+	t.Skip("Integration test - requires external network access")
+
+	// Create test targets
+	targets := []DiscoveredTarget{
+		{
+			URL:        "https://example.com/page?id=1",
+			Method:     "GET",
+			Parameters: map[string]string{"id": "1"},
+			Source:     "test page 1",
+		},
+	}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         5,
+		SafeMode:        false, // Enable active scanning
+		VerifyFindings:  false,
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil)
+
+	if result == nil {
+		t.Fatal("scanDiscoveredTargets returned nil result")
+	}
+
+	if stats == nil {
+		t.Fatal("scanDiscoveredTargets returned nil stats")
+	}
+
+	// In active mode, scanner results should not be nil
+	if result.XSS == nil {
+		t.Error("XSS result should not be nil in active mode")
+	}
+	if result.SQLi == nil {
+		t.Error("SQLi result should not be nil in active mode")
+	}
+	if result.CSRF == nil {
+		t.Error("CSRF result should not be nil in active mode")
+	}
+	if result.SSRF == nil {
+		t.Error("SSRF result should not be nil in active mode")
+	}
+	if result.Redirect == nil {
+		t.Error("Redirect result should not be nil in active mode")
+	}
+	if result.CMDi == nil {
+		t.Error("CMDi result should not be nil in active mode")
+	}
+	if result.PathTraversal == nil {
+		t.Error("PathTraversal result should not be nil in active mode")
 	}
 }
