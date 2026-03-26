@@ -23,10 +23,16 @@ const (
 	// maxResponseSize is the maximum response size to analyze (10MB) to prevent memory exhaustion
 	maxResponseSize = 10 * 1024 * 1024
 
-	// Content-based detection thresholds
-	minWordCountDifference         = 5  // Minimum word count difference to consider significant
+	// Content-based detection thresholds - these are baseline values
+	// Actual thresholds are adaptive based on response characteristics
+	minWordCountDifference         = 3  // Minimum word count difference to consider significant (lowered from 5)
 	minStructuralElementDifference = 1  // Minimum structural element difference to consider significant
-	lengthDifferenceThresholdPct   = 20 // Minimum percentage difference in length to consider significant
+	lengthDifferenceThresholdPct   = 10 // Minimum percentage difference in length to consider significant (lowered from 20)
+
+	// Adaptive threshold settings
+	smallResponseSizeThreshold = 1024      // Responses < 1KB use more sensitive thresholds
+	fewStructuralElementsLimit = 10        // Responses with < 10 structural elements use sensitive thresholds
+	minWordCountForPercentage  = 20        // If baseline has < 20 words, use absolute difference instead of percentage
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -809,6 +815,66 @@ func countStructuralElements(htmlStr string) int {
 	return count
 }
 
+// detectNoResultsPattern checks if the response indicates "no results" or empty data
+func detectNoResultsPattern(body string) bool {
+	bodyLower := strings.ToLower(body)
+
+	// Common "no results" patterns
+	noResultsPatterns := []string{
+		"no results",
+		"no records",
+		"0 results",
+		"no data",
+		"not found",
+		"no matches",
+		"no entries",
+		"empty",
+	}
+
+	for _, pattern := range noResultsPatterns {
+		if strings.Contains(bodyLower, pattern) {
+			return true
+		}
+	}
+
+	// Check for empty table bodies (table with header but no data rows)
+	// This is common in DVWA when no results are returned
+	if strings.Contains(body, "<table") {
+		// Extract content between table tags
+		tableStart := strings.Index(body, "<table")
+		if tableStart != -1 {
+			tableEnd := strings.Index(body[tableStart:], "</table>")
+			if tableEnd != -1 {
+				tableContent := body[tableStart : tableStart+tableEnd]
+				// Count tr tags in the table
+				trCount := len(trRegex.FindAllString(tableContent, -1))
+				// If table has 0-1 rows (header only or empty), it might indicate no results
+				if trCount <= 1 {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// hasResultsData checks if the response contains actual data/results
+func hasResultsData(body string, structuralElements int) bool {
+	// If there are multiple structural elements, likely has data
+	if structuralElements > 2 {
+		return true
+	}
+
+	// Check word count - very few words might indicate no data
+	wordCount := countWords(body)
+	if wordCount < 5 {
+		return false
+	}
+
+	return !detectNoResultsPattern(body)
+}
+
 // analyzeResponse extracts all characteristics from a response
 // Optimized to extract body content only once
 func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int) {
@@ -1051,12 +1117,32 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	falseDiffFromBaseline := abs(falseResp.BodyLength - baseline.BodyLength)
 	trueFalseDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
 
+	// Adaptive thresholds based on baseline characteristics
+	isSmallResponse := baseline.BodyLength < smallResponseSizeThreshold
+	hasFewStructuralElements := trueResp.StructuralElements < fewStructuralElementsLimit || falseResp.StructuralElements < fewStructuralElementsLimit
+	hasLowWordCount := trueResp.WordCount < minWordCountForPercentage || falseResp.WordCount < minWordCountForPercentage
+
+	// Adjust thresholds for small responses or pages with few elements
+	adaptiveLengthThreshold := lengthDifferenceThresholdPct
+	adaptiveWordCountThreshold := minWordCountDifference
+
+	if isSmallResponse || hasFewStructuralElements {
+		// For small responses, use more sensitive thresholds
+		adaptiveLengthThreshold = 5 // 5% for small responses (was 10%)
+		adaptiveWordCountThreshold = 2 // 2 words minimum (was 3)
+	}
+
+	// For very low word counts, use absolute difference instead of percentage
+	if hasLowWordCount {
+		adaptiveWordCountThreshold = 1 // Any word difference is significant
+	}
+
 	// Check if responses differ significantly between true and false conditions
 	statusDiffers := trueResp.StatusCode != falseResp.StatusCode
 	lengthDiffersSignificantly := false
 
-	// True and false should differ from each other (using lengthDifferenceThresholdPct constant)
-	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/lengthDifferenceThresholdPct {
+	// True and false should differ from each other (using adaptive threshold)
+	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/adaptiveLengthThreshold {
 		lengthDiffersSignificantly = true
 	}
 
@@ -1066,12 +1152,17 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		baselineDiffers = true
 	}
 
-	// Content-based differential analysis using defined thresholds
+	// Content-based differential analysis using adaptive thresholds
 	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
 	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
+	wordCountDiffersSignificantly := wordCountDiff >= adaptiveWordCountThreshold
 	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
 	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
+
+	// Detect "no results" vs "has results" pattern (common in DVWA)
+	trueHasResults := hasResultsData(trueResp.Body, trueResp.StructuralElements)
+	falseHasResults := hasResultsData(falseResp.Body, falseResp.StructuralElements)
+	resultsPatternDiffers := trueHasResults != falseHasResults
 
 	// Build evidence message with all detection methods
 	var detectionMethods []string
@@ -1103,6 +1194,17 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	if structuralDiffersSignificantly {
 		detectionMethods = append(detectionMethods, fmt.Sprintf("structural elements differ (true: %d, false: %d, diff: %d elements)", trueResp.StructuralElements, falseResp.StructuralElements, structuralDiff))
 		detectedVulnerability = true
+	}
+
+	// Check for "no results" vs "has results" pattern (DVWA-style detection)
+	if resultsPatternDiffers {
+		if trueHasResults && !falseHasResults {
+			detectionMethods = append(detectionMethods, "true condition returns data while false returns no results (classic boolean SQLi)")
+			detectedVulnerability = true
+		} else if !trueHasResults && falseHasResults {
+			detectionMethods = append(detectionMethods, "false condition returns data while true returns no results (inverted boolean SQLi)")
+			detectedVulnerability = true
+		}
 	}
 
 	// For high confidence: true/false must behave differently via multiple methods
@@ -1385,17 +1487,42 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		}
 	}
 
-	// Compare true vs false responses for differential behavior (using lengthDifferenceThresholdPct constant)
+	// Adaptive thresholds based on baseline characteristics
+	isSmallResponse := baseline.BodyLength < smallResponseSizeThreshold
+	hasFewStructuralElements := trueResp.StructuralElements < fewStructuralElementsLimit || falseResp.StructuralElements < fewStructuralElementsLimit
+	hasLowWordCount := trueResp.WordCount < minWordCountForPercentage || falseResp.WordCount < minWordCountForPercentage
+
+	// Adjust thresholds for small responses or pages with few elements
+	adaptiveLengthThreshold := lengthDifferenceThresholdPct
+	adaptiveWordCountThreshold := minWordCountDifference
+
+	if isSmallResponse || hasFewStructuralElements {
+		// For small responses, use more sensitive thresholds
+		adaptiveLengthThreshold = 5 // 5% for small responses
+		adaptiveWordCountThreshold = 2 // 2 words minimum
+	}
+
+	// For very low word counts, use absolute difference instead of percentage
+	if hasLowWordCount {
+		adaptiveWordCountThreshold = 1 // Any word difference is significant
+	}
+
+	// Compare true vs false responses for differential behavior (using adaptive threshold)
 	lengthDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
 	statusDiff := trueResp.StatusCode != falseResp.StatusCode
-	lengthDiffersSignificantly := lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/lengthDifferenceThresholdPct
+	lengthDiffersSignificantly := lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/adaptiveLengthThreshold
 
-	// Content-based differential analysis using defined thresholds
+	// Content-based differential analysis using adaptive thresholds
 	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
 	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
+	wordCountDiffersSignificantly := wordCountDiff >= adaptiveWordCountThreshold
 	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
 	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
+
+	// Detect "no results" vs "has results" pattern (common in DVWA)
+	trueHasResults := hasResultsData(trueResp.Body, trueResp.StructuralElements)
+	falseHasResults := hasResultsData(falseResp.Body, falseResp.StructuralElements)
+	resultsPatternDiffers := trueHasResults != falseHasResults
 
 	// Build evidence message with all detection methods
 	var detectionMethods []string
@@ -1427,6 +1554,17 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 	if structuralDiffersSignificantly {
 		detectionMethods = append(detectionMethods, fmt.Sprintf("structural elements differ (true: %d, false: %d, diff: %d elements)", trueResp.StructuralElements, falseResp.StructuralElements, structuralDiff))
 		detectedVulnerability = true
+	}
+
+	// Check for "no results" vs "has results" pattern (DVWA-style detection)
+	if resultsPatternDiffers {
+		if trueHasResults && !falseHasResults {
+			detectionMethods = append(detectionMethods, "true condition returns data while false returns no results (classic boolean SQLi)")
+			detectedVulnerability = true
+		} else if !trueHasResults && falseHasResults {
+			detectionMethods = append(detectionMethods, "false condition returns data while true returns no results (inverted boolean SQLi)")
+			detectedVulnerability = true
+		}
 	}
 
 	// If true and false produce different responses, it's likely SQL injection
