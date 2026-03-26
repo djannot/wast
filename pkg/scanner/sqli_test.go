@@ -2000,3 +2000,167 @@ func TestSQLiScanner_AdaptiveThresholds_VeryFewWords(t *testing.T) {
 		t.Error("Expected to find SQL injection with minimal word count differences")
 	}
 }
+
+// TestSQLiScanner_DVWA_EnhancedDetection tests the enhanced detection with various DVWA response patterns
+func TestSQLiScanner_DVWA_EnhancedDetection(t *testing.T) {
+	tests := []struct {
+		name            string
+		baselineHTML    string
+		trueHTML        string
+		falseHTML       string
+		shouldDetect    bool
+		detectionReason string
+	}{
+		{
+			name: "DVWA table with data rows - true has more rows",
+			baselineHTML: `<html><body>
+				<table>
+					<tr><td>ID</td><td>Name</td></tr>
+					<tr><td>1</td><td>admin</td></tr>
+				</table>
+			</body></html>`,
+			trueHTML: `<html><body>
+				<table>
+					<tr><td>ID</td><td>Name</td></tr>
+					<tr><td>1</td><td>admin</td></tr>
+					<tr><td>2</td><td>user</td></tr>
+					<tr><td>3</td><td>guest</td></tr>
+				</table>
+			</body></html>`,
+			falseHTML: `<html><body>
+				<table>
+					<tr><td>ID</td><td>Name</td></tr>
+				</table>
+			</body></html>`,
+			shouldDetect:    true,
+			detectionReason: "structural elements differ (true has 3 data rows, false has 0)",
+		},
+		{
+			name: "DVWA with pre tags - true has data, false empty",
+			baselineHTML: `<html><body>
+				<pre>ID: 1
+First name: admin
+Surname: admin</pre>
+			</body></html>`,
+			trueHTML: `<html><body>
+				<pre>ID: 1
+First name: admin
+Surname: admin
+
+ID: 2
+First name: Gordon
+Surname: Brown
+
+ID: 3
+First name: Hack
+Surname: Me</pre>
+			</body></html>`,
+			falseHTML: `<html><body>
+				<pre></pre>
+			</body></html>`,
+			shouldDetect:    true,
+			detectionReason: "word count differs significantly and results pattern differs",
+		},
+		{
+			name:            "DVWA minimal response - just table headers vs data",
+			baselineHTML:    `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr></table></body></html>`,
+			trueHTML:        `<html><body><table><tr><th>User</th></tr><tr><td>admin</td></tr><tr><td>user1</td></tr><tr><td>user2</td></tr></table></body></html>`,
+			falseHTML:       `<html><body><table><tr><th>User</th></tr></table></body></html>`,
+			shouldDetect:    true,
+			detectionReason: "false has empty table (headers only), true has data",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockSQLiHTTPClient()
+
+			mock.responses["https://dvwa.local/sqli?id=1"] = &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(tt.baselineHTML)),
+				Header:     make(http.Header),
+			}
+
+			mock.differentialResponse = true
+			mock.trueResponse = tt.trueHTML
+			mock.falseResponse = tt.falseHTML
+
+			scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+			ctx := context.Background()
+			result := scanner.Scan(ctx, "https://dvwa.local/sqli?id=1")
+
+			if result == nil {
+				t.Fatal("Scan returned nil result")
+			}
+
+			if tt.shouldDetect && result.Summary.VulnerabilitiesFound == 0 {
+				t.Errorf("Expected to detect SQL injection (%s), but found none", tt.detectionReason)
+				t.Logf("Total tests: %d", result.Summary.TotalTests)
+			} else if !tt.shouldDetect && result.Summary.VulnerabilitiesFound > 0 {
+				t.Errorf("Expected no detection, but found %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+			}
+
+			if tt.shouldDetect && len(result.Findings) > 0 {
+				t.Logf("Detection evidence: %s", result.Findings[0].Evidence)
+				t.Logf("Confidence: %s", result.Findings[0].Confidence)
+			}
+		})
+	}
+}
+
+// TestSQLiScanner_hasResultsData_EnhancedDetection tests the enhanced hasResultsData function
+func TestSQLiScanner_hasResultsData_EnhancedDetection(t *testing.T) {
+	tests := []struct {
+		name               string
+		body               string
+		structuralElements int
+		expectedHasResults bool
+	}{
+		{
+			name:               "DVWA table with data",
+			body:               `<table><tr><td>1</td><td>admin</td></tr></table>`,
+			structuralElements: 1,
+			expectedHasResults: true,
+		},
+		{
+			name:               "DVWA empty table (headers only)",
+			body:               `<table><tr><th>ID</th><th>Name</th></tr></table>`,
+			structuralElements: 1,
+			expectedHasResults: false,
+		},
+		{
+			name:               "DVWA pre tag with data",
+			body:               `<pre>ID: 1\nFirst name: admin\nSurname: admin</pre>`,
+			structuralElements: 0,
+			expectedHasResults: true,
+		},
+		{
+			name:               "DVWA empty pre tag",
+			body:               `<pre></pre>`,
+			structuralElements: 0,
+			expectedHasResults: false,
+		},
+		{
+			name:               "Response with no results text",
+			body:               `<div>No user found</div>`,
+			structuralElements: 0,
+			expectedHasResults: false,
+		},
+		{
+			name:               "Response with multiple structural elements",
+			body:               `<div><ul><li>User 1</li><li>User 2</li></ul></div>`,
+			structuralElements: 3,
+			expectedHasResults: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasResultsData(tt.body, tt.structuralElements)
+			if result != tt.expectedHasResults {
+				t.Errorf("hasResultsData() = %v, expected %v", result, tt.expectedHasResults)
+			}
+		})
+	}
+}
