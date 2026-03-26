@@ -16,6 +16,24 @@ import (
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/html"
+)
+
+const (
+	// maxResponseSize is the maximum response size to analyze (10MB) to prevent memory exhaustion
+	maxResponseSize = 10 * 1024 * 1024
+
+	// Content-based detection thresholds
+	minWordCountDifference         = 5  // Minimum word count difference to consider significant
+	minStructuralElementDifference = 1  // Minimum structural element difference to consider significant
+	lengthDifferenceThresholdPct   = 20 // Minimum percentage difference in length to consider significant
+)
+
+// Pre-compiled regex patterns for structural element counting (performance optimization)
+var (
+	trRegex  = regexp.MustCompile(`(?i)<tr[^>]*>`)
+	liRegex  = regexp.MustCompile(`(?i)<li[^>]*>`)
+	divRegex = regexp.MustCompile(`(?i)<div[^>]*class=['"][^'"]*(?:item|row|entry|record|result)[^'"]*['"][^>]*>`)
 )
 
 // SQLiScanner performs active SQL injection vulnerability detection.
@@ -696,9 +714,122 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 
 // responseCharacteristics holds response data for comparison
 type responseCharacteristics struct {
-	StatusCode int
-	BodyLength int
-	Body       string
+	StatusCode         int
+	BodyLength         int
+	Body               string
+	ContentHash        string // MD5 hash of extracted body content
+	WordCount          int    // Number of words in the response
+	StructuralElements int    // Count of structural HTML elements (tr, li, etc.)
+}
+
+// extractBodyContent strips non-content elements and extracts meaningful text from HTML
+// Uses golang.org/x/net/html parser to avoid ReDoS vulnerabilities from regex patterns
+func extractBodyContent(htmlStr string) string {
+	// Limit input size to prevent memory exhaustion
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
+	}
+
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		// If parsing fails, fall back to simple whitespace normalization
+		return strings.Join(strings.Fields(htmlStr), " ")
+	}
+
+	var textBuilder strings.Builder
+	var extractText func(*html.Node)
+
+	extractText = func(n *html.Node) {
+		// Skip script and style elements entirely
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style") {
+			return
+		}
+
+		// Extract text from text nodes
+		if n.Type == html.TextNode {
+			text := strings.TrimSpace(n.Data)
+			if text != "" {
+				if textBuilder.Len() > 0 {
+					textBuilder.WriteString(" ")
+				}
+				textBuilder.WriteString(text)
+			}
+		}
+
+		// Recursively process child nodes
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			extractText(c)
+		}
+	}
+
+	extractText(doc)
+
+	// Normalize whitespace
+	content := strings.Join(strings.Fields(textBuilder.String()), " ")
+	return content
+}
+
+// computeContentHash calculates MD5 hash of extracted body content
+// Note: MD5 is intentionally used here for performance in a non-cryptographic context.
+// This is for content fingerprinting/comparison only, not security or authentication.
+func computeContentHash(html string) string {
+	content := extractBodyContent(html)
+	hash := md5.Sum([]byte(content))
+	return fmt.Sprintf("%x", hash)
+}
+
+// countWords counts the number of words in the response body
+func countWords(body string) int {
+	content := extractBodyContent(body)
+	if content == "" {
+		return 0
+	}
+	return len(strings.Fields(content))
+}
+
+// countStructuralElements counts HTML elements that typically contain data rows
+// Uses pre-compiled regex patterns for performance
+func countStructuralElements(htmlStr string) int {
+	// Limit input size to prevent excessive processing
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
+	}
+
+	count := 0
+
+	// Count table rows using pre-compiled regex
+	count += len(trRegex.FindAllString(htmlStr, -1))
+
+	// Count list items using pre-compiled regex
+	count += len(liRegex.FindAllString(htmlStr, -1))
+
+	// Count divs with common data classes using pre-compiled regex
+	count += len(divRegex.FindAllString(htmlStr, -1))
+
+	return count
+}
+
+// analyzeResponse extracts all characteristics from a response
+// Optimized to extract body content only once
+func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int) {
+	// Extract content once and reuse for both hash and word count
+	extractedContent := extractBodyContent(body)
+
+	// Compute hash from extracted content
+	hash := md5.Sum([]byte(extractedContent))
+	contentHash = fmt.Sprintf("%x", hash)
+
+	// Count words from extracted content
+	if extractedContent == "" {
+		wordCount = 0
+	} else {
+		wordCount = len(strings.Fields(extractedContent))
+	}
+
+	// Count structural elements from raw HTML (needs tags)
+	structuralElements = countStructuralElements(body)
+
+	return
 }
 
 // makeRequest is a helper to make a request with a specific payload
@@ -735,10 +866,16 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 		return nil, err
 	}
 
+	bodyStr := string(body)
+	contentHash, wordCount, structuralElements := analyzeResponse(bodyStr)
+
 	return &responseCharacteristics{
-		StatusCode: resp.StatusCode,
-		BodyLength: len(body),
-		Body:       string(body),
+		StatusCode:         resp.StatusCode,
+		BodyLength:         len(body),
+		Body:               bodyStr,
+		ContentHash:        contentHash,
+		WordCount:          wordCount,
+		StructuralElements: structuralElements,
 	}, nil
 }
 
@@ -780,10 +917,16 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 		return nil, err
 	}
 
+	bodyStr := string(body)
+	contentHash, wordCount, structuralElements := analyzeResponse(bodyStr)
+
 	return &responseCharacteristics{
-		StatusCode: resp.StatusCode,
-		BodyLength: len(body),
-		Body:       string(body),
+		StatusCode:         resp.StatusCode,
+		BodyLength:         len(body),
+		Body:               bodyStr,
+		ContentHash:        contentHash,
+		WordCount:          wordCount,
+		StructuralElements: structuralElements,
 	}, nil
 }
 
@@ -912,8 +1055,8 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	statusDiffers := trueResp.StatusCode != falseResp.StatusCode
 	lengthDiffersSignificantly := false
 
-	// True and false should differ from each other
-	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/20 {
+	// True and false should differ from each other (using lengthDifferenceThresholdPct constant)
+	if baseline.BodyLength > 0 && trueFalseDiff > baseline.BodyLength/lengthDifferenceThresholdPct {
 		lengthDiffersSignificantly = true
 	}
 
@@ -923,12 +1066,59 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		baselineDiffers = true
 	}
 
-	// For high confidence: true/false must behave differently AND one must differ from baseline
-	if (statusDiffers || lengthDiffersSignificantly) && (baselineDiffers || statusDiffers) {
-		confidence = "high"
-		evidenceMsg := fmt.Sprintf("Differential analysis: true condition returned %d bytes (status %d), false condition returned %d bytes (status %d), baseline was %d bytes (status %d)",
-			trueResp.BodyLength, trueResp.StatusCode,
-			falseResp.BodyLength, falseResp.StatusCode,
+	// Content-based differential analysis using defined thresholds
+	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
+	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
+	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
+	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
+	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
+
+	// Build evidence message with all detection methods
+	var detectionMethods []string
+	detectedVulnerability := false
+
+	if statusDiffers {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("status code differs (true: %d, false: %d)", trueResp.StatusCode, falseResp.StatusCode))
+		detectedVulnerability = true
+	}
+
+	if lengthDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("response length differs significantly (true: %d, false: %d, diff: %d bytes)", trueResp.BodyLength, falseResp.BodyLength, trueFalseDiff))
+		detectedVulnerability = true
+	}
+
+	if contentHashDiffers {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("content hash differs (indicating different content)"))
+		// Content hash difference with word count or structural difference indicates SQLi
+		if wordCountDiffersSignificantly || structuralDiffersSignificantly {
+			detectedVulnerability = true
+		}
+	}
+
+	if wordCountDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("word count differs (true: %d, false: %d, diff: %d words)", trueResp.WordCount, falseResp.WordCount, wordCountDiff))
+		detectedVulnerability = true
+	}
+
+	if structuralDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("structural elements differ (true: %d, false: %d, diff: %d elements)", trueResp.StructuralElements, falseResp.StructuralElements, structuralDiff))
+		detectedVulnerability = true
+	}
+
+	// For high confidence: true/false must behave differently via multiple methods
+	// OR show strong content-based differences
+	if detectedVulnerability {
+		// Determine confidence based on detection method strength
+		if statusDiffers || (lengthDiffersSignificantly && baselineDiffers) {
+			confidence = "high"
+		} else if contentHashDiffers && (wordCountDiffersSignificantly || structuralDiffersSignificantly) {
+			confidence = "high"
+		} else {
+			confidence = "medium"
+		}
+
+		evidenceMsg := fmt.Sprintf("Differential analysis detected SQL injection via: %s. Baseline: %d bytes (status %d)",
+			strings.Join(detectionMethods, "; "),
 			baseline.BodyLength, baseline.StatusCode)
 
 		return &SQLiFinding{
@@ -1195,15 +1385,63 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		}
 	}
 
-	// Compare true vs false responses for differential behavior
+	// Compare true vs false responses for differential behavior (using lengthDifferenceThresholdPct constant)
 	lengthDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
 	statusDiff := trueResp.StatusCode != falseResp.StatusCode
+	lengthDiffersSignificantly := lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/lengthDifferenceThresholdPct
+
+	// Content-based differential analysis using defined thresholds
+	contentHashDiffers := trueResp.ContentHash != falseResp.ContentHash
+	wordCountDiff := abs(trueResp.WordCount - falseResp.WordCount)
+	wordCountDiffersSignificantly := wordCountDiff > minWordCountDifference
+	structuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
+	structuralDiffersSignificantly := structuralDiff >= minStructuralElementDifference
+
+	// Build evidence message with all detection methods
+	var detectionMethods []string
+	detectedVulnerability := false
+
+	if statusDiff {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("status code differs (true: %d, false: %d)", trueResp.StatusCode, falseResp.StatusCode))
+		detectedVulnerability = true
+	}
+
+	if lengthDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("response length differs significantly (true: %d, false: %d, diff: %d bytes)", trueResp.BodyLength, falseResp.BodyLength, lengthDiff))
+		detectedVulnerability = true
+	}
+
+	if contentHashDiffers {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("content hash differs (indicating different content)"))
+		// Content hash difference with word count or structural difference indicates SQLi
+		if wordCountDiffersSignificantly || structuralDiffersSignificantly {
+			detectedVulnerability = true
+		}
+	}
+
+	if wordCountDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("word count differs (true: %d, false: %d, diff: %d words)", trueResp.WordCount, falseResp.WordCount, wordCountDiff))
+		detectedVulnerability = true
+	}
+
+	if structuralDiffersSignificantly {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("structural elements differ (true: %d, false: %d, diff: %d elements)", trueResp.StructuralElements, falseResp.StructuralElements, structuralDiff))
+		detectedVulnerability = true
+	}
 
 	// If true and false produce different responses, it's likely SQL injection
-	if statusDiff || (lengthDiff > 0 && baseline.BodyLength > 0 && lengthDiff > baseline.BodyLength/20) {
-		confidence = "high"
-		evidenceMsg := fmt.Sprintf("Differential analysis: true condition (length=%d, status=%d) differs from false condition (length=%d, status=%d)",
-			trueResp.BodyLength, trueResp.StatusCode, falseResp.BodyLength, falseResp.StatusCode)
+	if detectedVulnerability {
+		// Determine confidence based on detection method strength
+		if statusDiff || lengthDiffersSignificantly {
+			confidence = "high"
+		} else if contentHashDiffers && (wordCountDiffersSignificantly || structuralDiffersSignificantly) {
+			confidence = "high"
+		} else {
+			confidence = "medium"
+		}
+
+		evidenceMsg := fmt.Sprintf("Differential analysis detected SQL injection via: %s",
+			strings.Join(detectionMethods, "; "))
 
 		return &SQLiFinding{
 			URL:         baseURL.String(),
