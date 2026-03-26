@@ -426,7 +426,7 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	// Both return ContextHTMLBody for consistency, though detailed analysis may refine
 	// to ContextHTMLAttribute if the payload is detected as an attribute value.
 	if (strings.Contains(payload, "onerror") || strings.Contains(payload, "onload")) &&
-	   (strings.Contains(payload, "<img") || strings.Contains(payload, "<svg")) {
+		(strings.Contains(payload, "<img") || strings.Contains(payload, "<svg")) {
 		return ContextHTMLBody, true, "high"
 	}
 	// iframe with javascript: protocol is also highly suspicious
