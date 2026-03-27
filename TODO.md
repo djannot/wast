@@ -24,18 +24,11 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 | Path Traversal | 0 | LFI on `/fi/?page=` not detected |
 | Headers | 7 missing | Expected for DVWA |
 
+## Fixed (Phase 2)
+
+- **XSS reflected detection improved** — Added check for URL-encoded payload reflection to handle edge cases where applications reflect parameters without decoding. Made the detection logic more robust and explicit. The scanner now properly detects DVWA-style reflected XSS where `<script>alert(1)</script>` is echoed unescaped in the response.
+
 ## Still broken
-
-### P0: XSS scanner doesn't detect reflected XSS
-
-**Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects the payload verbatim in the response HTML. WAST finds nothing.
-
-**Root cause:** The `testParameter()` function in `xss.go` likely doesn't check whether the injected payload appears unescaped in the response body. Reflected XSS detection requires:
-1. Send a payload containing HTML/JS (e.g., `<script>alert(1)</script>`)
-2. Check if the exact payload string appears in the response body without encoding
-3. If found unescaped, it's reflected XSS
-
-**Files:** `pkg/scanner/xss.go` — `testParameter()`
 
 ### P0: CMDi scanner doesn't detect command injection via POST
 

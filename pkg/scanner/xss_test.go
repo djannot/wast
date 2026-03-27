@@ -2715,3 +2715,100 @@ func TestXSSScanner_Scan_PayloadInUnclosedComment(t *testing.T) {
 		}
 	}
 }
+
+// TestXSSScanner_Issue182_DVWAReflectedXSS tests the fix for GitHub issue #182.
+// This test verifies that the scanner detects reflected XSS on DVWA's /vulnerabilities/xss_r/
+// endpoint where the payload is reflected verbatim without encoding.
+func TestXSSScanner_Issue182_DVWAReflectedXSS(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Simulate DVWA's actual response format for the reflected XSS vulnerability
+	// The payload <script>alert(1)</script> is reflected unescaped in a <pre> tag
+	dvwaResponse := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Vulnerability: Reflected Cross Site Scripting (XSS) :: DVWA</title>
+</head>
+<body class="home">
+<div id="main_body">
+<h1>Vulnerability: Reflected Cross Site Scripting (XSS)</h1>
+<div class="vulnerable_code_area">
+<form name="XSS" action="#" method="GET">
+<p>
+What's your name?
+<input type="text" name="name">
+<input type="submit" value="Submit">
+</p>
+</form>
+<pre>Hello <script>alert(1)</script></pre>
+</div>
+</div>
+</body>
+</html>`
+
+	// The scanner URL-encodes the payload: <script>alert(1)</script> -> %3Cscript%3Ealert%281%29%3C%2Fscript%3E
+	encodedURL := "http://localhost:8080/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://localhost:8080/vulnerabilities/xss_r/?name=test")
+
+	// Critical assertion: the scanner MUST detect this vulnerability
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("FAILED to detect DVWA reflected XSS (Issue #182) - this is a P0 bug")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Findings: %d", len(result.Findings))
+		return
+	}
+
+	// Verify we have findings
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected findings but got none")
+	}
+
+	// Find the <script>alert(1)</script> finding specifically
+	var scriptFinding *XSSFinding
+	for i := range result.Findings {
+		if result.Findings[i].Payload == "<script>alert(1)</script>" {
+			scriptFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if scriptFinding == nil {
+		t.Fatal("Expected to find <script>alert(1)</script> payload but didn't")
+	}
+
+	// Verify the finding details match expected behavior
+	if scriptFinding.Parameter != "name" {
+		t.Errorf("Expected parameter 'name', got %s", scriptFinding.Parameter)
+	}
+
+	if scriptFinding.Type != "reflected" {
+		t.Errorf("Expected type 'reflected', got %s", scriptFinding.Type)
+	}
+
+	if scriptFinding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, scriptFinding.Severity)
+	}
+
+	// CRITICAL: Verbatim unescaped <script> tag reflection should have HIGH confidence
+	if scriptFinding.Confidence != "high" {
+		t.Errorf("Expected confidence 'high' for unescaped script tag reflection (DVWA-style), got %s", scriptFinding.Confidence)
+	}
+
+	t.Logf("✓ Successfully detected DVWA reflected XSS (Issue #182)")
+	t.Logf("  Parameter: %s", scriptFinding.Parameter)
+	t.Logf("  Payload: %s", scriptFinding.Payload)
+	t.Logf("  Severity: %s", scriptFinding.Severity)
+	t.Logf("  Confidence: %s", scriptFinding.Confidence)
+	t.Logf("  Evidence: %s", scriptFinding.Evidence)
+}
