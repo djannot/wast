@@ -584,6 +584,26 @@ func (s *PathTraversalScanner) analyzePathTraversalResponse(resp *http.Response,
 
 // containsPasswdSignature checks if response contains Unix passwd file signatures.
 func containsPasswdSignature(body string) bool {
+	// First check for highly specific passwd signatures (root, daemon, etc.)
+	// These are strong indicators even with a single match
+	specificSignatures := []*regexp.Regexp{
+		regexp.MustCompile(`root:x:0:0:`),       // Root user (UID 0)
+		regexp.MustCompile(`daemon:x:1:1:`),     // Daemon user (UID 1)
+		regexp.MustCompile(`bin:x:2:2:`),        // Bin user (UID 2)
+		regexp.MustCompile(`sys:x:3:3:`),        // Sys user (UID 3)
+		regexp.MustCompile(`nobody:x:`),         // Nobody user
+		regexp.MustCompile(`www-data:x:`),       // Web server user (common on Debian/Ubuntu)
+		regexp.MustCompile(`apache:x:`),         // Web server user (common on RedHat)
+		regexp.MustCompile(`nginx:x:`),          // Web server user
+	}
+
+	for _, pattern := range specificSignatures {
+		if pattern.MatchString(body) {
+			return true
+		}
+	}
+
+	// Fall back to counting generic passwd-style entries
 	// Look for typical /etc/passwd patterns - count unique lines
 	// Split by newlines and check each line
 	lines := strings.Split(body, "\n")
@@ -598,8 +618,9 @@ func containsPasswdSignature(body string) bool {
 		}
 	}
 
-	// If we find multiple passwd-style entries, it's likely /etc/passwd
-	return matchedLines >= 2
+	// Lower threshold to 1 to catch partial file reads (e.g., DVWA LFI)
+	// The specific signatures above provide better confidence for single-line matches
+	return matchedLines >= 1
 }
 
 // containsShadowSignature checks if response contains Unix shadow file signatures.
