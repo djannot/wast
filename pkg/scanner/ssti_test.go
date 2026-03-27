@@ -672,7 +672,6 @@ func TestGetRemediation(t *testing.T) {
 	}
 }
 
-
 func TestSSTIScan_NoFalsePositiveWhenResultInBaseline(t *testing.T) {
 	mockClient := &MockSSTIHTTPClient{
 		responses: make(map[string]string),

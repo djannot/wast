@@ -453,7 +453,6 @@ func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, 
 	return false
 }
 
-
 // calculateConfidence determines the confidence level of the finding.
 func (s *SSTIScanner) calculateConfidence(body string, payload sstiPayload) string {
 	// High confidence if expected result is found and payload is not visible
