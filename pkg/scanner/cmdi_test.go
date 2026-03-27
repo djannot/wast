@@ -693,3 +693,205 @@ func TestCMDiScanner_Options(t *testing.T) {
 		t.Errorf("Expected time-based delay 10s, got %v", scanner.timeBasedDelay)
 	}
 }
+
+func TestCMDiScanner_OutputBasedDetection_Unix(t *testing.T) {
+	mockClient := &mockCMDiHTTPClient{
+		responses: map[string]*mockCMDiResponse{
+			"http://example.com/test?ip=test": {
+				statusCode: 200,
+				body:       "Normal response without command output",
+			},
+			"http://example.com/test?ip=127.0.0.1%3B+id": {
+				statusCode: 200,
+				body:       "uid=33(www-data) gid=33(www-data) groups=33(www-data)",
+			},
+			"http://example.com/test?ip=127.0.0.1+%26%26+whoami": {
+				statusCode: 200,
+				body:       "www-data",
+			},
+			"http://example.com/test?ip=test%3B+whoami": {
+				statusCode: 200,
+				body:       "uid=1000(testuser) gid=1000(testuser)",
+			},
+		},
+	}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/test?ip=test")
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should detect output-based command injection
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" && finding.OSType == "unix" {
+			foundOutputBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected confidence high, got %s", finding.Confidence)
+			}
+			if finding.Evidence == "" {
+				t.Error("Expected evidence to be captured")
+			}
+			// Check that the payload contains command injection patterns
+			if !strings.Contains(finding.Payload, "id") && !strings.Contains(finding.Payload, "whoami") {
+				t.Errorf("Expected payload to contain command, got %s", finding.Payload)
+			}
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based Unix command injection vulnerability")
+	}
+}
+
+func TestCMDiScanner_OutputBasedDetection_Windows(t *testing.T) {
+	mockClient := &mockCMDiHTTPClient{
+		responses: map[string]*mockCMDiResponse{
+			"http://example.com/test?cmd=test": {
+				statusCode: 200,
+				body:       "Normal response",
+			},
+			"http://example.com/test?cmd=127.0.0.1+%26+whoami": {
+				statusCode: 200,
+				body:       "NT AUTHORITY\\SYSTEM",
+			},
+			"http://example.com/test?cmd=test+%26+whoami": {
+				statusCode: 200,
+				body:       "BUILTIN\\Administrators",
+			},
+		},
+	}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/test?cmd=test")
+
+	// Should detect output-based Windows command injection
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" && finding.OSType == "windows" {
+			foundOutputBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			if finding.Evidence == "" {
+				t.Error("Expected evidence to be captured")
+			}
+			// Evidence should contain Windows-specific patterns
+			if !strings.Contains(finding.Evidence, "NT AUTHORITY") && !strings.Contains(finding.Evidence, "BUILTIN") {
+				t.Errorf("Expected Windows-specific evidence, got %s", finding.Evidence)
+			}
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based Windows command injection vulnerability")
+	}
+}
+
+func TestCMDiScanner_OutputBasedDetectionPOST(t *testing.T) {
+	// Create a custom mock client for POST testing
+	mockClient := &mockCMDiHTTPClientPOST{}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	params := map[string]string{
+		"ip": "127.0.0.1",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://example.com/exec", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should detect output-based command injection in POST
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" {
+			foundOutputBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected confidence high, got %s", finding.Confidence)
+			}
+			if finding.Evidence == "" {
+				t.Error("Expected evidence to be captured")
+			}
+			// Verify the evidence contains command output patterns
+			if !strings.Contains(finding.Evidence, "uid=") && !strings.Contains(finding.Evidence, "gid=") {
+				t.Errorf("Expected evidence to contain command output, got %s", finding.Evidence)
+			}
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based command injection vulnerability in POST")
+	}
+}
+
+// mockCMDiHTTPClientPOST is a custom mock for POST testing with output-based detection
+type mockCMDiHTTPClientPOST struct{}
+
+func (m *mockCMDiHTTPClientPOST) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		// Read the form data
+		body, _ := io.ReadAll(req.Body)
+		formData := string(body)
+
+		// Check if the payload contains command injection
+		if strings.Contains(formData, "127.0.0.1%3B+id") || strings.Contains(formData, "127.0.0.1;+id") ||
+			strings.Contains(formData, "127.0.0.1%3B%20id") {
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader("uid=33(www-data) gid=33(www-data) groups=33(www-data)")),
+			}, nil
+		}
+		if strings.Contains(formData, "test+%26%26+whoami") || strings.Contains(formData, "test+&&+whoami") ||
+			strings.Contains(formData, "test%26%26whoami") {
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader("uid=1000(testuser) gid=1000(testuser)")),
+			}, nil
+		}
+
+		// Default response for baseline
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("Normal response")),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("OK")),
+	}, nil
+}
+
+func TestCMDiScanner_OutputBasedDetection_NoDifferential(t *testing.T) {
+	// Test that output patterns in baseline don't trigger false positives
+	mockClient := &mockCMDiHTTPClient{
+		responses: map[string]*mockCMDiResponse{
+			"http://example.com/test?user=test": {
+				statusCode: 200,
+				body:       "User info: uid=1000(testuser) gid=1000(testuser) - this is legitimate content",
+			},
+			"http://example.com/test?user=127.0.0.1%3B+id": {
+				statusCode: 200,
+				body:       "User info: uid=1000(testuser) gid=1000(testuser) - this is legitimate content",
+			},
+		},
+	}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/test?user=test")
+
+	// Should NOT detect false positives when output pattern exists in baseline
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" {
+			t.Errorf("Found false positive output-based detection: %v", finding)
+		}
+	}
+}
