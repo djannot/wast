@@ -29,7 +29,7 @@ wast --mcp --telemetry-endpoint localhost:4317
 
 ## MCP Tools Reference
 
-WAST provides 7 MCP tools for security testing. All tools respect WAST's safe mode defaults.
+WAST provides 8 MCP tools for security testing. All tools respect WAST's safe mode defaults.
 
 ### 1. wast_recon - Reconnaissance
 
@@ -517,6 +517,87 @@ Verify individual security findings before reporting them. Re-tests findings wit
       {
         "type": "text",
         "text": "{\"finding_type\":\"xss\",\"finding_url\":\"https://example.com/search\",\"parameter\":\"q\",\"original_payload\":\"<script>alert(1)</script>\",\"verified\":true,\"confidence\":\"high\",\"attempts\":2,\"verification_details\":{\"payload_variants_tested\":3,\"successful_variants\":2,\"response_indicators\":[\"payload reflected in response\",\"no encoding applied\"]},\"recommendation\":\"Implement proper output encoding and Content Security Policy\"}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 8. wast_websocket - WebSocket Security Scanning
+
+Perform WebSocket security scanning on a target. Detects WebSocket endpoints and scans for security issues including insecure protocols (ws:// vs wss://) and missing origin validation (CSWSH). Defaults to passive mode.
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `target` | string | Yes | - | Target URL to scan for WebSocket endpoints |
+| `active` | boolean | No | false | Enable active testing for origin validation (CSWSH detection) |
+| `timeout` | integer | No | 30 | HTTP request timeout in seconds |
+| `bearer_token` | string | No | - | Bearer token for Authorization header |
+| `basic_auth` | string | No | - | Basic auth credentials in format 'user:pass' |
+| `auth_header` | string | No | - | Custom auth header in format 'HeaderName: Value' |
+| `cookies` | array[string] | No | - | Cookies to include in requests (format: 'name=value') |
+| `requests_per_second` | number | No | 0 | Rate limit for requests per second (0 for unlimited) |
+
+*Note: Unlike some other tools, `wast_websocket` does NOT support login flow parameters. Use static authentication (tokens, cookies) instead.*
+
+#### Security Checks Performed
+
+- **Insecure Protocol Detection**: Identifies WebSocket endpoints using unencrypted `ws://` protocol instead of secure `wss://`
+- **Cross-Site WebSocket Hijacking (CSWSH)**: In active mode, tests for missing origin validation that could allow attackers to hijack WebSocket connections
+
+#### JSON-RPC Request Example (Passive Mode)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "tools/call",
+  "params": {
+    "name": "wast_websocket",
+    "arguments": {
+      "target": "https://example.com",
+      "timeout": 30,
+      "bearer_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  }
+}
+```
+
+#### JSON-RPC Request Example (Active Mode)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "wast_websocket",
+    "arguments": {
+      "target": "https://example.com",
+      "active": true,
+      "timeout": 60,
+      "bearer_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "cookies": ["session=abc123"]
+    }
+  }
+}
+```
+
+#### Expected Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"target\":\"https://example.com\",\"endpoints\":[{\"url\":\"ws://example.com/chat\",\"protocol\":\"ws\",\"page\":\"https://example.com/chat\",\"issues\":[{\"severity\":\"high\",\"type\":\"insecure_protocol\",\"message\":\"WebSocket connection uses insecure ws:// protocol\",\"remediation\":\"Use wss:// (WebSocket Secure) instead of ws:// to encrypt WebSocket traffic\"}]},{\"url\":\"wss://example.com/notifications\",\"protocol\":\"wss\",\"page\":\"https://example.com/dashboard\",\"issues\":[]}],\"findings\":[{\"severity\":\"high\",\"endpoint\":\"ws://example.com/chat\",\"type\":\"insecure_protocol\",\"message\":\"Insecure WebSocket protocol detected\",\"cswsh_vulnerable\":false}],\"summary\":{\"total_endpoints\":2,\"insecure_endpoints\":1,\"cswsh_vulnerable\":0,\"high_severity\":1,\"medium_severity\":0,\"low_severity\":0}}"
       }
     ]
   }
