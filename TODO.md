@@ -59,10 +59,24 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 **Files:** `pkg/scanner/discovery.go`, `pkg/scanner/discovery_test.go`
 
-## Still broken
-
-### P3: Crawl output too large for MCP
+### P3: Crawl output too large for MCP (Issue #202) - FIXED
 
 **Impact:** `wast_crawl` output exceeded 465K characters due to 1,766 resource entries. Gets dumped to disk instead of returned via MCP.
 
-**Fix approach:** Add a compact mode for MCP that omits or summarizes the resources list. Or add pagination/filtering to the crawl output.
+**Root cause:** Full crawl results with all discovered resources, links, and metadata exceeded MCP message size limits, causing results to be written to disk instead of returned directly.
+
+**Fix:** Added compact mode for MCP crawl output that summarizes large data structures:
+- Resources: Summarized by type (total count + breakdown by type)
+- Links: Total count + sample of 10 URLs
+- Forms, robots rules, sitemap URLs, and errors are preserved completely
+- Compact mode is enabled by default (`compact=true`)
+
+**Implementation:**
+- `CompactCrawlResult` struct defines the compact output format
+- `compactCrawlResult()` function transforms large crawl results into compact format
+- Default `compact=true` in MCP server configuration
+- Comprehensive tests verify transformation, size reduction, and JSON marshaling
+
+**Files:** `internal/mcp/execute.go`, `internal/mcp/server.go`, `internal/mcp/execute_test.go`
+
+## Still broken
