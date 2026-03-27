@@ -93,6 +93,13 @@ var xssPayloads = []xssPayload{
 		Evidence:    "<script>alert('XSS')</script>",
 	},
 	{
+		Payload:     "<script>alert(1)</script>",
+		Type:        "reflected",
+		Severity:    SeverityHigh,
+		Description: "Unescaped script tag injection detected - allows arbitrary JavaScript execution",
+		Evidence:    "<script>alert(1)</script>",
+	},
+	{
 		Payload:     "<img src=x onerror=alert('XSS')>",
 		Type:        "reflected",
 		Severity:    SeverityHigh,
