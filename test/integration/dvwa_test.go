@@ -375,8 +375,11 @@ func TestDVWA_CommandInjection(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Now scan with POST
-	result := cmdiScanner.ScanPOST(ctx, targetURL, map[string]string{"ip": "127.0.0.1"})
+	// Now scan with POST - include Submit parameter as DVWA requires it
+	result := cmdiScanner.ScanPOST(ctx, targetURL, map[string]string{
+		"ip":     "127.0.0.1",
+		"Submit": "Submit",
+	})
 
 	if result == nil {
 		t.Fatal("Scan returned nil result")
@@ -384,14 +387,21 @@ func TestDVWA_CommandInjection(t *testing.T) {
 
 	t.Logf("CMDi scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
-	// Command injection detection can be tricky - log what we found
+	// We expect at least one command injection finding on the 'ip' parameter
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No command injection findings on /vulnerabilities/exec/")
-		t.Logf("This is a known limitation - CMDi detection may need tuning")
-		// Don't fail the test as this is documented in TODO.md as P0 issue
+		t.Error("Expected to find at least one command injection vulnerability on /vulnerabilities/exec/")
+		t.Logf("Tests performed: %d", result.Summary.TotalTests)
 	} else {
+		// Verify we found injection on the 'ip' parameter
+		foundIPParam := false
 		for _, finding := range result.Findings {
-			t.Logf("Found CMDi on parameter '%s' with confidence: %s", finding.Parameter, finding.Confidence)
+			t.Logf("Found CMDi on parameter '%s' with confidence: %s, type: %s", finding.Parameter, finding.Confidence, finding.Type)
+			if finding.Parameter == "ip" {
+				foundIPParam = true
+			}
+		}
+		if !foundIPParam {
+			t.Error("Expected to find command injection on 'ip' parameter")
 		}
 	}
 }

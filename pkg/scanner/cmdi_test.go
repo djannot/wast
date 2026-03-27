@@ -942,6 +942,127 @@ func TestCMDiScanner_DVWALikeExecPOST(t *testing.T) {
 // - Injected command (127.0.0.1; id) returns ping output + uid/gid info
 type mockDVWAExecHTTPClient struct{}
 
+// TestCMDiScanner_DVWALikeExecPOST_WithHTMLPageStructure tests that the scanner
+// correctly handles DVWA pages where the username might appear in the page header/footer
+// (e.g., "Logged in as www-data") and doesn't cause false negatives due to differential analysis.
+func TestCMDiScanner_DVWALikeExecPOST_WithHTMLPageStructure(t *testing.T) {
+	// Create a custom mock client that simulates DVWA with HTML page structure
+	mockClient := &mockDVWAExecHTMLHTTPClient{}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	params := map[string]string{
+		"ip":     "127.0.0.1",
+		"Submit": "Submit",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://localhost:8080/vulnerabilities/exec/", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should still detect output-based command injection even with HTML page structure
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" && finding.Parameter == "ip" {
+			foundOutputBased = true
+			t.Logf("Detected vulnerability despite HTML structure: payload=%s, evidence=%s", finding.Payload, finding.Evidence)
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based command injection on DVWA-like exec endpoint with HTML page structure")
+	}
+}
+
+// mockDVWAExecHTMLHTTPClient simulates DVWA's exec endpoint with realistic HTML page structure
+// that includes the username in the page header/footer (a potential source of false negatives).
+type mockDVWAExecHTMLHTTPClient struct{}
+
+func (m *mockDVWAExecHTMLHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		// Read the form data
+		body, _ := io.ReadAll(req.Body)
+		formData := string(body)
+
+		// HTML page structure that's common to all responses (header with username, footer, etc.)
+		htmlHeader := `<!DOCTYPE html>
+<html>
+<head><title>DVWA - Command Injection</title></head>
+<body>
+<div class="header">Logged in as: www-data | Security Level: low</div>
+<div class="main">
+<h1>Command Injection</h1>
+<form method="POST">
+Enter an IP address: <input name="ip" />
+<input type="submit" name="Submit" value="Submit" />
+</form>
+<pre>`
+
+		htmlFooter := `</pre>
+</div>
+<div class="footer">© DVWA Project | User: www-data</div>
+</body>
+</html>`
+
+		// Baseline: valid IP returns only ping output (no command output patterns)
+		if (strings.Contains(formData, "ip=127.0.0.1") || strings.Contains(formData, "ip=127.0.0.1")) &&
+			!strings.Contains(formData, "%3B") && !strings.Contains(formData, ";") &&
+			!strings.Contains(formData, "%26") && !strings.Contains(formData, "&") &&
+			!strings.Contains(formData, "%7C") && !strings.Contains(formData, "|") {
+			pingOutput := `PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.028/0.028/0.028/0.000 ms`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(htmlHeader + pingOutput + htmlFooter)),
+			}, nil
+		}
+
+		// Command injection: 127.0.0.1; whoami
+		if strings.Contains(formData, "whoami") && strings.Contains(formData, "127.0.0.1") {
+			cmdOutput := `PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.028/0.028/0.028/0.000 ms
+www-data`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(htmlHeader + cmdOutput + htmlFooter)),
+			}, nil
+		}
+
+		// Command injection: 127.0.0.1; id
+		if strings.Contains(formData, "id") && strings.Contains(formData, "127.0.0.1") {
+			cmdOutput := `PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.028/0.028/0.028/0.000 ms
+uid=33(www-data) gid=33(www-data) groups=33(www-data)`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(htmlHeader + cmdOutput + htmlFooter)),
+			}, nil
+		}
+
+		// Default baseline response
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(htmlHeader + "No output" + htmlFooter)),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("OK")),
+	}, nil
+}
+
 func (m *mockDVWAExecHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodPost {
 		// Read the form data
