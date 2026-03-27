@@ -197,6 +197,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	}
 	ssrfOpts := []SSRFOption{
 		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
+		WithSSRFOnlyProvidedParams(true), // Only test discovered parameters from crawl, don't invent parameters
 	}
 	redirectOpts := []RedirectOption{
 		WithRedirectTimeout(time.Duration(cfg.Timeout) * time.Second),

@@ -20,12 +20,13 @@ import (
 
 // SSRFScanner performs active SSRF vulnerability detection.
 type SSRFScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	client             HTTPClient
+	userAgent          string
+	timeout            time.Duration
+	authConfig         *auth.AuthConfig
+	rateLimiter        ratelimit.Limiter
+	tracer             trace.Tracer
+	OnlyProvidedParams bool // If true, only test parameters that exist in the URL (don't invent parameters)
 }
 
 // ssrfBaselineResponse stores characteristics of a baseline HTTP response
@@ -264,6 +265,15 @@ func WithSSRFTracer(tracer trace.Tracer) SSRFOption {
 	}
 }
 
+// WithSSRFOnlyProvidedParams sets whether to only test provided parameters.
+// When true, the scanner will not invent common parameter names when none exist.
+// This reduces false positives when scanning URLs without query parameters.
+func WithSSRFOnlyProvidedParams(only bool) SSRFOption {
+	return func(s *SSRFScanner) {
+		s.OnlyProvidedParams = only
+	}
+}
+
 // NewSSRFScanner creates a new SSRFScanner with the given options.
 func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
 	s := &SSRFScanner{
@@ -439,7 +449,14 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 	params := parsedURL.Query()
 
 	// If no query parameters exist, test with common parameter names
+	// UNLESS OnlyProvidedParams is set (to avoid false positives)
 	if len(params) == 0 {
+		if s.OnlyProvidedParams {
+			// Don't invent parameters - just return empty result
+			s.calculateSummary(result)
+			return result
+		}
+		// Invent common SSRF parameter names for testing
 		params.Set("url", "")
 		params.Set("uri", "")
 		params.Set("path", "")
@@ -534,6 +551,12 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	// Use provided parameters or fallback to common parameter names
 	params := parameters
 	if len(params) == 0 {
+		if s.OnlyProvidedParams {
+			// Don't invent parameters - just return empty result
+			s.calculateSummary(result)
+			return result
+		}
+		// Invent common SSRF parameter names for testing
 		params = map[string]string{
 			"url":      "",
 			"uri":      "",

@@ -1463,3 +1463,142 @@ func TestSSRFScanner_FalsePositive_MinimalDifferences(t *testing.T) {
 		}
 	}
 }
+
+// TestSSRFScanner_OnlyProvidedParams_NoInvention tests that when OnlyProvidedParams is set,
+// the scanner doesn't invent common parameter names.
+func TestSSRFScanner_OnlyProvidedParams_NoInvention(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure scanner to only test provided parameters
+	scanner := NewSSRFScanner(
+		WithSSRFHTTPClient(mock),
+		WithSSRFOnlyProvidedParams(true),
+	)
+
+	ctx := context.Background()
+	// Scan a URL with no query parameters
+	result := scanner.Scan(ctx, "https://example.com/page")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should perform NO tests since there are no parameters and invention is disabled
+	if result.Summary.TotalTests != 0 {
+		t.Errorf("Expected 0 tests with OnlyProvidedParams=true and no params, got %d", result.Summary.TotalTests)
+	}
+
+	// Should find NO vulnerabilities
+	if result.Summary.VulnerabilitiesFound != 0 {
+		t.Errorf("Expected 0 vulnerabilities with OnlyProvidedParams=true and no params, got %d", result.Summary.VulnerabilitiesFound)
+	}
+}
+
+// TestSSRFScanner_OnlyProvidedParams_TestsProvidedOnly tests that with OnlyProvidedParams,
+// the scanner only tests parameters that actually exist in the URL.
+func TestSSRFScanner_OnlyProvidedParams_TestsProvidedOnly(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure scanner to only test provided parameters
+	scanner := NewSSRFScanner(
+		WithSSRFHTTPClient(mock),
+		WithSSRFOnlyProvidedParams(true),
+	)
+
+	ctx := context.Background()
+	// Scan a URL with one query parameter
+	result := scanner.Scan(ctx, "https://example.com/api?id=123")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should only test the "id" parameter (not invent url, uri, path, etc.)
+	// Number of tests = 1 parameter × number of SSRF payloads
+	expectedTests := len(ssrfPayloads)
+	if result.Summary.TotalTests != expectedTests {
+		t.Errorf("Expected %d tests (1 param × %d payloads), got %d", expectedTests, len(ssrfPayloads), result.Summary.TotalTests)
+	}
+}
+
+// TestSSRFScanner_WithoutOnlyProvidedParams_InventsParams tests that without OnlyProvidedParams,
+// the scanner invents common parameter names (default behavior).
+func TestSSRFScanner_WithoutOnlyProvidedParams_InventsParams(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure scanner with default behavior (OnlyProvidedParams=false)
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+
+	ctx := context.Background()
+	// Scan a URL with no query parameters
+	result := scanner.Scan(ctx, "https://example.com/page")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should invent 7 common parameter names: url, uri, path, dest, redirect, file, callback
+	// Number of tests = 7 invented parameters × number of SSRF payloads
+	expectedTests := 7 * len(ssrfPayloads)
+	if result.Summary.TotalTests != expectedTests {
+		t.Errorf("Expected %d tests (7 invented params × %d payloads), got %d", expectedTests, len(ssrfPayloads), result.Summary.TotalTests)
+	}
+}
+
+// TestSSRFScanner_OnlyProvidedParams_POST tests OnlyProvidedParams with POST requests.
+func TestSSRFScanner_OnlyProvidedParams_POST(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure scanner to only test provided parameters
+	scanner := NewSSRFScanner(
+		WithSSRFHTTPClient(mock),
+		WithSSRFOnlyProvidedParams(true),
+	)
+
+	ctx := context.Background()
+	// Scan with no parameters - should not invent any
+	result := scanner.ScanPOST(ctx, "https://example.com/api", map[string]string{})
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should perform NO tests since there are no parameters and invention is disabled
+	if result.Summary.TotalTests != 0 {
+		t.Errorf("Expected 0 tests with OnlyProvidedParams=true and no params in POST, got %d", result.Summary.TotalTests)
+	}
+
+	// Should find NO vulnerabilities
+	if result.Summary.VulnerabilitiesFound != 0 {
+		t.Errorf("Expected 0 vulnerabilities with OnlyProvidedParams=true and no params in POST, got %d", result.Summary.VulnerabilitiesFound)
+	}
+}
+
+// TestSSRFScanner_OnlyProvidedParams_POST_WithParams tests OnlyProvidedParams with POST
+// when parameters are actually provided.
+func TestSSRFScanner_OnlyProvidedParams_POST_WithParams(t *testing.T) {
+	mock := newMockSSRFHTTPClient()
+
+	// Configure scanner to only test provided parameters
+	scanner := NewSSRFScanner(
+		WithSSRFHTTPClient(mock),
+		WithSSRFOnlyProvidedParams(true),
+	)
+
+	ctx := context.Background()
+	// Scan with one parameter
+	params := map[string]string{
+		"callback": "https://example.com",
+	}
+	result := scanner.ScanPOST(ctx, "https://example.com/api", params)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should only test the "callback" parameter
+	expectedTests := len(ssrfPayloads)
+	if result.Summary.TotalTests != expectedTests {
+		t.Errorf("Expected %d tests (1 param × %d payloads) in POST, got %d", expectedTests, len(ssrfPayloads), result.Summary.TotalTests)
+	}
+}
