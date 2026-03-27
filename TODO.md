@@ -1,82 +1,83 @@
-# WAST - Remaining Issues
-
-## Fixed
-
-- **Form action resolution** (`pkg/crawler/crawler.go:415-428`) — `action="#"` was resolved relative to the root target URL instead of the current page. Now resolves correctly.
-- **robots.txt blocking discovery** (`pkg/scanner/discovery.go:56`) — Discovery mode hardcoded `WithRespectRobots(true)`, blocking crawling on sites with `Disallow: /`. Changed to `false` since active scanning implies authorization.
-- **Discovered parameters discarded** (`pkg/scanner/discovery.go:671-729`) — `scanTargetFor*` functions passed only the URL, ignoring discovered form parameters. Added `buildURLWithParams()` to embed them as query params.
-- **SSRF false positives on invented parameters** — Added `WithSSRFOnlyProvidedParams(true)` in discovery mode so the SSRF scanner only tests parameters actually found during crawling, not invented ones. Eliminated all SSRF false positives.
-- **POST form scanning** — Added `ScanPOST()` routing in `scanTargetFor*` functions so POST forms are tested with payloads in the request body instead of GET query params.
-- **SQLi detection improved** — Boolean-based SQLi now detects real injection on DVWA (`/vulnerabilities/brute/` username param, `/vulnerabilities/fi/` page param). 4 high-confidence findings.
-- **SSTI scanner added** — New scanner for Server-Side Template Injection.
+# WAST - TODO
 
 ## Retest results (2026-03-27)
 
 Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
-| Scanner | Findings | Notes |
-|---------|----------|-------|
-| SQLi | 4 | Boolean-based on `/brute/` and `/fi/` — real positives |
-| CSRF | 9 | Real missing CSRF tokens |
-| SSRF | 0 | No false positives (fixed) |
-| XSS | 0 | Reflected XSS on `/xss_r/` not detected |
-| CMDi | 0 | POST injection on `/exec/` not detected |
-| Path Traversal | 0 | LFI on `/fi/?page=` not detected |
-| Headers | 7 missing | Expected for DVWA |
+| Scanner | Findings | Tests | Status |
+|---------|----------|-------|--------|
+| SQLi | 9 | 511 | Detecting, but some FPs on non-injectable params (`Upload`, `seclev_submit`) |
+| CSRF | 9 | — | Real missing CSRF tokens |
+| SSRF | 0 | 629 | Clean — no false positives |
+| XSS | 0 | 259 | Not detecting reflected XSS on `/xss_r/` |
+| CMDi | 0 | 1,184 | Not detecting POST injection on `/exec/` |
+| Path Traversal | 0 | 666 | Not detecting LFI on `/fi/?page=` |
+| SSTI | 29 | 370 | All false positives — massive FP problem |
+| Headers | 7 missing | — | Expected for DVWA |
 
-## Fixed (Phase 2)
+## P0: SSTI scanner produces massive false positives
 
-- **XSS reflected detection improved** — Added check for URL-encoded payload reflection to handle edge cases where applications reflect parameters without decoding. Made the detection logic more robust and explicit. The scanner now properly detects DVWA-style reflected XSS where `<script>alert(1)</script>` is echoed unescaped in the response.
-- **CMDi POST detection improved** — Enhanced `cmdOutputPatterns` to detect simple usernames from `whoami` command (e.g., `www-data`, `root`, `apache`, `nginx`, etc.). The scanner now properly detects DVWA's `/vulnerabilities/exec/` endpoint where injecting `; whoami` or `; id` appends command output to the ping response. Added comprehensive test case simulating DVWA behavior.
-- **SQLi scanner now detects DVWA `/vulnerabilities/sqli/?id=` injection** (Issue #188) — Fixed the scanner to detect classic DVWA SQLi endpoint. Root cause was that DVWA requires a `Submit` parameter to process form submissions. When the crawler discovers URLs with only data parameters (e.g., `id=1`), DVWA returns just the form without executing queries, causing all responses (baseline, true, false) to be identical. Added fallback mechanism: when no vulnerabilities are found and responses look like empty forms, the scanner automatically retries with `Submit=Submit` parameter added. This fixes the P0 issue where the scanner detected SQLi on `/brute/` and `/fi/` but missed the primary `/sqli/` test page.
+**Impact:** 29 SSTI findings reported across 6+ template engines (Jinja2, Freemarker, Thymeleaf, Velocity, ERB, Smarty) on a plain PHP app that uses none of them. Every parameter that reflects input is flagged.
 
-## Fixed (Phase 3)
+**Root cause:** The detection logic checks if the payload string appears in the response, but does not verify that the template expression was actually **evaluated**. For example, sending `{{7*7}}` and finding `{{7*7}}` in the response is reflection, not injection. The scanner should check for `49` (the computed result) in the response instead.
 
-### P1: Path traversal scanner misses LFI on `/vulnerabilities/fi/?page=` (Issue #190)
+**Fix approach:** For each template syntax, send the math expression and check if the **computed result** (e.g., `49`) appears in the response where the payload was injected, not the payload literal itself. Also compare against a baseline to rule out the number appearing naturally.
 
-**Impact:** DVWA's file inclusion page accepts `page=../../etc/passwd` and returns the file contents. The scanner now detects it.
+**Files:** `pkg/scanner/ssti.go`
 
-**Root cause:** The `containsPasswdSignature()` function required at least 2 passwd-style entries. Some systems or partial file reads (like DVWA's LFI) return only 1 matching line, causing false negatives.
+## P0: XSS scanner doesn't detect reflected XSS
 
-**Fix:** Enhanced detection logic with two improvements:
-1. Added specific passwd signatures (root:x:0:0:, daemon:x:1:1:, www-data:x:, etc.) that provide high confidence even with single-line matches
-2. Lowered the generic pattern threshold from 2 to 1 matching line to catch partial file reads
+**Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects the payload verbatim in the response HTML. 259 tests run, 0 findings.
 
-**Files:** `pkg/scanner/pathtraversal.go`, `pkg/scanner/pathtraversal_test.go`
+**Root cause:** The `testParameter()` detection logic is not checking whether injected payloads appear unescaped in the response body. Detection should:
+1. Send a payload containing HTML/JS (e.g., `<script>alert(1)</script>`)
+2. Check if the exact payload appears unescaped in the response HTML
+3. If found, it's reflected XSS
 
-### P2: Summary aggregation in discovery mode (Issue #198) - FIXED
+**Files:** `pkg/scanner/xss.go` — `testParameter()`
 
-**Impact:** Concern that `total_tests` might show 0 for scanners in discovery mode even when tests executed.
+## P0: CMDi scanner doesn't detect command injection via POST
 
-**Root cause analysis:** Upon investigation, the aggregation logic in `pkg/scanner/discovery.go` lines 368-377 correctly accumulates test counts from individual scanner results in a thread-safe manner using mutex protection. The accumulated counts are then properly assigned to result summaries in lines 416-494.
+**Impact:** DVWA `/vulnerabilities/exec/` accepts POST param `ip` and passes it to `shell_exec()`. 1,184 tests run, 0 findings.
 
-**Fix verification:** Comprehensive integration test `TestScanDiscoveredTargets_TestCountAggregation` in `pkg/scanner/discovery_test.go` verifies:
-1. Test counts accumulate correctly across multiple discovered targets
-2. Stats values match result summary values
-3. All scanners (XSS, SQLi, SSRF, Redirect, CMDi, PathTraversal, SSTI) report non-zero test counts
+**Root cause:** Despite POST scanning support being added, the CMDi detection heuristics aren't matching. The scanner needs to:
+1. Send a baseline request (e.g., `ip=127.0.0.1`)
+2. Send a payload like `127.0.0.1; whoami` or `127.0.0.1 && id`
+3. Detect extra output (username, uid) in the response compared to baseline
 
-**Test results:** All assertions pass when tested against real HTTP responses to example.com, confirming aggregation works as designed.
+**Debug:** `curl -X POST http://localhost:8080/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit" -b "PHPSESSID=...; security=low"` confirms the injection works. Trace why the scanner doesn't flag it.
 
-**Files:** `pkg/scanner/discovery.go`, `pkg/scanner/discovery_test.go`
+**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testParameter()`, detection heuristics
 
-### P3: Crawl output too large for MCP (Issue #202) - FIXED
+## P1: Path traversal scanner misses LFI
 
-**Impact:** `wast_crawl` output exceeded 465K characters due to 1,766 resource entries. Gets dumped to disk instead of returned via MCP.
+**Impact:** DVWA `/vulnerabilities/fi/?page=../../etc/passwd` returns file contents. 666 tests run, 0 findings.
 
-**Root cause:** Full crawl results with all discovered resources, links, and metadata exceeded MCP message size limits, causing results to be written to disk instead of returned directly.
+**Root cause:** Either the payloads don't match what DVWA expects, or the `containsPasswdSignature()` response check is too strict. Verify the scanner is actually sending the right traversal depth and checking the response correctly.
 
-**Fix:** Added compact mode for MCP crawl output that summarizes large data structures:
-- Resources: Summarized by type (total count + breakdown by type)
-- Links: Total count + sample of 10 URLs
-- Forms, robots rules, sitemap URLs, and errors are preserved completely
-- Compact mode is enabled by default (`compact=true`)
+**Files:** `pkg/scanner/pathtraversal.go`
 
-**Implementation:**
-- `CompactCrawlResult` struct defines the compact output format
-- `compactCrawlResult()` function transforms large crawl results into compact format
-- Default `compact=true` in MCP server configuration
-- Comprehensive tests verify transformation, size reduction, and JSON marshaling
+## P1: SQLi false positives on non-injectable parameters
 
-**Files:** `internal/mcp/execute.go`, `internal/mcp/server.go`, `internal/mcp/execute_test.go`
+**Impact:** SQLi scanner reports boolean-based injection on `Upload` button, `seclev_submit`, and `security` dropdown — these are not actually injectable. The differential analysis is being fooled by DVWA's dynamic content (e.g., CSRF tokens changing between requests cause content hash differences).
 
-## Still broken
+**Fix approach:** Filter out parameters that are submit buttons or known non-data fields. Also tighten differential analysis to ignore known-dynamic content (CSRF tokens, nonces, timestamps) when comparing responses.
+
+**Files:** `pkg/scanner/sqli.go` — `testBooleanBased()`, differential analysis logic
+
+## P2: Add DVWA integration tests to CI
+
+**Impact:** All scanner improvements are currently validated manually against a local DVWA instance. Regressions can slip in undetected.
+
+**Approach:**
+1. Add a Docker Compose file that spins up DVWA (e.g., `vulnerables/web-dvwa`) in CI
+2. Create an integration test suite that:
+   - Starts DVWA container, waits for it to be ready, initializes the database
+   - Logs in and sets security=low
+   - Runs discovery scan against `http://localhost:8080`
+   - Asserts expected findings: SQLi on `/sqli/`, XSS on `/xss_r/`, CMDi on `/exec/`, LFI on `/fi/`, CSRF on all forms
+   - Asserts no false positives on known-clean parameters
+3. Run as a separate CI job (e.g., `make test-integration`) since it requires Docker
+4. Gate on: each scanner must detect at least its primary DVWA vulnerability (acts as a regression test for detection logic)
+
+**Files:** new `docker-compose.test.yml`, new `pkg/scanner/dvwa_integration_test.go` or `test/integration/`
