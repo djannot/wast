@@ -3,11 +3,13 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 )
@@ -338,7 +340,7 @@ func TestExecuteCrawl(t *testing.T) {
 			authConfig := &auth.AuthConfig{}
 			rateLimitConfig := ratelimit.Config{}
 
-			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, authConfig, rateLimitConfig, nil, nil)
+			result := executeCrawl(ctx, tt.target, tt.depth, tt.timeout, tt.respectRobots, 5, false, authConfig, rateLimitConfig, nil, nil)
 
 			// Verify result is not nil
 			if result == nil {
@@ -370,7 +372,7 @@ func TestExecuteCrawlWithAuth(t *testing.T) {
 	}
 	rateLimitConfig := ratelimit.Config{}
 
-	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, authConfig, rateLimitConfig, nil, nil)
+	result := executeCrawl(ctx, "https://example.com", 3, 30*time.Second, true, 5, false, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with auth returned nil")
@@ -387,7 +389,7 @@ func TestExecuteCrawlWithRateLimit(t *testing.T) {
 		RequestsPerSecond: 2.0,
 	}
 
-	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, authConfig, rateLimitConfig, nil, nil)
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, false, authConfig, rateLimitConfig, nil, nil)
 
 	if result == nil {
 		t.Fatal("executeCrawl with rate limit returned nil")
@@ -1177,5 +1179,425 @@ func TestHeaderScanResultJSONMarshaling(t *testing.T) {
 
 	if unmarshaled.Summary.TotalHeaders != headerResult.Summary.TotalHeaders {
 		t.Errorf("TotalHeaders mismatch after marshal/unmarshal")
+	}
+}
+
+// TestExecuteCrawlWithCompact tests executeCrawl with compact mode enabled
+func TestExecuteCrawlWithCompact(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	// Test with compact=true (default)
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, true, authConfig, rateLimitConfig, nil, nil)
+
+	if result == nil {
+		t.Fatal("executeCrawl with compact=true returned nil")
+	}
+
+	// With compact=true, we should get a CompactCrawlResult
+	compactResult, ok := result.(*CompactCrawlResult)
+	if !ok {
+		t.Fatalf("Expected *CompactCrawlResult type with compact=true, got %T", result)
+	}
+
+	// Verify compact result structure
+	if compactResult.Target != "https://example.com" {
+		t.Errorf("Expected target https://example.com, got %s", compactResult.Target)
+	}
+
+	// Statistics should be present
+	if compactResult.Statistics.TotalURLs < 0 {
+		t.Error("Statistics.TotalURLs should be non-negative")
+	}
+
+	// Forms should be preserved
+	if compactResult.Forms == nil {
+		t.Error("Forms should be initialized")
+	}
+
+	// RobotsDisallow should be preserved
+	if compactResult.RobotsDisallow == nil {
+		t.Error("RobotsDisallow should be initialized")
+	}
+
+	// SitemapURLs should be preserved
+	if compactResult.SitemapURLs == nil {
+		t.Error("SitemapURLs should be initialized")
+	}
+
+	// Errors should be preserved
+	if compactResult.Errors == nil {
+		t.Error("Errors should be initialized")
+	}
+}
+
+// TestExecuteCrawlWithoutCompact tests executeCrawl with compact mode disabled
+func TestExecuteCrawlWithoutCompact(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	// Test with compact=false
+	result := executeCrawl(ctx, "https://example.com", 2, 20*time.Second, true, 5, false, authConfig, rateLimitConfig, nil, nil)
+
+	if result == nil {
+		t.Fatal("executeCrawl with compact=false returned nil")
+	}
+
+	// With compact=false, we should NOT get a CompactCrawlResult
+	if _, ok := result.(*CompactCrawlResult); ok {
+		t.Error("Should not get CompactCrawlResult when compact=false")
+	}
+}
+
+// TestCompactCrawlResultTransformation tests the compact transformation logic
+func TestCompactCrawlResultTransformation(t *testing.T) {
+	// Create a mock CrawlResult with large data
+	mockResult := &crawler.CrawlResult{
+		Target: "https://example.com",
+		Statistics: crawler.CrawlStats{
+			TotalURLs:       250,
+			InternalURLs:    200,
+			ExternalURLs:    50,
+			FormsFound:      5,
+			ResourcesFound:  1000,
+			MaxDepthReached: 3,
+		},
+		Forms: []crawler.FormInfo{
+			{Action: "/login", Method: "POST", Page: "https://example.com/login"},
+			{Action: "/search", Method: "GET", Page: "https://example.com/search"},
+		},
+		Resources: make([]crawler.ResourceInfo, 1000),
+		InternalLinks: make([]crawler.LinkInfo, 200),
+		ExternalLinks: make([]crawler.LinkInfo, 50),
+		RobotsDisallow: []string{"/admin", "/private"},
+		SitemapURLs:    []string{"https://example.com/sitemap.xml"},
+		Errors:         []string{"error1", "error2"},
+	}
+
+	// Populate resources with different types
+	for i := 0; i < 500; i++ {
+		mockResult.Resources[i] = crawler.ResourceInfo{
+			URL:  fmt.Sprintf("https://example.com/js/file%d.js", i),
+			Type: "js",
+			Page: "https://example.com",
+		}
+	}
+	for i := 500; i < 750; i++ {
+		mockResult.Resources[i] = crawler.ResourceInfo{
+			URL:  fmt.Sprintf("https://example.com/css/file%d.css", i),
+			Type: "css",
+			Page: "https://example.com",
+		}
+	}
+	for i := 750; i < 1000; i++ {
+		mockResult.Resources[i] = crawler.ResourceInfo{
+			URL:  fmt.Sprintf("https://example.com/img/file%d.png", i),
+			Type: "image",
+			Page: "https://example.com",
+		}
+	}
+
+	// Populate links
+	for i := 0; i < 200; i++ {
+		mockResult.InternalLinks[i] = crawler.LinkInfo{
+			URL:      fmt.Sprintf("https://example.com/page%d", i),
+			External: false,
+			Depth:    1,
+		}
+	}
+	for i := 0; i < 50; i++ {
+		mockResult.ExternalLinks[i] = crawler.LinkInfo{
+			URL:      fmt.Sprintf("https://external.com/page%d", i),
+			External: true,
+			Depth:    1,
+		}
+	}
+
+	// Transform to compact format
+	compact := compactCrawlResult(mockResult)
+
+	// Verify compact result
+	if compact == nil {
+		t.Fatal("compactCrawlResult returned nil")
+	}
+
+	// Target should be preserved
+	if compact.Target != mockResult.Target {
+		t.Errorf("Expected target %s, got %s", mockResult.Target, compact.Target)
+	}
+
+	// Statistics should be preserved
+	if compact.Statistics.TotalURLs != mockResult.Statistics.TotalURLs {
+		t.Errorf("Expected TotalURLs %d, got %d", mockResult.Statistics.TotalURLs, compact.Statistics.TotalURLs)
+	}
+
+	// Forms should be preserved completely
+	if len(compact.Forms) != len(mockResult.Forms) {
+		t.Errorf("Expected %d forms, got %d", len(mockResult.Forms), len(compact.Forms))
+	}
+
+	// Resources should be summarized
+	if compact.ResourcesSummary == nil {
+		t.Fatal("ResourcesSummary should not be nil")
+	}
+	if compact.ResourcesSummary.Total != 1000 {
+		t.Errorf("Expected 1000 total resources, got %d", compact.ResourcesSummary.Total)
+	}
+	if compact.ResourcesSummary.Types["js"] != 500 {
+		t.Errorf("Expected 500 js resources, got %d", compact.ResourcesSummary.Types["js"])
+	}
+	if compact.ResourcesSummary.Types["css"] != 250 {
+		t.Errorf("Expected 250 css resources, got %d", compact.ResourcesSummary.Types["css"])
+	}
+	if compact.ResourcesSummary.Types["image"] != 250 {
+		t.Errorf("Expected 250 image resources, got %d", compact.ResourcesSummary.Types["image"])
+	}
+
+	// Internal links should be summarized with sample
+	if compact.InternalLinksSummary == nil {
+		t.Fatal("InternalLinksSummary should not be nil")
+	}
+	if compact.InternalLinksSummary.Total != 200 {
+		t.Errorf("Expected 200 total internal links, got %d", compact.InternalLinksSummary.Total)
+	}
+	if len(compact.InternalLinksSummary.Sample) != 10 {
+		t.Errorf("Expected 10 sample internal links, got %d", len(compact.InternalLinksSummary.Sample))
+	}
+
+	// External links should be summarized with sample
+	if compact.ExternalLinksSummary == nil {
+		t.Fatal("ExternalLinksSummary should not be nil")
+	}
+	if compact.ExternalLinksSummary.Total != 50 {
+		t.Errorf("Expected 50 total external links, got %d", compact.ExternalLinksSummary.Total)
+	}
+	if len(compact.ExternalLinksSummary.Sample) != 10 {
+		t.Errorf("Expected 10 sample external links, got %d", len(compact.ExternalLinksSummary.Sample))
+	}
+
+	// RobotsDisallow should be preserved
+	if len(compact.RobotsDisallow) != len(mockResult.RobotsDisallow) {
+		t.Errorf("Expected %d robots disallow rules, got %d", len(mockResult.RobotsDisallow), len(compact.RobotsDisallow))
+	}
+
+	// SitemapURLs should be preserved
+	if len(compact.SitemapURLs) != len(mockResult.SitemapURLs) {
+		t.Errorf("Expected %d sitemap URLs, got %d", len(mockResult.SitemapURLs), len(compact.SitemapURLs))
+	}
+
+	// Errors should be preserved
+	if len(compact.Errors) != len(mockResult.Errors) {
+		t.Errorf("Expected %d errors, got %d", len(mockResult.Errors), len(compact.Errors))
+	}
+}
+
+// TestCompactCrawlResultWithSmallData tests compact transformation with small datasets
+func TestCompactCrawlResultWithSmallData(t *testing.T) {
+	// Create a result with fewer than 10 links
+	mockResult := &crawler.CrawlResult{
+		Target: "https://example.com",
+		Statistics: crawler.CrawlStats{
+			TotalURLs:       5,
+			InternalURLs:    3,
+			ExternalURLs:    2,
+			FormsFound:      0,
+			ResourcesFound:  5,
+			MaxDepthReached: 1,
+		},
+		InternalLinks: []crawler.LinkInfo{
+			{URL: "https://example.com/page1", External: false},
+			{URL: "https://example.com/page2", External: false},
+			{URL: "https://example.com/page3", External: false},
+		},
+		ExternalLinks: []crawler.LinkInfo{
+			{URL: "https://external.com/page1", External: true},
+			{URL: "https://external.com/page2", External: true},
+		},
+		Resources: []crawler.ResourceInfo{
+			{URL: "https://example.com/app.js", Type: "js"},
+			{URL: "https://example.com/style.css", Type: "css"},
+			{URL: "https://example.com/logo.png", Type: "image"},
+			{URL: "https://example.com/icon.png", Type: "image"},
+			{URL: "https://example.com/main.js", Type: "js"},
+		},
+	}
+
+	compact := compactCrawlResult(mockResult)
+
+	if compact == nil {
+		t.Fatal("compactCrawlResult returned nil")
+	}
+
+	// Internal links sample should contain all 3 links (less than 10)
+	if compact.InternalLinksSummary == nil {
+		t.Fatal("InternalLinksSummary should not be nil")
+	}
+	if len(compact.InternalLinksSummary.Sample) != 3 {
+		t.Errorf("Expected 3 sample internal links, got %d", len(compact.InternalLinksSummary.Sample))
+	}
+
+	// External links sample should contain all 2 links (less than 10)
+	if compact.ExternalLinksSummary == nil {
+		t.Fatal("ExternalLinksSummary should not be nil")
+	}
+	if len(compact.ExternalLinksSummary.Sample) != 2 {
+		t.Errorf("Expected 2 sample external links, got %d", len(compact.ExternalLinksSummary.Sample))
+	}
+
+	// Resources summary should show correct types
+	if compact.ResourcesSummary == nil {
+		t.Fatal("ResourcesSummary should not be nil")
+	}
+	if compact.ResourcesSummary.Types["js"] != 2 {
+		t.Errorf("Expected 2 js resources, got %d", compact.ResourcesSummary.Types["js"])
+	}
+	if compact.ResourcesSummary.Types["css"] != 1 {
+		t.Errorf("Expected 1 css resource, got %d", compact.ResourcesSummary.Types["css"])
+	}
+	if compact.ResourcesSummary.Types["image"] != 2 {
+		t.Errorf("Expected 2 image resources, got %d", compact.ResourcesSummary.Types["image"])
+	}
+}
+
+// TestCompactCrawlResultWithNilInput tests compact transformation with nil input
+func TestCompactCrawlResultWithNilInput(t *testing.T) {
+	compact := compactCrawlResult(nil)
+	if compact != nil {
+		t.Error("compactCrawlResult should return nil for nil input")
+	}
+}
+
+// TestCompactCrawlResultJSONMarshaling tests JSON marshaling of compact crawl results
+func TestCompactCrawlResultJSONMarshaling(t *testing.T) {
+	compactResult := CompactCrawlResult{
+		Target: "https://example.com",
+		Statistics: crawler.CrawlStats{
+			TotalURLs:       100,
+			InternalURLs:    80,
+			ExternalURLs:    20,
+			FormsFound:      5,
+			ResourcesFound:  500,
+			MaxDepthReached: 3,
+		},
+		ResourcesSummary: &ResourcesSummary{
+			Total: 500,
+			Types: map[string]int{"js": 200, "css": 100, "image": 200},
+		},
+		InternalLinksSummary: &LinksSummary{
+			Total:  80,
+			Sample: []string{"https://example.com/page1", "https://example.com/page2"},
+		},
+		ExternalLinksSummary: &LinksSummary{
+			Total:  20,
+			Sample: []string{"https://external.com/page1"},
+		},
+		RobotsDisallow: []string{"/admin"},
+		SitemapURLs:    []string{"https://example.com/sitemap.xml"},
+		Errors:         []string{},
+	}
+
+	data, err := json.Marshal(compactResult)
+	if err != nil {
+		t.Fatalf("Failed to marshal CompactCrawlResult: %v", err)
+	}
+
+	var unmarshaled CompactCrawlResult
+	if err := json.Unmarshal(data, &unmarshaled); err != nil {
+		t.Fatalf("Failed to unmarshal CompactCrawlResult: %v", err)
+	}
+
+	if unmarshaled.Target != compactResult.Target {
+		t.Errorf("Target mismatch after marshal/unmarshal")
+	}
+
+	if unmarshaled.Statistics.TotalURLs != compactResult.Statistics.TotalURLs {
+		t.Errorf("TotalURLs mismatch after marshal/unmarshal")
+	}
+
+	if unmarshaled.ResourcesSummary.Total != compactResult.ResourcesSummary.Total {
+		t.Errorf("ResourcesSummary.Total mismatch after marshal/unmarshal")
+	}
+
+	if unmarshaled.InternalLinksSummary.Total != compactResult.InternalLinksSummary.Total {
+		t.Errorf("InternalLinksSummary.Total mismatch after marshal/unmarshal")
+	}
+}
+
+// TestCompactCrawlResultOutputSize tests that compact output is significantly smaller
+func TestCompactCrawlResultOutputSize(t *testing.T) {
+	// Create a large mock result
+	mockResult := &crawler.CrawlResult{
+		Target: "https://example.com",
+		Statistics: crawler.CrawlStats{
+			TotalURLs:       1000,
+			InternalURLs:    800,
+			ExternalURLs:    200,
+			FormsFound:      10,
+			ResourcesFound:  2000,
+			MaxDepthReached: 3,
+		},
+		Forms:     make([]crawler.FormInfo, 10),
+		Resources: make([]crawler.ResourceInfo, 2000),
+		InternalLinks: make([]crawler.LinkInfo, 800),
+		ExternalLinks: make([]crawler.LinkInfo, 200),
+		RobotsDisallow: []string{"/admin", "/private"},
+		SitemapURLs:    []string{"https://example.com/sitemap.xml"},
+	}
+
+	// Populate with data
+	for i := 0; i < 2000; i++ {
+		mockResult.Resources[i] = crawler.ResourceInfo{
+			URL:  fmt.Sprintf("https://example.com/resources/very-long-resource-name-%d.js", i),
+			Type: "js",
+			Page: "https://example.com/page",
+		}
+	}
+	for i := 0; i < 800; i++ {
+		mockResult.InternalLinks[i] = crawler.LinkInfo{
+			URL:      fmt.Sprintf("https://example.com/very-long-page-name-%d", i),
+			External: false,
+		}
+	}
+	for i := 0; i < 200; i++ {
+		mockResult.ExternalLinks[i] = crawler.LinkInfo{
+			URL:      fmt.Sprintf("https://external-domain.com/very-long-page-name-%d", i),
+			External: true,
+		}
+	}
+
+	// Marshal full result
+	fullData, err := json.Marshal(mockResult)
+	if err != nil {
+		t.Fatalf("Failed to marshal full result: %v", err)
+	}
+
+	// Transform and marshal compact result
+	compact := compactCrawlResult(mockResult)
+	compactData, err := json.Marshal(compact)
+	if err != nil {
+		t.Fatalf("Failed to marshal compact result: %v", err)
+	}
+
+	fullSize := len(fullData)
+	compactSize := len(compactData)
+
+	t.Logf("Full result size: %d bytes", fullSize)
+	t.Logf("Compact result size: %d bytes", compactSize)
+	t.Logf("Size reduction: %.2f%%", float64(fullSize-compactSize)/float64(fullSize)*100)
+
+	// Compact should be significantly smaller (at least 80% reduction for this test data)
+	if compactSize >= fullSize/5 {
+		t.Errorf("Compact result should be much smaller. Full: %d, Compact: %d", fullSize, compactSize)
+	}
+
+	// Compact should be under a reasonable size limit (e.g., 10KB for this test)
+	if compactSize > 10000 {
+		t.Errorf("Compact result should be under 10KB, got %d bytes", compactSize)
 	}
 }

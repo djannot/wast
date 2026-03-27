@@ -636,6 +636,11 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 				"description": "Number of concurrent workers for crawling",
 				"default":     5,
 			},
+			"compact": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Return compact output with summarized resources and links to prevent output size overflow",
+				"default":     true,
+			},
 			"bearer_token": map[string]interface{}{
 				"type":        "string",
 				"description": "Bearer token for Authorization header",
@@ -694,6 +699,7 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		Timeout           string   `json:"timeout"`
 		RespectRobots     bool     `json:"respect_robots"`
 		Concurrency       int      `json:"concurrency"`
+		Compact           *bool    `json:"compact"` // pointer to detect if set
 		BearerToken       string   `json:"bearer_token"`
 		BasicAuth         string   `json:"basic_auth"`
 		AuthHeader        string   `json:"auth_header"`
@@ -727,6 +733,12 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 
 	if args.Concurrency == 0 {
 		args.Concurrency = 5
+	}
+
+	// Default compact to true if not specified
+	compact := true
+	if args.Compact != nil {
+		compact = *args.Compact
 	}
 
 	// Parse timeout
@@ -771,7 +783,7 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 	}
 
 	// Execute crawl command logic
-	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback)
+	result := executeCrawl(ctx, args.Target, args.Depth, timeout, args.RespectRobots, args.Concurrency, compact, authConfig, rateLimitConfig, t.server.tracer, progressCallback)
 
 	return result, nil
 }
