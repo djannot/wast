@@ -4,6 +4,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -647,6 +648,10 @@ func (s *PathTraversalScanner) analyzePathTraversalResponse(resp *http.Response,
 
 // containsPasswdSignature checks if response contains Unix passwd file signatures.
 func containsPasswdSignature(body string) bool {
+	// Unescape HTML entities in case the response is HTML-encoded
+	// This handles cases where DVWA or other apps HTML-escape the file contents
+	unescapedBody := html.UnescapeString(body)
+
 	// First check for highly specific passwd signatures (root, daemon, etc.)
 	// These are strong indicators even with a single match
 	specificSignatures := []*regexp.Regexp{
@@ -661,19 +666,20 @@ func containsPasswdSignature(body string) bool {
 	}
 
 	for _, pattern := range specificSignatures {
-		if pattern.MatchString(body) {
+		if pattern.MatchString(unescapedBody) {
 			return true
 		}
 	}
 
 	// Fall back to counting generic passwd-style entries
 	// Look for typical /etc/passwd patterns - count unique lines
-	// Split by newlines and check each line
-	lines := strings.Split(body, "\n")
+	// Split by newlines and check each line (using unescaped body)
+	lines := strings.Split(unescapedBody, "\n")
 	matchedLines := 0
 
 	// Pattern to match passwd file entries (username:x:uid:gid:...)
-	passwdPattern := regexp.MustCompile(`^[a-z_][a-z0-9_-]*:x:[0-9]+:[0-9]+:`)
+	// Don't anchor to start of line (^) to handle HTML-wrapped responses
+	passwdPattern := regexp.MustCompile(`[a-z_][a-z0-9_-]*:x:[0-9]+:[0-9]+:`)
 
 	for _, line := range lines {
 		if passwdPattern.MatchString(line) {
