@@ -30,28 +30,51 @@ func (m *mockPathTraversalHTTPClient) Do(req *http.Request) (*http.Response, err
 		}, nil
 	}
 
-	// Check for partial matches (contains specific payload)
+	// Check for partial matches (contains specific payload in query parameters)
 	// Look for URL-decoded versions of payloads
-	for pattern, resp := range m.responses {
-		// Try to match the pattern in the URL
-		if strings.Contains(url, pattern) {
-			return &http.Response{
-				StatusCode: resp.statusCode,
-				Body:       io.NopCloser(strings.NewReader(resp.body)),
-			}, nil
+	// Sort patterns by length (longest first) to match most specific patterns first
+	var patterns []string
+	for pattern := range m.responses {
+		patterns = append(patterns, pattern)
+	}
+
+	// Sort by length descending to match longest patterns first
+	for i := 0; i < len(patterns); i++ {
+		for j := i + 1; j < len(patterns); j++ {
+			if len(patterns[i]) < len(patterns[j]) {
+				patterns[i], patterns[j] = patterns[j], patterns[i]
+			}
 		}
-		// Also check for URL-encoded versions
-		if strings.Contains(url, strings.ReplaceAll(pattern, "/", "%2F")) {
-			return &http.Response{
-				StatusCode: resp.statusCode,
-				Body:       io.NopCloser(strings.NewReader(resp.body)),
-			}, nil
-		}
-		if strings.Contains(url, strings.ReplaceAll(pattern, "\\", "%5C")) {
-			return &http.Response{
-				StatusCode: resp.statusCode,
-				Body:       io.NopCloser(strings.NewReader(resp.body)),
-			}, nil
+	}
+
+	for _, pattern := range patterns {
+		resp := m.responses[pattern]
+
+		// Try to match the pattern in the query parameter value
+		// Extract query string for better matching
+		queryStart := strings.Index(url, "?")
+		if queryStart >= 0 {
+			queryString := url[queryStart+1:]
+			// Check if pattern appears in query string
+			if strings.Contains(queryString, pattern) {
+				return &http.Response{
+					StatusCode: resp.statusCode,
+					Body:       io.NopCloser(strings.NewReader(resp.body)),
+				}, nil
+			}
+			// Also check for URL-encoded versions in query string
+			if strings.Contains(queryString, strings.ReplaceAll(pattern, "/", "%2F")) {
+				return &http.Response{
+					StatusCode: resp.statusCode,
+					Body:       io.NopCloser(strings.NewReader(resp.body)),
+				}, nil
+			}
+			if strings.Contains(queryString, strings.ReplaceAll(pattern, "\\", "%5C")) {
+				return &http.Response{
+					StatusCode: resp.statusCode,
+					Body:       io.NopCloser(strings.NewReader(resp.body)),
+				}, nil
+			}
 		}
 	}
 
@@ -60,6 +83,40 @@ func (m *mockPathTraversalHTTPClient) Do(req *http.Request) (*http.Response, err
 		StatusCode: 200,
 		Body:       io.NopCloser(strings.NewReader("OK")),
 	}, nil
+}
+
+// mockPathTraversalHTTPClientWithLog wraps the mock client and logs all requests
+type mockPathTraversalHTTPClientWithLog struct {
+	inner *mockPathTraversalHTTPClient
+	t     *testing.T
+}
+
+func (m *mockPathTraversalHTTPClientWithLog) Do(req *http.Request) (*http.Response, error) {
+	url := req.URL.String()
+	m.t.Logf("Mock client received request: %s", url)
+
+	// Debug: show which pattern would match
+	for pattern := range m.inner.responses {
+		if strings.Contains(url, pattern) {
+			m.t.Logf("  -> Pattern '%s' matches!", pattern)
+		}
+	}
+
+	resp, err := m.inner.Do(req)
+	if resp != nil {
+		body := make([]byte, 100)
+		n, _ := resp.Body.Read(body)
+		resp.Body.Close()
+		bodyPreview := string(body[:n])
+		if len(bodyPreview) > 50 {
+			bodyPreview = bodyPreview[:50] + "..."
+		}
+		m.t.Logf("  -> Response body preview: %s", bodyPreview)
+		// Re-create the response body for the actual scanner
+		resp.Body = io.NopCloser(strings.NewReader(string(body[:n])))
+	}
+
+	return resp, err
 }
 
 func TestNewPathTraversalScanner(t *testing.T) {
@@ -631,7 +688,7 @@ func TestContainsWindowsHostsSignature(t *testing.T) {
 // TestPathTraversalScanner_DVWA_LFI tests detection of DVWA's Local File Inclusion vulnerability
 // on the /vulnerabilities/fi/?page= endpoint. This simulates DVWA's behavior where the
 // page parameter accepts path traversal payloads like ../../etc/passwd and returns
-// file contents.
+// file contents. DVWA also accepts wrapper attacks like include.php/../../../etc/passwd.
 func TestPathTraversalScanner_DVWA_LFI(t *testing.T) {
 	// DVWA's file inclusion page with normal include
 	normalPageHTML := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
@@ -662,7 +719,7 @@ Welcome to the file inclusion page.
 				statusCode: 200,
 				body:       normalPageHTML,
 			},
-			// Match various path traversal payloads
+			// Match various path traversal payloads (raw, unencoded)
 			"../../etc/passwd": {
 				statusCode: 200,
 				body:       passwdFileHTML,
@@ -680,6 +737,27 @@ Welcome to the file inclusion page.
 				body:       passwdFileHTML,
 			},
 			"../../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			// Match wrapper payloads (prepending to existing value)
+			"include.php/../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"include.php/../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"include.php/../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"include.php/../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"include.php/../../../../../../etc/passwd": {
 				statusCode: 200,
 				body:       passwdFileHTML,
 			},
@@ -726,5 +804,121 @@ Welcome to the file inclusion page.
 
 	if !foundPasswdLFI {
 		t.Error("Expected to find passwd file LFI specifically on the 'page' parameter")
+	}
+}
+
+// TestPathTraversalScanner_RawVsEncodedPayloads tests that the scanner tries both
+// raw (unencoded) and URL-encoded payloads for maximum compatibility
+func TestPathTraversalScanner_RawVsEncodedPayloads(t *testing.T) {
+	passwdContents := "root:x:0:0:root:/root:/bin/bash\n"
+
+	tests := []struct {
+		name         string
+		urlPattern   string
+		expectDetect bool
+	}{
+		{
+			name:         "Detects with raw (unencoded) slashes",
+			urlPattern:   "../../../etc/passwd",
+			expectDetect: true,
+		},
+		{
+			name:         "Also tries URL-encoded version",
+			urlPattern:   "..%2F..%2F..%2Fetc%2Fpasswd",
+			expectDetect: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &mockPathTraversalHTTPClient{
+				responses: map[string]*mockPathTraversalResponse{
+					tt.urlPattern: {
+						statusCode: 200,
+						body:       passwdContents,
+					},
+				},
+			}
+
+			scanner := NewPathTraversalScanner(WithPathTraversalHTTPClient(mockClient))
+			result := scanner.Scan(context.Background(), "http://example.com/test?file=test")
+
+			if tt.expectDetect && result.Summary.VulnerabilitiesFound == 0 {
+				t.Errorf("Expected to detect vulnerability with pattern %s", tt.urlPattern)
+			}
+
+			if !tt.expectDetect && result.Summary.VulnerabilitiesFound > 0 {
+				t.Errorf("Did not expect to detect vulnerability with pattern %s", tt.urlPattern)
+			}
+		})
+	}
+}
+
+// TestPathTraversalScanner_WrapperPayloads tests that the scanner can detect
+// vulnerabilities where the payload is prepended to an existing parameter value
+func TestPathTraversalScanner_WrapperPayloads(t *testing.T) {
+	passwdContents := "root:x:0:0:root:/root:/bin/bash\n"
+
+	// Create a custom mock client that logs all URLs
+	mockClient := &mockPathTraversalHTTPClient{
+		responses: map[string]*mockPathTraversalResponse{
+			"http://example.com/test?page=normal.php": {
+				statusCode: 200,
+				body:       "<html>Normal page</html>",
+			},
+			// Wrapper payload pattern: existing value + / + traversal sequence
+			"normal.php/../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdContents,
+			},
+			// Also match various depths
+			"normal.php/../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdContents,
+			},
+			"normal.php/../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdContents,
+			},
+			"normal.php/../../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdContents,
+			},
+		},
+	}
+
+	loggingClient := &mockPathTraversalHTTPClientWithLog{
+		inner: mockClient,
+		t:     t,
+	}
+
+	scanner := NewPathTraversalScanner(WithPathTraversalHTTPClient(loggingClient))
+	result := scanner.Scan(context.Background(), "http://example.com/test?page=normal.php")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Log findings for debugging
+	for i, finding := range result.Findings {
+		t.Logf("Finding %d: param=%s, payload=%s, confidence=%s",
+			i+1, finding.Parameter, finding.Payload, finding.Confidence)
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to detect LFI vulnerability using wrapper payload")
+	}
+
+	// Check that we found a wrapper payload
+	foundWrapper := false
+	for _, finding := range result.Findings {
+		if strings.HasPrefix(finding.Payload, "normal.php/") {
+			foundWrapper = true
+			t.Logf("Found wrapper payload: %s", finding.Payload)
+		}
+	}
+
+	if !foundWrapper {
+		t.Error("Expected to find wrapper payload (normal.php/../../../etc/passwd)")
 	}
 }

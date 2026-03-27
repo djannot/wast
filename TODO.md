@@ -71,13 +71,29 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 **Files:** `pkg/scanner/cmdi.go`, `pkg/scanner/cmdi_test.go`, `test/integration/dvwa_test.go`
 
-## P1: Path traversal scanner misses LFI
+## ✅ P1: Path traversal scanner misses LFI - RESOLVED
 
 **Impact:** DVWA `/vulnerabilities/fi/?page=../../etc/passwd` returns file contents. 666 tests run, 0 findings.
 
-**Root cause:** Either the payloads don't match what DVWA expects, or the `containsPasswdSignature()` response check is too strict. Verify the scanner is actually sending the right traversal depth and checking the response correctly.
+**Root cause:** The scanner was URL-encoding path separators (`/` became `%2F`) using `q.Encode()`, but DVWA's PHP `include()` function requires literal `../` sequences. Additionally, DVWA's parameter structure (`page=include.php`) required wrapper payloads like `include.php/../../../etc/passwd`.
 
-**Files:** `pkg/scanner/pathtraversal.go`
+**Fix implemented:**
+1. Modified `testParameter()` to use a new `testPayloadVariant()` helper function that tests multiple payload strategies
+2. Added support for raw (unencoded) payloads by manually constructing `RawQuery` without encoding path separators
+3. Implemented wrapper payload support - when a parameter has an existing value, the scanner prepends the payload (e.g., `include.php/../../../etc/passwd`)
+4. Maintained URL-encoded payload testing as a fallback for servers that decode before processing
+5. Added comprehensive unit tests:
+   - `TestPathTraversalScanner_DVWA_LFI` - Simulates DVWA's LFI vulnerability behavior
+   - `TestPathTraversalScanner_RawVsEncodedPayloads` - Verifies both encoding strategies work
+   - `TestPathTraversalScanner_WrapperPayloads` - Tests wrapper payload detection
+6. Updated integration test `TestDVWA_PathTraversal` to require at least 1 finding on the `page` parameter
+
+**How it works:** The scanner now tries three strategies per payload:
+1. Direct replacement with raw (unencoded) slashes - critical for PHP `include()` and similar functions
+2. Wrapper payloads that prepend to existing parameter values - handles DVWA's `page=include.php` case
+3. URL-encoded version as fallback - for servers with double-decoding or different parsing
+
+**Files modified:** `pkg/scanner/pathtraversal.go`, `pkg/scanner/pathtraversal_test.go`, `test/integration/dvwa_test.go`
 
 ## ✅ P1: SQLi false positives on non-injectable parameters - RESOLVED
 
