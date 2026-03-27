@@ -296,6 +296,281 @@ func TestXSSScanner_Scan_WithRateLimiting(t *testing.T) {
 	}
 }
 
+func TestXSSScanner_Scan_TrivialReflectedXSS_DVWA(t *testing.T) {
+	// This test reproduces the DVWA reflected XSS issue described in #210
+	// The payload <script>alert(1)</script> is reflected verbatim in the response
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// Simulate DVWA's actual response structure with HTML comments and other elements
+	// that might interfere with detection
+	dvwaResponse := `<!DOCTYPE html>
+
+<html>
+
+	<head>
+
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+		<title>Vulnerability: Reflected Cross Site Scripting (XSS) :: Damn Vulnerable Web Application (DVWA) v1.10 *Development*</title>
+
+		<link rel="stylesheet" type="text/css" href="dvwa/css/main.css" />
+
+		<link rel="icon" type="\image/ico" href="favicon.ico" />
+
+		<script type="text/javascript" src="dvwa/js/dvwaPage.js"></script>
+
+	</head>
+
+	<body class="home">
+		<div id="container">
+
+			<div id="header">
+
+				<img src="dvwa/images/logo.png" alt="Damn Vulnerable Web Application" />
+
+			</div>
+
+			<div id="main_menu">
+				<!-- Menu content -->
+			</div>
+
+			<div id="main_body">
+				<div class="body_padded">
+					<h1>Vulnerability: Reflected Cross Site Scripting (XSS)</h1>
+
+					<div class="vulnerable_code_area">
+
+						<form name="XSS" action="#" method="GET">
+							<p>
+								What's your name?
+								<input type="text" name="name" size="30">
+								<input type="submit" value="Submit">
+							</p>
+
+						</form>
+						<pre>Hello ` + testPayload + `</pre>
+					</div>
+
+					<h2>More Info</h2>
+					<ul>
+						<li><!-- Some comment --></li>
+					</ul>
+				</div>
+			</div>
+
+			<div id="footer">
+				<p>Damn Vulnerable Web Application (DVWA) v1.10 *Development*</p>
+			</div>
+
+		</div>
+
+	</body>
+
+</html>`
+
+	// The URL-encoded version of the payload
+	encodedURL := "https://example.com/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/vulnerabilities/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected to find XSS vulnerability (DVWA-style trivial reflected XSS), but found 0. Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Findings: %+v", result.Findings)
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding for trivial reflected XSS")
+	}
+
+	finding := result.Findings[0]
+	if finding.Parameter != "name" {
+		t.Errorf("Expected parameter 'name', got %s", finding.Parameter)
+	}
+
+	if finding.Type != "reflected" {
+		t.Errorf("Expected type 'reflected', got %s", finding.Type)
+	}
+
+	if finding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+	}
+
+	if finding.Confidence != "high" {
+		t.Errorf("Expected confidence 'high' for verbatim script reflection, got %s", finding.Confidence)
+	}
+
+	if !strings.Contains(finding.Payload, "<script>alert(1)</script>") {
+		t.Errorf("Expected payload to contain '<script>alert(1)</script>', got %s", finding.Payload)
+	}
+}
+
+func TestXSSScanner_Scan_TrivialReflectedXSS_WithCommentNearby(t *testing.T) {
+	// Test case where HTML comment appears near the payload but payload should still be detected
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// Response with HTML comment right before the payload
+	responseWithComment := `<html><body><!-- This is a comment -->Hello ` + testPayload + `</body></html>`
+
+	encodedURL := "https://example.com/test?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseWithComment)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected to find XSS vulnerability even with nearby comment, but found 0")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+	}
+
+	if len(result.Findings) > 0 {
+		finding := result.Findings[0]
+		if finding.Confidence != "high" {
+			t.Errorf("Expected confidence 'high' for executable script tag, got %s", finding.Confidence)
+		}
+	}
+}
+
+func TestXSSScanner_Scan_VerbatimAndEncodedBothPresent(t *testing.T) {
+	// Regression test for bug where encoded payload elsewhere in body prevents detection
+	// of verbatim reflection
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// Response contains BOTH the verbatim payload (vulnerable) and encoded version elsewhere
+	responseWithBoth := `<html><body>
+		<div>Previous search: &lt;script&gt;alert(1)&lt;/script&gt;</div>
+		<div>Current result: ` + testPayload + `</div>
+	</body></html>`
+
+	encodedURL := "https://example.com/test?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseWithBoth)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Even though encoded version exists elsewhere, the verbatim reflection should be detected
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability when payload is reflected verbatim, even if encoded version exists elsewhere")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding - verbatim script reflection is executable")
+	}
+
+	finding := result.Findings[0]
+	if finding.Confidence != "high" {
+		t.Errorf("Expected confidence 'high' for verbatim executable script tag, got %s", finding.Confidence)
+	}
+}
+
+func TestXSSScanner_Scan_CommentInContextWindow_EncodedElsewhere(t *testing.T) {
+	// Bug: When there's a comment in the context window AND encoded payload elsewhere,
+	// the detection fails even though payload is reflected verbatim
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// Response with a comment in the context window before payload, plus encoded version elsewhere
+	responseComplex := `<html><body>
+		<div>History: &lt;script&gt;alert(1)&lt;/script&gt;</div>
+		<div>
+			<!-- This comment appears in the 200-char context window before the payload -->
+			Result: ` + testPayload + `
+		</div>
+	</body></html>`
+
+	encodedURL := "https://example.com/test?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseComplex)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// The payload is NOT inside the comment, it's after the comment
+	// So it should still be detected as vulnerable
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("BUG REPRODUCED: Verbatim script reflection not detected due to comment in context window + encoded payload elsewhere")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+	}
+}
+
+func TestXSSScanner_Scan_PayloadInsideComment_EncodedElsewhere(t *testing.T) {
+	// Bug reproduction: Payload inside HTML comment + encoded version elsewhere
+	// Should not be reported as vulnerable since it's in a comment
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// Payload IS inside an HTML comment (not executable) but encoded version exists elsewhere
+	responseInComment := `<html><body>
+		<div>Previous: &lt;script&gt;alert(1)&lt;/script&gt;</div>
+		<div><!-- Commented out: ` + testPayload + ` --></div>
+	</body></html>`
+
+	encodedURL := "https://example.com/test?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseInComment)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Payload is inside comment, so it's not executable - should not be reported
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Error("False positive: Payload inside comment should not be reported as vulnerable")
+	}
+}
+
 func TestXSSScanner_Scan_ContextCancellation(t *testing.T) {
 	mock := newMockXSSHTTPClient()
 	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
