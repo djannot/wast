@@ -219,9 +219,9 @@ func TestScanDiscoveredTargets_Concurrent(t *testing.T) {
 		t.Run(fmt.Sprintf("Concurrency_%d", concurrency), func(t *testing.T) {
 			// Create empty crawl result for testing
 			crawlResult := &crawler.CrawlResult{
-				Target:       cfg.Target,
-				CrawledURLs:  []string{},
-				Resources:    []crawler.ResourceInfo{},
+				Target:        cfg.Target,
+				CrawledURLs:   []string{},
+				Resources:     []crawler.ResourceInfo{},
 				InternalLinks: []crawler.LinkInfo{},
 				ExternalLinks: []crawler.LinkInfo{},
 			}
@@ -273,9 +273,9 @@ func TestScanDiscoveredTargets_ContextCancellation(t *testing.T) {
 
 	// Create empty crawl result for testing
 	crawlResult := &crawler.CrawlResult{
-		Target:       cfg.Target,
-		CrawledURLs:  []string{},
-		Resources:    []crawler.ResourceInfo{},
+		Target:        cfg.Target,
+		CrawledURLs:   []string{},
+		Resources:     []crawler.ResourceInfo{},
 		InternalLinks: []crawler.LinkInfo{},
 		ExternalLinks: []crawler.LinkInfo{},
 	}
@@ -321,9 +321,9 @@ func TestScanDiscoveredTargets_NoRaceConditions(t *testing.T) {
 
 	// Create empty crawl result for testing
 	crawlResult := &crawler.CrawlResult{
-		Target:       cfg.Target,
-		CrawledURLs:  []string{},
-		Resources:    []crawler.ResourceInfo{},
+		Target:        cfg.Target,
+		CrawledURLs:   []string{},
+		Resources:     []crawler.ResourceInfo{},
 		InternalLinks: []crawler.LinkInfo{},
 		ExternalLinks: []crawler.LinkInfo{},
 	}
@@ -358,9 +358,9 @@ func TestScanDiscoveredTargets_EmptyTargets(t *testing.T) {
 
 	// Create empty crawl result for testing
 	crawlResult := &crawler.CrawlResult{
-		Target:       cfg.Target,
-		CrawledURLs:  []string{},
-		Resources:    []crawler.ResourceInfo{},
+		Target:        cfg.Target,
+		CrawledURLs:   []string{},
+		Resources:     []crawler.ResourceInfo{},
 		InternalLinks: []crawler.LinkInfo{},
 		ExternalLinks: []crawler.LinkInfo{},
 	}
@@ -409,9 +409,9 @@ func TestScanDiscoveredTargets_ActiveScanners(t *testing.T) {
 
 	// Create empty crawl result for testing
 	crawlResult := &crawler.CrawlResult{
-		Target:       cfg.Target,
-		CrawledURLs:  []string{},
-		Resources:    []crawler.ResourceInfo{},
+		Target:        cfg.Target,
+		CrawledURLs:   []string{},
+		Resources:     []crawler.ResourceInfo{},
 		InternalLinks: []crawler.LinkInfo{},
 		ExternalLinks: []crawler.LinkInfo{},
 	}
@@ -760,9 +760,9 @@ func TestScanDiscoveredTargets_TestCountAggregation(t *testing.T) {
 
 	// Create empty crawl result for testing
 	crawlResult := &crawler.CrawlResult{
-		Target:       cfg.Target,
-		CrawledURLs:  []string{},
-		Resources:    []crawler.ResourceInfo{},
+		Target:        cfg.Target,
+		CrawledURLs:   []string{},
+		Resources:     []crawler.ResourceInfo{},
 		InternalLinks: []crawler.LinkInfo{},
 		ExternalLinks: []crawler.LinkInfo{},
 	}

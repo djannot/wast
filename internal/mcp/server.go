@@ -1319,7 +1319,6 @@ func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (inter
 	return result, nil
 }
 
-
 // WebSocketTool implements the wast_websocket MCP tool.
 type WebSocketTool struct {
 	server *Server
@@ -1426,4 +1425,3 @@ func (t *WebSocketTool) Execute(ctx context.Context, params json.RawMessage) (in
 
 	return result, nil
 }
-
