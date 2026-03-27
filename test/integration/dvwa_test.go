@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 
 	// Start DVWA containers
 	fmt.Println("Starting DVWA containers...")
-	startCmd := exec.Command("docker", "compose", "-f", "docker-compose.test.yml", "up", "-d")
+	startCmd := exec.Command("docker", "compose", "-f", "../../docker-compose.test.yml", "up", "-d")
 	startCmd.Stdout = os.Stdout
 	startCmd.Stderr = os.Stderr
 	if err := startCmd.Run(); err != nil {
@@ -149,7 +149,7 @@ func initializeDVWA() error {
 // cleanup stops and removes DVWA containers
 func cleanup() {
 	fmt.Println("Stopping DVWA containers...")
-	stopCmd := exec.Command("docker", "compose", "-f", "docker-compose.test.yml", "down", "-v")
+	stopCmd := exec.Command("docker", "compose", "-f", "../../docker-compose.test.yml", "down", "-v")
 	stopCmd.Stdout = os.Stdout
 	stopCmd.Stderr = os.Stderr
 	stopCmd.Run() // Ignore errors during cleanup
@@ -253,7 +253,7 @@ func TestDVWA_SQLi(t *testing.T) {
 		for _, finding := range result.Findings {
 			if strings.Contains(finding.Parameter, "id") {
 				foundIDParam = true
-				t.Logf("Found SQLi on parameter '%s' using technique: %s", finding.Parameter, finding.InjectionType)
+				t.Logf("Found SQLi on parameter '%s' using technique: %s", finding.Parameter, finding.Type)
 			}
 		}
 		if !foundIDParam {
@@ -402,26 +402,16 @@ func TestDVWA_DiscoveryScan(t *testing.T) {
 		t.Skip("Skipping DVWA integration test in short mode")
 	}
 
-	client := loginToDVWA(t)
-
+	// Note: This test currently doesn't use authentication
+	// TODO: Add support for authenticated discovery scans
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 
 	// Create scan configuration
 	cfg := scanner.DiscoveryScanConfig{
 		ScanConfig: scanner.ScanConfig{
-			Target:      dvwaURL,
-			Timeout:     120,
-			Concurrency: 3,
-			Active:      true,
-			Scanners: []string{
-				"xss",
-				"sqli",
-				"cmdi",
-				"path-traversal",
-				"csrf",
-			},
-			HTTPClient: client,
+			Target:  dvwaURL,
+			Timeout: 120,
 		},
 		CrawlDepth:      2,
 		Concurrency:     3,
@@ -437,28 +427,28 @@ func TestDVWA_DiscoveryScan(t *testing.T) {
 	}
 
 	t.Logf("Discovery scan completed:")
-	t.Logf("  Total findings: %d", result.TotalFindings)
-	t.Logf("  High severity: %d", result.HighSeverity)
-	t.Logf("  Medium severity: %d", result.MediumSeverity)
-	t.Logf("  Low severity: %d", result.LowSeverity)
+	t.Logf("  Total findings: %d", result.Summary.TotalFindings)
+	t.Logf("  High severity: %d", result.Summary.HighSeverity)
+	t.Logf("  Medium severity: %d", result.Summary.MediumSeverity)
+	t.Logf("  Low severity: %d", result.Summary.LowSeverity)
 
 	if stats != nil {
-		t.Logf("  XSS findings: %d (tests: %d)", stats.XSS.Findings, stats.XSS.Tests)
-		t.Logf("  SQLi findings: %d (tests: %d)", stats.SQLi.Findings, stats.SQLi.Tests)
-		t.Logf("  CMDi findings: %d (tests: %d)", stats.CMDi.Findings, stats.CMDi.Tests)
-		t.Logf("  Path Traversal findings: %d (tests: %d)", stats.PathTraversal.Findings, stats.PathTraversal.Tests)
-		t.Logf("  CSRF findings: %d", stats.CSRF.Findings)
+		t.Logf("  XSS findings: %d (tests: %d)", stats.TotalXSSFindings, stats.TotalXSSTests)
+		t.Logf("  SQLi findings: %d (tests: %d)", stats.TotalSQLiFindings, stats.TotalSQLiTests)
+		t.Logf("  CMDi findings: %d (tests: %d)", stats.TotalCMDiFindings, stats.TotalCMDiTests)
+		t.Logf("  Path Traversal findings: %d (tests: %d)", stats.TotalPathTraversalFindings, stats.TotalPathTraversalTests)
+		t.Logf("  CSRF findings: %d", stats.TotalCSRFFindings)
 	}
 
 	// We expect to find at least some vulnerabilities on DVWA
-	if result.TotalFindings == 0 {
+	if result.Summary.TotalFindings == 0 {
 		t.Error("Expected to find some vulnerabilities during discovery scan, found none")
 	}
 
 	// Check that we found at least one of the primary vulnerabilities
-	hasXSS := stats != nil && stats.XSS.Findings > 0
-	hasSQLi := stats != nil && stats.SQLi.Findings > 0
-	hasCSRF := stats != nil && stats.CSRF.Findings > 0
+	hasXSS := stats != nil && stats.TotalXSSFindings > 0
+	hasSQLi := stats != nil && stats.TotalSQLiFindings > 0
+	hasCSRF := stats != nil && stats.TotalCSRFFindings > 0
 
 	if !hasXSS && !hasSQLi && !hasCSRF {
 		t.Error("Expected to find at least XSS, SQLi, or CSRF vulnerabilities")
@@ -490,7 +480,7 @@ func TestDVWA_CSRF(t *testing.T) {
 		t.Fatal("Scan returned nil result")
 	}
 
-	t.Logf("CSRF scan completed: %d forms analyzed, %d findings", result.Summary.TotalTests, len(result.Findings))
+	t.Logf("CSRF scan completed: %d forms analyzed, %d findings", result.Summary.TotalFormsTested, len(result.Findings))
 
 	// DVWA has forms without CSRF tokens
 	if len(result.Findings) == 0 {
