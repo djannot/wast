@@ -472,11 +472,74 @@ func (s *PathTraversalScanner) testParameterPOST(ctx context.Context, baseURL *u
 
 // testParameter tests a single parameter with a specific Path Traversal payload.
 func (s *PathTraversalScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload pathTraversalPayload) *PathTraversalFinding {
+	// Get the original parameter value if it exists
+	originalValue := baseURL.Query().Get(paramName)
+
+	// Test 1: Direct payload replacement (no encoding for path separators)
+	finding := s.testPayloadVariant(ctx, baseURL, paramName, payload, payload.Payload, false)
+	if finding != nil {
+		return finding
+	}
+
+	// Test 2: If original value exists and looks like a filename, try prepending the payload
+	// This handles DVWA's case where page=include.php can be exploited with include.php/../../../etc/passwd
+	if originalValue != "" && !strings.HasPrefix(payload.Payload, "/") {
+		// For relative path payloads, try prepending to existing value
+		wrapperPayload := originalValue + "/" + payload.Payload
+		finding = s.testPayloadVariant(ctx, baseURL, paramName, payload, wrapperPayload, false)
+		if finding != nil {
+			finding.Payload = wrapperPayload
+			return finding
+		}
+	}
+
+	// Test 3: Try URL-encoded version for servers that decode before processing
+	// Only test encoded version if it's not already an encoded payload
+	if !strings.Contains(payload.Payload, "%2F") && !strings.Contains(payload.Payload, "%5C") {
+		finding = s.testPayloadVariant(ctx, baseURL, paramName, payload, payload.Payload, true)
+		if finding != nil {
+			return finding
+		}
+	}
+
+	return nil
+}
+
+// testPayloadVariant tests a single payload variant with optional URL encoding
+func (s *PathTraversalScanner) testPayloadVariant(ctx context.Context, baseURL *url.URL, paramName string, payload pathTraversalPayload, payloadValue string, urlEncode bool) *PathTraversalFinding {
 	// Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
-	testURL.RawQuery = q.Encode()
+
+	// Set the payload value
+	q.Set(paramName, payloadValue)
+
+	// Choose encoding strategy based on the urlEncode flag
+	if urlEncode {
+		// Use standard URL encoding
+		testURL.RawQuery = q.Encode()
+	} else {
+		// Construct RawQuery manually to avoid encoding path separators
+		// This is critical for LFI detection where PHP's include() needs literal ../
+		params := []string{}
+		for key, values := range q {
+			for _, value := range values {
+				// Only encode special URL characters, not path separators
+				encodedKey := url.QueryEscape(key)
+				// For path traversal payloads, we want to preserve / and \ characters
+				// but still encode other special characters like spaces, &, =, etc.
+				encodedValue := value
+				// Only encode the truly problematic characters for URLs
+				encodedValue = strings.ReplaceAll(encodedValue, " ", "+")
+				encodedValue = strings.ReplaceAll(encodedValue, "&", "%26")
+				encodedValue = strings.ReplaceAll(encodedValue, "=", "%3D")
+				encodedValue = strings.ReplaceAll(encodedValue, "#", "%23")
+
+				params = append(params, encodedKey+"="+encodedValue)
+			}
+		}
+		testURL.RawQuery = strings.Join(params, "&")
+	}
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
@@ -522,7 +585,7 @@ func (s *PathTraversalScanner) testParameter(ctx context.Context, baseURL *url.U
 		finding := &PathTraversalFinding{
 			URL:         testURL.String(),
 			Parameter:   paramName,
-			Payload:     payload.Payload,
+			Payload:     payloadValue,
 			Evidence:    evidence,
 			Severity:    payload.Severity,
 			Type:        payload.Type,
