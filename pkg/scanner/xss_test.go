@@ -389,6 +389,87 @@ func TestXSSScanner_Scan_MultipleParameters(t *testing.T) {
 	}
 }
 
+func TestXSSScanner_Scan_DVWAStyleReflectedXSS(t *testing.T) {
+	// Test for DVWA-style trivial reflected XSS where payload is echoed verbatim
+	mock := newMockXSSHTTPClient()
+
+	// Simulate DVWA response that reflects the payload verbatim in HTML without encoding
+	// Use the same payload the scanner uses
+	testPayload := "<script>alert('XSS')</script>"
+	// DVWA reflects it directly in the page content
+	dvwaResponse := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<title>Vulnerability: Reflected Cross Site Scripting (XSS)</title>
+</head>
+<body>
+<div id="main_body">
+<h1>Vulnerability: Reflected Cross Site Scripting (XSS)</h1>
+<div class="vulnerable_code_area">
+<form name="XSS" action="#" method="GET">
+<p>
+What's your name?
+<input type="text" name="name" size="30">
+<input type="submit" value="Submit">
+</p>
+</form>
+<pre>Hello %s</pre>
+</div>
+</div>
+</body>
+</html>`, testPayload)
+
+	// The URL will be encoded by the http package
+	// Note: The scanner uses url.Values.Encode() which produces %27 for single quotes
+	mock.responses["http://localhost:8080/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://localhost:8080/vulnerabilities/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect the XSS vulnerability
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability in DVWA-style reflected XSS")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Errors: %v", result.Errors)
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding for DVWA-style XSS")
+	}
+
+	// Verify the finding details
+	finding := result.Findings[0]
+	if finding.Parameter != "name" {
+		t.Errorf("Expected parameter 'name', got %s", finding.Parameter)
+	}
+
+	if finding.Type != "reflected" {
+		t.Errorf("Expected type 'reflected', got %s", finding.Type)
+	}
+
+	if finding.Confidence != "high" {
+		t.Errorf("Expected high confidence for verbatim script tag reflection, got %s", finding.Confidence)
+	}
+
+	if finding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+	}
+
+	if !strings.Contains(finding.Payload, "<script>") {
+		t.Errorf("Expected payload to contain <script> tag, got %s", finding.Payload)
+	}
+}
+
 func TestXSSScanResult_String(t *testing.T) {
 	result := &XSSScanResult{
 		Target: "https://example.com",
@@ -1460,61 +1541,6 @@ func TestXSSScanner_GeneratePayloadVariants(t *testing.T) {
 				seen[v] = true
 			}
 		})
-	}
-}
-
-// Test DVWA-style trivial reflected XSS detection
-func TestXSSScanner_Scan_DVWAStyleReflectedXSS(t *testing.T) {
-	mock := newMockXSSHTTPClient()
-
-	// Simulate DVWA at security=low: directly reflects input without encoding
-	// Test with script tag payload
-	scriptPayload := "<script>alert('XSS')</script>"
-	mock.responses["https://dvwa.local/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Hello %s!</body></html>", scriptPayload))),
-		Header:     make(http.Header),
-	}
-
-	// Test with img onerror payload
-	imgPayload := "<img src=x onerror=alert('XSS')>"
-	mock.responses["https://dvwa.local/vulnerabilities/xss_r/?name=%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E"] = &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("<html><body>Hello %s!</body></html>", imgPayload))),
-		Header:     make(http.Header),
-	}
-
-	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
-
-	ctx := context.Background()
-	result := scanner.Scan(ctx, "https://dvwa.local/vulnerabilities/xss_r/?name=test")
-
-	if result == nil {
-		t.Fatal("Scan returned nil result")
-	}
-
-	if result.Summary.VulnerabilitiesFound == 0 {
-		t.Errorf("Expected to detect DVWA-style reflected XSS, found 0 vulnerabilities")
-		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
-	}
-
-	if len(result.Findings) == 0 {
-		t.Fatal("Expected at least one finding for DVWA-style XSS")
-	}
-
-	// Verify findings have high confidence
-	for _, finding := range result.Findings {
-		if finding.Type == "reflected" {
-			if finding.Confidence != "high" {
-				t.Errorf("Expected high confidence for verbatim reflection, got %s for payload %s", finding.Confidence, finding.Payload)
-			}
-			if !finding.Verified && finding.Severity == SeverityHigh {
-				// For high severity reflected XSS, we expect high confidence
-				if finding.Confidence != "high" {
-					t.Errorf("High severity reflected XSS should have high confidence, got %s", finding.Confidence)
-				}
-			}
-		}
 	}
 }
 
