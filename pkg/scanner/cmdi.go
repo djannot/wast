@@ -105,7 +105,6 @@ var cmdOutputPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)uid=[0-9]+`),
 	regexp.MustCompile(`(?i)gid=[0-9]+`),
 	regexp.MustCompile(`(?i)groups=[0-9]+`),
-	regexp.MustCompile(`www-data`),
 	regexp.MustCompile(`root:[x*]:[0-9]+`),
 	regexp.MustCompile(`/bin/(ba)?sh`),
 	regexp.MustCompile(`(?i)/home/[a-z0-9_-]+`),
@@ -114,6 +113,8 @@ var cmdOutputPatterns = []*regexp.Regexp{
 
 	// Common Unix/Linux usernames from whoami command
 	// Pattern matches typical service account usernames at line boundaries
+	// This avoids false positives from usernames in HTML/page structure by requiring
+	// the username to be on its own line (as whoami output would be)
 	regexp.MustCompile(`(?m)^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|backup|list|irc|gnats|nobody|systemd-network|systemd-resolve|systemd-timesync|messagebus|syslog|_apt|tss|uuidd|tcpdump|sshd|landscape|pollinate|fwupd-refresh|systemd-coredump|lxd|usbmux|avahi|hplip|pulse|gnome-initial-setup|colord|geoclue|speech-dispatcher|dnsmasq|lightdm|nm-openconnect|nm-openvpn|saned|cups-browsed|kernoops|whoopsie|gdm|rtkit|cups-pk-helper|apache|apache2|httpd|nginx|www-data|www|http|_www|wwwrun)$`),
 
 	// Windows command output indicators

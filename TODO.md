@@ -50,18 +50,26 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 **Resolved in commits:** #166, #174, #176, #178, #180, #183, #211
 
-## P0: CMDi scanner doesn't detect command injection via POST
+## ✅ P0: CMDi scanner doesn't detect command injection via POST - RESOLVED
 
 **Impact:** DVWA `/vulnerabilities/exec/` accepts POST param `ip` and passes it to `shell_exec()`. 1,184 tests run, 0 findings.
 
-**Root cause:** Despite POST scanning support being added, the CMDi detection heuristics aren't matching. The scanner needs to:
-1. Send a baseline request (e.g., `ip=127.0.0.1`)
-2. Send a payload like `127.0.0.1; whoami` or `127.0.0.1 && id`
-3. Detect extra output (username, uid) in the response compared to baseline
+**Root cause:** The CMDi output-based detection was failing due to differential analysis rejecting findings when generic patterns (like `www-data`) appeared in both baseline and injected responses. DVWA's HTML page structure includes the username in headers/footers, causing the simple `www-data` pattern to match in baseline responses and trigger false negative detection.
 
-**Debug:** `curl -X POST http://localhost:8080/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit" -b "PHPSESSID=...; security=low"` confirms the injection works. Trace why the scanner doesn't flag it.
+**Fix implemented:**
+1. Removed the generic `regexp.MustCompile(\`www-data\`)` pattern (line 108) that could match anywhere in the response, including in HTML page structure
+2. Relied on more specific patterns that are unique to command output:
+   - `uid=[0-9]+`, `gid=[0-9]+`, `groups=[0-9]+` - Specific to `id` command output
+   - Line-anchored username pattern `(?m)^(root|...|www-data|...)$` - Requires username on its own line (as `whoami` outputs)
+3. Updated integration test to include the `Submit` parameter that DVWA's form requires
+4. Added comprehensive unit tests:
+   - `TestCMDiScanner_DVWALikeExecPOST` - Simulates DVWA exec endpoint behavior
+   - `TestCMDiScanner_DVWALikeExecPOST_WithHTMLPageStructure` - Verifies detection works even when HTML contains username in page structure
+5. Updated integration test expectations to require findings instead of just logging warnings
 
-**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testParameter()`, detection heuristics
+**How it works:** The differential analysis now uses specific patterns (`uid=`, `gid=`, `groups=`) that appear in command output but not in typical HTML page structure, avoiding false negatives while maintaining high detection accuracy.
+
+**Files:** `pkg/scanner/cmdi.go`, `pkg/scanner/cmdi_test.go`, `test/integration/dvwa_test.go`
 
 ## P1: Path traversal scanner misses LFI
 
