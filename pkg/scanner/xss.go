@@ -403,7 +403,9 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	// However, we need to check it's not in a non-executable context (HTML comment, textarea, etc.)
 
 	// Check if payload is inside HTML comment - not executable
-	if strings.Contains(contextSnippet, "<!--") && strings.Index(contextSnippet, "<!--") < strings.Index(contextSnippet, payload) {
+	commentStart := strings.Index(contextSnippet, "<!--")
+	payloadIdx := strings.Index(contextSnippet, payload)
+	if commentStart >= 0 && payloadIdx >= 0 && commentStart < payloadIdx {
 		// Check if comment is closed after payload
 		if strings.Contains(afterPayload, "-->") {
 			// Payload is inside a comment - skip early detection, let detailed analysis handle it
