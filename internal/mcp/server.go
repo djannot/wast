@@ -101,6 +101,7 @@ func (s *Server) registerTools() {
 	s.tools["wast_intercept"] = &InterceptTool{server: s}
 	s.tools["wast_headers"] = &HeadersTool{server: s}
 	s.tools["wast_verify"] = &VerifyTool{server: s}
+	s.tools["wast_websocket"] = &WebSocketTool{server: s}
 }
 
 // Run starts the MCP server and processes requests.
@@ -1314,6 +1315,113 @@ func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (inter
 	if err != nil {
 		return nil, err
 	}
+
+	return result, nil
+}
+
+// WebSocketTool implements the wast_websocket MCP tool.
+type WebSocketTool struct {
+	server *Server
+}
+
+func (t *WebSocketTool) Name() string {
+	return "wast_websocket"
+}
+
+func (t *WebSocketTool) Description() string {
+	return "Perform WebSocket security scanning on a target. Detects WebSocket endpoints and scans for security issues including insecure protocols (ws:// vs wss://) and missing origin validation (CSWSH). Use active=true to enable active testing for Cross-Site WebSocket Hijacking vulnerabilities."
+}
+
+func (t *WebSocketTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"target": map[string]interface{}{
+				"type":        "string",
+				"description": "Target URL to scan for WebSocket endpoints",
+			},
+			"active": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Enable active testing for origin validation (CSWSH detection). Defaults to false for passive mode.",
+				"default":     false,
+			},
+			"timeout": map[string]interface{}{
+				"type":        "integer",
+				"description": "HTTP request timeout in seconds",
+				"default":     30,
+			},
+			"bearer_token": map[string]interface{}{
+				"type":        "string",
+				"description": "Bearer token for Authorization header",
+			},
+			"basic_auth": map[string]interface{}{
+				"type":        "string",
+				"description": "Basic auth credentials in format 'user:pass'",
+			},
+			"auth_header": map[string]interface{}{
+				"type":        "string",
+				"description": "Custom auth header in format 'HeaderName: Value'",
+			},
+			"cookies": map[string]interface{}{
+				"type":        "array",
+				"description": "Cookies to include in requests (format: 'name=value')",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"requests_per_second": map[string]interface{}{
+				"type":        "number",
+				"description": "Rate limit for requests per second (0 for unlimited)",
+				"default":     0,
+			},
+		},
+		"required": []string{"target"},
+	}
+}
+
+func (t *WebSocketTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args struct {
+		Target            string   `json:"target"`
+		Active            bool     `json:"active"`
+		Timeout           int      `json:"timeout"`
+		BearerToken       string   `json:"bearer_token"`
+		BasicAuth         string   `json:"basic_auth"`
+		AuthHeader        string   `json:"auth_header"`
+		Cookies           []string `json:"cookies"`
+		RequestsPerSecond float64  `json:"requests_per_second"`
+	}
+
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	if args.Target == "" {
+		return nil, fmt.Errorf("target is required")
+	}
+
+	// Validate and normalize target URL
+	validatedURL, err := urlutil.ValidateTargetURL(args.Target)
+	if err != nil {
+		return nil, err
+	}
+	args.Target = validatedURL
+
+	if args.Timeout <= 0 {
+		args.Timeout = 30
+	}
+
+	// Construct auth config from arguments
+	authConfig := &auth.AuthConfig{
+		BearerToken: args.BearerToken,
+		BasicAuth:   args.BasicAuth,
+		AuthHeader:  args.AuthHeader,
+		Cookies:     args.Cookies,
+	}
+
+	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
+
+	// Execute WebSocket scan logic
+	result := executeWebSocket(ctx, args.Target, args.Active, args.Timeout, authConfig, rateLimitConfig, t.server.tracer)
 
 	return result, nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 	"github.com/djannot/wast/pkg/tls"
+	"github.com/djannot/wast/pkg/websocket"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -505,6 +506,101 @@ func executeVerify(ctx context.Context, findingType string, findingURL string, p
 	default:
 		return nil, fmt.Errorf("unsupported finding type: %s", findingType)
 	}
+}
+
+// executeWebSocket performs WebSocket security scanning on a target URL.
+func executeWebSocket(ctx context.Context, target string, activeMode bool, timeout int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer) interface{} {
+	// Create tracing span if tracer is available
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.websocket")
+		defer span.End()
+	}
+
+	// Build crawler options for discovering WebSocket endpoints
+	crawlerOpts := []crawler.Option{
+		crawler.WithMaxDepth(2),
+		crawler.WithTimeout(time.Duration(timeout) * time.Second),
+		crawler.WithUserAgent("WAST/1.0 (Web Application Security Testing)"),
+		crawler.WithRespectRobots(false),
+		crawler.WithConcurrency(3),
+	}
+
+	// Add authentication if configured
+	if authConfig != nil && !authConfig.IsEmpty() {
+		crawlerOpts = append(crawlerOpts, crawler.WithAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		crawlerOpts = append(crawlerOpts, crawler.WithRateLimitConfig(rateLimitConfig))
+	}
+
+	// Add tracer if configured
+	if tracer != nil {
+		crawlerOpts = append(crawlerOpts, crawler.WithTracer(tracer))
+	}
+
+	c := crawler.NewCrawler(crawlerOpts...)
+
+	// Perform the crawl to discover WebSocket endpoints
+	crawlCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout*3)*time.Second)
+	defer cancel()
+
+	crawlResult := c.Crawl(crawlCtx, target)
+
+	// Build detector options
+	detectorOpts := []websocket.DetectorOption{
+		websocket.WithDetectorTimeout(time.Duration(timeout) * time.Second),
+	}
+
+	// Add authentication if configured
+	if authConfig != nil && !authConfig.IsEmpty() {
+		detectorOpts = append(detectorOpts, websocket.WithDetectorAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		limiter := ratelimit.NewLimiterFromConfig(rateLimitConfig)
+		detectorOpts = append(detectorOpts, websocket.WithDetectorRateLimiter(limiter))
+	}
+
+	// Add tracer if configured
+	if tracer != nil {
+		detectorOpts = append(detectorOpts, websocket.WithDetectorTracer(tracer))
+	}
+
+	// Create detector and detect WebSocket endpoints
+	detector := websocket.NewDetector(detectorOpts...)
+	detectionResult := detector.Detect(ctx, crawlResult)
+
+	// Build scanner options
+	scannerOpts := []websocket.ScannerOption{
+		websocket.WithScannerTimeout(time.Duration(timeout) * time.Second),
+		websocket.WithActiveMode(activeMode),
+	}
+
+	// Add authentication if configured
+	if authConfig != nil && !authConfig.IsEmpty() {
+		scannerOpts = append(scannerOpts, websocket.WithScannerAuth(authConfig))
+	}
+
+	// Add rate limiting if configured
+	if rateLimitConfig.IsEnabled() {
+		limiter := ratelimit.NewLimiterFromConfig(rateLimitConfig)
+		scannerOpts = append(scannerOpts, websocket.WithScannerRateLimiter(limiter))
+	}
+
+	// Add tracer if configured
+	if tracer != nil {
+		scannerOpts = append(scannerOpts, websocket.WithScannerTracer(tracer))
+	}
+
+	// Create security scanner and scan detected endpoints
+	securityScanner := websocket.NewSecurityScanner(scannerOpts...)
+	scanResult := securityScanner.Scan(ctx, detectionResult)
+
+	return scanResult
 }
 
 // CompactCrawlResult represents a compact version of CrawlResult with summarized data.
