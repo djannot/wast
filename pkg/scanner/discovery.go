@@ -208,6 +208,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	pathtraversalOpts := []PathTraversalOption{
 		WithPathTraversalTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	sstiOpts := []SSTIOption{
+		WithSSTITimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -219,6 +222,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
+		sstiOpts = append(sstiOpts, WithSSTIAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -231,6 +235,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
 		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
+		sstiOpts = append(sstiOpts, WithSSTIRateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -243,6 +248,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
 		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
+		sstiOpts = append(sstiOpts, WithSSTITracer(cfg.Tracer))
 	}
 
 	// Create scanners
@@ -276,6 +282,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		redirectScanner := NewRedirectScanner(redirectOpts...)
 		cmdiScanner := NewCMDiScanner(cmdiOpts...)
 		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
+		sstiScanner := NewSSTIScanner(sstiOpts...)
 
 		// Aggregate findings from all targets
 		allXSSFindings := make([]XSSFinding, 0)
@@ -285,6 +292,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		allRedirectFindings := make([]RedirectFinding, 0)
 		allCMDiFindings := make([]CMDiFinding, 0)
 		allPathTraversalFindings := make([]PathTraversalFinding, 0)
+		allSSTIFindings := make([]SSTIFinding, 0)
 		var mu sync.Mutex
 
 		// Create buffered channel for target distribution
@@ -318,6 +326,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					redirectResult := scanTargetForRedirect(workerCtx, redirectScanner, target)
 					cmdiResult := scanTargetForCMDi(workerCtx, cmdiScanner, target)
 					pathtraversalResult := scanTargetForPathTraversal(workerCtx, pathtraversalScanner, target)
+					sstiResult := scanTargetForSSTI(workerCtx, sstiScanner, target)
 
 					// Add source information to findings
 					for i := range xssResult.Findings {
@@ -341,6 +350,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					for i := range pathtraversalResult.Findings {
 						pathtraversalResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, pathtraversalResult.Findings[i].Evidence)
 					}
+					for i := range sstiResult.Findings {
+						sstiResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sstiResult.Findings[i].Evidence)
+					}
 
 					// Thread-safe aggregation of findings and test counts
 					mu.Lock()
@@ -351,6 +363,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					allRedirectFindings = append(allRedirectFindings, redirectResult.Findings...)
 					allCMDiFindings = append(allCMDiFindings, cmdiResult.Findings...)
 					allPathTraversalFindings = append(allPathTraversalFindings, pathtraversalResult.Findings...)
+					allSSTIFindings = append(allSSTIFindings, sstiResult.Findings...)
 
 					// Accumulate test counts from each scanner's summary
 					stats.TotalXSSTests += xssResult.Summary.TotalTests
@@ -360,6 +373,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					stats.TotalRedirectTests += redirectResult.Summary.TotalTests
 					stats.TotalCMDiTests += cmdiResult.Summary.TotalTests
 					stats.TotalPathTraversalTests += pathtraversalResult.Summary.TotalTests
+					stats.TotalSSTITests += sstiResult.Summary.TotalTests
 					mu.Unlock()
 
 					// Report progress if callback is set
@@ -469,6 +483,16 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Errors: []string{},
 		}
 
+		sstiResult := &SSTIScanResult{
+			Target:   cfg.Target,
+			Findings: allSSTIFindings,
+			Summary: SSTISummary{
+				TotalTests:           stats.TotalSSTITests,
+				VulnerabilitiesFound: len(allSSTIFindings),
+			},
+			Errors: []string{},
+		}
+
 		// Verify findings if enabled
 		if cfg.VerifyFindings {
 			verifyConfig := VerificationConfig{
@@ -485,6 +509,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			stats.TotalRedirectFindings = len(redirectResult.Findings)
 			stats.TotalCMDiFindings = len(cmdiResult.Findings)
 			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
+			stats.TotalSSTIFindings = len(sstiResult.Findings)
 
 			// Verify findings (similar to ExecuteScan)
 			// Verify XSS findings
@@ -592,6 +617,21 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 				}
 			}
 
+			// Verify SSTI findings
+			for i := range sstiResult.Findings {
+				result, err := sstiScanner.VerifyFinding(ctx, &sstiResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					sstiResult.Findings[i].Verified = result.Verified
+					if result.Verified && result.Confidence > 0.8 {
+						sstiResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						sstiResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						sstiResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -655,6 +695,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			}
 			pathtraversalResult.Findings = verifiedPathTraversalFindings
 			pathtraversalResult.Summary.VulnerabilitiesFound = len(verifiedPathTraversalFindings)
+
+			verifiedSSTIFindings := make([]SSTIFinding, 0)
+			for _, finding := range sstiResult.Findings {
+				if finding.Verified {
+					verifiedSSTIFindings = append(verifiedSSTIFindings, finding)
+				}
+			}
+			sstiResult.Findings = verifiedSSTIFindings
+			sstiResult.Summary.VulnerabilitiesFound = len(verifiedSSTIFindings)
 		}
 
 		intermediateResult.XSS = xssResult
@@ -664,6 +713,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.Redirect = redirectResult
 		intermediateResult.CMDi = cmdiResult
 		intermediateResult.PathTraversal = pathtraversalResult
+		intermediateResult.SSTI = sstiResult
 	}
 
 	// Create unified result
@@ -807,6 +857,14 @@ func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScann
 		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
+	targetURL := buildURLWithParams(target)
+	return scanner.Scan(ctx, targetURL)
+}
+
+// scanTargetForSSTI scans a single discovered target for SSTI vulnerabilities.
+func scanTargetForSSTI(ctx context.Context, scanner *SSTIScanner, target DiscoveredTarget) *SSTIScanResult {
+	// SSTI scanner only supports GET requests via Scan method
+	// Build URL with parameters for both GET and POST methods
 	targetURL := buildURLWithParams(target)
 	return scanner.Scan(ctx, targetURL)
 }
