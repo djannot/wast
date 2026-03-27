@@ -2708,6 +2708,23 @@ func TestIsNonDataParameter(t *testing.T) {
 		{"search parameter", "search", false},
 		{"query parameter", "query", false},
 		{"page parameter", "page", false},
+
+		// Edge cases - parameters containing filter patterns as substrings
+		// Note: "submission" doesn't contain "submit" (it's "submiss"), so it should NOT be filtered
+		{"submission param (doesn't match)", "submission", false},
+		{"ribbon param (doesn't match)", "ribbon", false},
+
+		// These DO contain the patterns and WILL be filtered
+		{"resubmit param (contains submit)", "resubmit", true},
+		{"resend param (contains send)", "resend", true},
+		{"sender param (contains send)", "sender", true},
+		{"goto param (contains go)", "goto", true},
+		{"cargo param (contains go)", "cargo", true},
+		{"category param (contains go)", "category", true},
+		{"transaction param (contains action)", "transaction", true},
+		{"reaction param (contains action)", "reaction", true},
+		{"submit_form param (contains submit)", "submit_form", true},
+		{"form_button param (contains button)", "form_button", true},
 	}
 
 	for _, tt := range tests {

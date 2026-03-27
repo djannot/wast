@@ -42,6 +42,31 @@ var (
 	divRegex = regexp.MustCompile(`(?i)<div[^>]*class=['"][^'"]*(?:item|row|entry|record|result)[^'"]*['"][^>]*>`)
 )
 
+// Pre-compiled regex patterns for dynamic content normalization (performance optimization)
+var dynamicContentPatterns = []*regexp.Regexp{
+	// CSRF tokens - common patterns
+	regexp.MustCompile(`(?i)<input[^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*value=['"][^'"]*['"][^>]*>`),
+	regexp.MustCompile(`(?i)<input[^>]*value=['"][^'"]*['"][^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*>`),
+
+	// CSRF token meta tags
+	regexp.MustCompile(`(?i)<meta[^>]*name=['"]?(csrf-token|csrf_token)['"]?[^>]*content=['"][^'"]*['"][^>]*>`),
+
+	// Nonces and session IDs in attribute values (quoted)
+	regexp.MustCompile(`(?i)(nonce|session_?id|sid|jsessionid)=['"][0-9a-f]{8,}['"]`),
+
+	// Nonces and session IDs in URLs (query parameters)
+	regexp.MustCompile(`(?i)[?&](nonce|session_?id|sid|jsessionid)=[0-9a-f]{8,}`),
+
+	// Timestamps in attribute values (quoted)
+	regexp.MustCompile(`(?i)(timestamp|ts|time|_t)=['"][0-9]{10,}['"]`),
+
+	// Timestamps in URLs (query parameters)
+	regexp.MustCompile(`(?i)[?&](timestamp|ts|time|_t)=[0-9]{10,}`),
+
+	// Common token patterns in hidden inputs
+	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-f]{16,}['"][^>]*>`),
+}
+
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
 	client         HTTPClient
@@ -579,7 +604,7 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
 	for paramName := range paramsToTest {
-		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, parameters)
+		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, paramsToTest)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
 			baselineTiming[paramName] = duration
@@ -601,14 +626,14 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 			if payload.Type == "time-based" {
 				// Time-based detection
 				baseline := baselineTiming[paramName]
-				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, parameters)
+				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, paramsToTest)
 			} else if payload.CompareBaseline {
 				// Boolean-based detection
 				baseline := baselineResponses[paramName]
-				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline, parameters)
+				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline, paramsToTest)
 			} else {
 				// Error-based detection
-				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, parameters)
+				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, paramsToTest)
 			}
 
 			result.Summary.TotalTests++
@@ -841,36 +866,10 @@ type responseCharacteristics struct {
 // normalizeResponseContent removes dynamic content (CSRF tokens, nonces, timestamps)
 // from HTML responses before comparison to reduce false positives in differential analysis
 func normalizeResponseContent(htmlStr string) string {
-	// Pre-compiled regex patterns for dynamic content
-	var dynamicContentPatterns = []*regexp.Regexp{
-		// CSRF tokens - common patterns
-		regexp.MustCompile(`(?i)<input[^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*value=['"][^'"]*['"][^>]*>`),
-		regexp.MustCompile(`(?i)<input[^>]*value=['"][^'"]*['"][^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*>`),
-
-		// CSRF token meta tags
-		regexp.MustCompile(`(?i)<meta[^>]*name=['"]?(csrf-token|csrf_token)['"]?[^>]*content=['"][^'"]*['"][^>]*>`),
-
-		// Nonces and session IDs in attribute values (quoted)
-		regexp.MustCompile(`(?i)(nonce|session_?id|sid|jsessionid)=['"][0-9a-f]{8,}['"]`),
-
-		// Nonces and session IDs in URLs (query parameters)
-		regexp.MustCompile(`(?i)[?&](nonce|session_?id|sid|jsessionid)=[0-9a-f]{8,}`),
-
-		// Timestamps in attribute values (quoted)
-		regexp.MustCompile(`(?i)(timestamp|ts|time|_t)=['"][0-9]{10,}['"]`),
-
-		// Timestamps in URLs (query parameters)
-		regexp.MustCompile(`(?i)[?&](timestamp|ts|time|_t)=[0-9]{10,}`),
-
-		// Common token patterns in hidden inputs
-		regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-f]{16,}['"][^>]*>`),
-	}
-
 	normalized := htmlStr
 	for _, pattern := range dynamicContentPatterns {
 		normalized = pattern.ReplaceAllString(normalized, "")
 	}
-
 	return normalized
 }
 
