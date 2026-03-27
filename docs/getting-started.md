@@ -137,6 +137,8 @@ Claude: [Uses wast_recon tool with include_subdomains=true]
 | `wast_crawl` | Web crawling and content discovery |
 | `wast_api` | API discovery and testing |
 | `wast_intercept` | Traffic interception and analysis |
+| `wast_headers` | Security header analysis (passive-only) |
+| `wast_verify` | Verify individual security findings to reduce false positives |
 
 ### CLI Integration (Legacy)
 
