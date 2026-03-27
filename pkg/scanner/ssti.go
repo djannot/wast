@@ -430,9 +430,17 @@ func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, 
 			return false
 		}
 
-		// Make sure it's not just the payload being reflected
-		// The expected result should appear without the template syntax
-		if !strings.Contains(body, payload.Payload) || s.isEvaluated(body, payload) {
+		// Primary detection: expected result appears but payload literal does NOT
+		// This means the template was evaluated, not just reflected
+		if !strings.Contains(body, payload.Payload) {
+			return true
+		}
+
+		// Secondary detection: both payload and result present
+		// Only flag if the expected result count exceeds payload count (evaluation occurred)
+		expectedCount := strings.Count(body, payload.ExpectedResult)
+		payloadCount := strings.Count(body, payload.Payload)
+		if expectedCount > payloadCount {
 			return true
 		}
 	}
@@ -440,32 +448,6 @@ func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, 
 	// Use custom validator if provided
 	if payload.Validator != nil {
 		return payload.Validator(body)
-	}
-
-	return false
-}
-
-// isEvaluated checks if the template was actually evaluated (not just reflected).
-func (s *SSTIScanner) isEvaluated(body string, payload sstiPayload) bool {
-	// Check if the expected result appears separately from the payload
-	// This helps distinguish evaluation from simple reflection
-
-	// Look for the expected result in isolation
-	expectedPattern := regexp.MustCompile(`(?:^|[^\d])` + regexp.QuoteMeta(payload.ExpectedResult) + `(?:[^\d]|$)`)
-	if expectedPattern.MatchString(body) {
-		// Check if the template syntax is NOT present in the same context
-		// This would indicate evaluation rather than reflection
-		if strings.Contains(body, payload.ExpectedResult) {
-			// Count occurrences
-			expectedCount := strings.Count(body, payload.ExpectedResult)
-			payloadCount := strings.Count(body, payload.Payload)
-
-			// If we see the expected result more times than the payload, or
-			// if the expected result appears but the payload doesn't, it's likely evaluated
-			if expectedCount > payloadCount {
-				return true
-			}
-		}
 	}
 
 	return false
@@ -479,9 +461,11 @@ func (s *SSTIScanner) calculateConfidence(body string, payload sstiPayload) stri
 	}
 
 	// Medium confidence if both expected result and payload are visible
+	// But only if the expected result appears more than the payload (evaluation occurred)
 	if strings.Contains(body, payload.ExpectedResult) && strings.Contains(body, payload.Payload) {
-		// Check if they appear in different contexts (evaluation happened)
-		if s.isEvaluated(body, payload) {
+		expectedCount := strings.Count(body, payload.ExpectedResult)
+		payloadCount := strings.Count(body, payload.Payload)
+		if expectedCount > payloadCount {
 			return "high"
 		}
 		return "medium"

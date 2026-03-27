@@ -15,15 +15,19 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 | SSTI | 29 | 370 | All false positives — massive FP problem |
 | Headers | 7 missing | — | Expected for DVWA |
 
-## P0: SSTI scanner produces massive false positives
+## ✅ P0: SSTI scanner produces massive false positives - RESOLVED
 
 **Impact:** 29 SSTI findings reported across 6+ template engines (Jinja2, Freemarker, Thymeleaf, Velocity, ERB, Smarty) on a plain PHP app that uses none of them. Every parameter that reflects input is flagged.
 
 **Root cause:** The detection logic checks if the payload string appears in the response, but does not verify that the template expression was actually **evaluated**. For example, sending `{{7*7}}` and finding `{{7*7}}` in the response is reflection, not injection. The scanner should check for `49` (the computed result) in the response instead.
 
-**Fix approach:** For each template syntax, send the math expression and check if the **computed result** (e.g., `49`) appears in the response where the payload was injected, not the payload literal itself. Also compare against a baseline to rule out the number appearing naturally.
+**Fix implemented:** Updated `detectTemplateInjection()` to require:
+1. Expected result (e.g., `49`) appears in response AND payload literal (e.g., `{{7*7}}`) does NOT appear (pure evaluation)
+2. If both appear, expected result count must exceed payload count (evaluation occurred)
+3. Baseline comparison prevents flagging numbers naturally present in pages
+4. Added comprehensive unit tests for false positive and true positive scenarios
 
-**Files:** `pkg/scanner/ssti.go`
+**Files:** `pkg/scanner/ssti.go`, `pkg/scanner/ssti_test.go`
 
 ## P0: XSS scanner doesn't detect reflected XSS
 

@@ -672,45 +672,6 @@ func TestGetRemediation(t *testing.T) {
 	}
 }
 
-func TestIsEvaluated(t *testing.T) {
-	scanner := NewSSTIScanner()
-
-	tests := []struct {
-		name     string
-		body     string
-		payload  sstiPayload
-		expected bool
-	}{
-		{
-			name: "Result appears more than payload",
-			body: "First 49 and second 49 but payload {{7*7}} only once",
-			payload: sstiPayload{
-				Payload:        "{{7*7}}",
-				ExpectedResult: "49",
-			},
-			expected: true,
-		},
-		{
-			name: "Result without payload",
-			body: "The answer is 49",
-			payload: sstiPayload{
-				Payload:        "{{7*7}}",
-				ExpectedResult: "49",
-			},
-			expected: true, // Expected result is found with proper isolation
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := scanner.isEvaluated(tt.body, tt.payload)
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v", tt.expected, result)
-			}
-		})
-	}
-}
-
 func TestSSTIScan_NoFalsePositiveWhenResultInBaseline(t *testing.T) {
 	mockClient := &MockSSTIHTTPClient{
 		responses: make(map[string]string),
@@ -831,6 +792,174 @@ func TestDetectTemplateInjection_WithBaseline(t *testing.T) {
 			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v for body: %s, baseline: %s", tt.expected, result, tt.body, tt.baselineBody)
+			}
+		})
+	}
+}
+
+// TestDetectTemplateInjection_FalsePositives tests scenarios that should NOT trigger false positives
+func TestDetectTemplateInjection_FalsePositives(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name         string
+		body         string
+		payload      sstiPayload
+		baselineBody string
+		description  string
+	}{
+		{
+			name: "Payload reflected verbatim - no evaluation",
+			body: "You entered: {{7*7}}",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "You entered: test",
+			description:  "Simple reflection of payload without evaluation",
+		},
+		{
+			name: "Expected result naturally present in page",
+			body: "We have 49 products available",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "We have 49 products available",
+			description:  "Number naturally present in both baseline and response",
+		},
+		{
+			name: "Jinja2 string multiplication reflected",
+			body: "Search: {{7*'7'}}",
+			payload: sstiPayload{
+				Payload:        "{{7*'7'}}",
+				ExpectedResult: "7777777",
+			},
+			baselineBody: "Search: test",
+			description:  "Payload reflected but not evaluated",
+		},
+		{
+			name: "Freemarker syntax reflected",
+			body: "Input: ${7*7}",
+			payload: sstiPayload{
+				Payload:        "${7*7}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: test",
+			description:  "Freemarker syntax reflected verbatim",
+		},
+		{
+			name: "ERB syntax reflected",
+			body: "Template: <%= 7*7 %>",
+			payload: sstiPayload{
+				Payload:        "<%= 7*7 %>",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Template: test",
+			description:  "ERB syntax reflected without evaluation",
+		},
+		{
+			name: "Payload and result both present with equal count",
+			body: "You entered {{7*7}} which looks like 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "You entered test which looks like test",
+			description:  "Both payload and result appear once each (likely reflection)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
+			if result {
+				t.Errorf("False positive detected for: %s\nBody: %s\nPayload: %s\nExpected: %s",
+					tt.description, tt.body, tt.payload.Payload, tt.payload.ExpectedResult)
+			}
+		})
+	}
+}
+
+// TestDetectTemplateInjection_TruePositives tests scenarios that SHOULD be detected
+func TestDetectTemplateInjection_TruePositives(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name         string
+		body         string
+		payload      sstiPayload
+		baselineBody string
+		description  string
+	}{
+		{
+			name: "Computed result without payload - pure evaluation",
+			body: "Result: 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Result: nothing",
+			description:  "Template evaluated and only result appears",
+		},
+		{
+			name: "Jinja2 string multiplication evaluated",
+			body: "Output: 7777777",
+			payload: sstiPayload{
+				Payload:        "{{7*'7'}}",
+				ExpectedResult: "7777777",
+			},
+			baselineBody: "Output: nothing",
+			description:  "Jinja2 string multiplication successfully evaluated",
+		},
+		{
+			name: "Multiple computed results - evaluation occurred",
+			body: "Input: {{7*7}} Results: 49 and 49 and 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: test Results: nothing",
+			description:  "Expected result appears 3 times, payload only once",
+		},
+		{
+			name: "Freemarker evaluated",
+			body: "Calculation result: 49",
+			payload: sstiPayload{
+				Payload:        "${7*7}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Calculation result: 0",
+			description:  "Freemarker template successfully evaluated",
+		},
+		{
+			name: "ERB evaluated",
+			body: "Value is 49",
+			payload: sstiPayload{
+				Payload:        "<%= 7*7 %>",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Value is unknown",
+			description:  "ERB template successfully evaluated",
+		},
+		{
+			name: "Result appears twice, payload once",
+			body: "Debug: {{7*7}} = 49 (computed: 49)",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Debug: test = unknown",
+			description:  "Evaluation occurred because result count > payload count",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
+			if !result {
+				t.Errorf("Failed to detect true positive for: %s\nBody: %s\nPayload: %s\nExpected: %s",
+					tt.description, tt.body, tt.payload.Payload, tt.payload.ExpectedResult)
 			}
 		})
 	}
