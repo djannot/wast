@@ -29,7 +29,7 @@ wast --mcp --telemetry-endpoint localhost:4317
 
 ## MCP Tools Reference
 
-WAST provides 6 MCP tools for security testing. All tools respect WAST's safe mode defaults.
+WAST provides 7 MCP tools for security testing. All tools respect WAST's safe mode defaults.
 
 ### 1. wast_recon - Reconnaissance
 
@@ -441,6 +441,82 @@ Perform passive-only security header analysis. Checks HTTP security headers (HST
       {
         "type": "text",
         "text": "{\"target\":\"https://example.com\",\"headers\":[{\"name\":\"Strict-Transport-Security\",\"present\":true,\"value\":\"max-age=31536000; includeSubDomains\",\"severity\":\"info\",\"description\":\"HSTS header is present\"},{\"name\":\"X-Content-Type-Options\",\"present\":true,\"value\":\"nosniff\",\"severity\":\"info\",\"description\":\"X-Content-Type-Options header is present\"},{\"name\":\"X-Frame-Options\",\"present\":false,\"severity\":\"medium\",\"description\":\"X-Frame-Options header is missing\",\"remediation\":\"Add X-Frame-Options header with value DENY or SAMEORIGIN\"},{\"name\":\"Content-Security-Policy\",\"present\":false,\"severity\":\"high\",\"description\":\"Content-Security-Policy header is missing\",\"remediation\":\"Implement a Content-Security-Policy header\"}],\"cookies\":[{\"name\":\"session\",\"http_only\":true,\"secure\":true,\"same_site\":\"Strict\",\"issues\":[],\"severity\":\"info\"},{\"name\":\"tracking\",\"http_only\":false,\"secure\":false,\"same_site\":\"None\",\"issues\":[\"Missing HttpOnly flag\",\"Missing Secure flag\"],\"severity\":\"medium\",\"remediation\":\"Set HttpOnly and Secure flags on cookie\"}],\"cors\":[{\"header\":\"Access-Control-Allow-Origin\",\"value\":\"*\",\"present\":true,\"issues\":[\"Wildcard origin allows all domains\"],\"severity\":\"medium\",\"description\":\"CORS policy allows all origins\",\"remediation\":\"Restrict Access-Control-Allow-Origin to specific trusted domains\"}],\"summary\":{\"total_headers\":7,\"missing_headers\":2,\"total_cookies\":2,\"insecure_cookies\":1,\"cors_issues\":1,\"high_severity_count\":1,\"medium_severity_count\":2,\"low_severity_count\":0,\"info_count\":3}}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 7. wast_verify - Finding Verification
+
+Verify individual security findings before reporting them. Re-tests findings with payload variants to reduce false positives. Supports verification of SQLi, XSS, SSRF, CMDi, Path Traversal, Redirect, and CSRF findings.
+
+#### Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `finding_type` | string | Yes | - | Type of finding to verify (sqli, xss, ssrf, cmdi, pathtraversal, redirect, csrf) |
+| `finding_url` | string | Yes | - | URL where the finding was detected |
+| `parameter` | string | Yes | - | Vulnerable parameter name |
+| `payload` | string | Yes | - | Original payload that triggered the finding |
+| `max_retries` | integer | No | 3 | Maximum verification attempts |
+| `delay` | string | No | "100ms" | Delay between verification attempts (e.g., '100ms', '1s') |
+| `bearer_token` | string | No | - | Bearer token for Authorization header |
+| `basic_auth` | string | No | - | Basic auth credentials in format 'user:pass' |
+| `auth_header` | string | No | - | Custom auth header in format 'HeaderName: Value' |
+| `cookies` | array[string] | No | - | Cookies to include in requests (format: 'name=value') |
+| `login_url` | string | No | - | Login endpoint URL for automated authentication |
+| `login_user` | string | No | - | Username for automated login |
+| `login_pass` | string | No | - | Password for automated login (WARNING: visible in MCP logs) |
+| `login_user_field` | string | No | "username" | Form field name for username |
+| `login_pass_field` | string | No | "password" | Form field name for password |
+| `requests_per_second` | number | No | 0 | Rate limit for requests per second (0 for unlimited) |
+
+#### Valid Finding Types
+
+- `sqli` - SQL Injection
+- `xss` - Cross-Site Scripting
+- `ssrf` - Server-Side Request Forgery
+- `cmdi` - Command Injection
+- `pathtraversal` - Path Traversal
+- `redirect` - Open Redirect
+- `csrf` - Cross-Site Request Forgery
+
+#### JSON-RPC Request Example
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "tools/call",
+  "params": {
+    "name": "wast_verify",
+    "arguments": {
+      "finding_type": "xss",
+      "finding_url": "https://example.com/search",
+      "parameter": "q",
+      "payload": "<script>alert(1)</script>",
+      "max_retries": 3,
+      "delay": "100ms",
+      "bearer_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  }
+}
+```
+
+#### Expected Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"finding_type\":\"xss\",\"finding_url\":\"https://example.com/search\",\"parameter\":\"q\",\"original_payload\":\"<script>alert(1)</script>\",\"verified\":true,\"confidence\":\"high\",\"attempts\":2,\"verification_details\":{\"payload_variants_tested\":3,\"successful_variants\":2,\"response_indicators\":[\"payload reflected in response\",\"no encoding applied\"]},\"recommendation\":\"Implement proper output encoding and Content Security Policy\"}"
       }
     ]
   }
