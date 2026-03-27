@@ -217,7 +217,15 @@ func TestScanDiscoveredTargets_Concurrent(t *testing.T) {
 	concurrencyLevels := []int{1, 2, 5}
 	for _, concurrency := range concurrencyLevels {
 		t.Run(fmt.Sprintf("Concurrency_%d", concurrency), func(t *testing.T) {
-			result, stats := scanDiscoveredTargets(ctx, cfg, targets, concurrency, nil)
+			// Create empty crawl result for testing
+			crawlResult := &crawler.CrawlResult{
+				Target:       cfg.Target,
+				CrawledURLs:  []string{},
+				Resources:    []crawler.ResourceInfo{},
+				InternalLinks: []crawler.LinkInfo{},
+				ExternalLinks: []crawler.LinkInfo{},
+			}
+			result, stats := scanDiscoveredTargets(ctx, cfg, targets, concurrency, nil, crawlResult)
 
 			if result == nil {
 				t.Fatal("scanDiscoveredTargets returned nil result")
@@ -263,8 +271,17 @@ func TestScanDiscoveredTargets_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
+	// Create empty crawl result for testing
+	crawlResult := &crawler.CrawlResult{
+		Target:       cfg.Target,
+		CrawledURLs:  []string{},
+		Resources:    []crawler.ResourceInfo{},
+		InternalLinks: []crawler.LinkInfo{},
+		ExternalLinks: []crawler.LinkInfo{},
+	}
+
 	// This should be cancelled quickly
-	result, _ := scanDiscoveredTargets(ctx, cfg, targets, 3, nil)
+	result, _ := scanDiscoveredTargets(ctx, cfg, targets, 3, nil, crawlResult)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result even with cancellation")
@@ -302,8 +319,17 @@ func TestScanDiscoveredTargets_NoRaceConditions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Create empty crawl result for testing
+	crawlResult := &crawler.CrawlResult{
+		Target:       cfg.Target,
+		CrawledURLs:  []string{},
+		Resources:    []crawler.ResourceInfo{},
+		InternalLinks: []crawler.LinkInfo{},
+		ExternalLinks: []crawler.LinkInfo{},
+	}
+
 	// Run with high concurrency to stress test
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 10, nil)
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 10, nil, crawlResult)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")
@@ -330,7 +356,16 @@ func TestScanDiscoveredTargets_EmptyTargets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil)
+	// Create empty crawl result for testing
+	crawlResult := &crawler.CrawlResult{
+		Target:       cfg.Target,
+		CrawledURLs:  []string{},
+		Resources:    []crawler.ResourceInfo{},
+		InternalLinks: []crawler.LinkInfo{},
+		ExternalLinks: []crawler.LinkInfo{},
+	}
+
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil, crawlResult)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")
@@ -372,7 +407,16 @@ func TestScanDiscoveredTargets_ActiveScanners(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil)
+	// Create empty crawl result for testing
+	crawlResult := &crawler.CrawlResult{
+		Target:       cfg.Target,
+		CrawledURLs:  []string{},
+		Resources:    []crawler.ResourceInfo{},
+		InternalLinks: []crawler.LinkInfo{},
+		ExternalLinks: []crawler.LinkInfo{},
+	}
+
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 5, nil, crawlResult)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")
@@ -714,9 +758,18 @@ func TestScanDiscoveredTargets_TestCountAggregation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	// Create empty crawl result for testing
+	crawlResult := &crawler.CrawlResult{
+		Target:       cfg.Target,
+		CrawledURLs:  []string{},
+		Resources:    []crawler.ResourceInfo{},
+		InternalLinks: []crawler.LinkInfo{},
+		ExternalLinks: []crawler.LinkInfo{},
+	}
+
 	// Call scanDiscoveredTargets to verify aggregation logic
 	// This will make real HTTP requests to the targets defined above
-	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 2, nil)
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 2, nil, crawlResult)
 
 	if result == nil {
 		t.Fatal("scanDiscoveredTargets returned nil result")

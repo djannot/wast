@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/crawler"
+	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/websocket"
 )
 
 // ProgressCallback is a function called to report progress during scanning.
@@ -91,7 +93,7 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 	targets := extractDiscoveredTargets(cfg.Target, crawlResult)
 
 	// Scan all discovered targets
-	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency, cfg.ProgressCallback)
+	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency, cfg.ProgressCallback, crawlResult)
 }
 
 // extractDiscoveredTargets extracts scannable targets from crawl results.
@@ -171,7 +173,7 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 }
 
 // scanDiscoveredTargets scans all discovered targets and aggregates results.
-func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget, scanConcurrency int, progressCallback ProgressCallback) (*UnifiedScanResult, *ScanStats) {
+func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []DiscoveredTarget, scanConcurrency int, progressCallback ProgressCallback, crawlResult *crawler.CrawlResult) (*UnifiedScanResult, *ScanStats) {
 	// If no targets discovered, fall back to scanning the base target
 	if len(targets) == 0 {
 		return ExecuteScan(ctx, cfg)
@@ -716,6 +718,69 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.SSTI = sstiResult
 	}
 
+	// Perform WebSocket detection and scanning
+	var websocketResult *WebSocketScanResult
+	detectorOpts := []websocket.DetectorOption{
+		websocket.WithDetectorTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
+	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
+		detectorOpts = append(detectorOpts, websocket.WithDetectorAuth(cfg.AuthConfig))
+	}
+	if cfg.RateLimitConfig.IsEnabled() {
+		limiter := ratelimit.NewLimiterFromConfig(cfg.RateLimitConfig)
+		detectorOpts = append(detectorOpts, websocket.WithDetectorRateLimiter(limiter))
+	}
+	if cfg.Tracer != nil {
+		detectorOpts = append(detectorOpts, websocket.WithDetectorTracer(cfg.Tracer))
+	}
+
+	detector := websocket.NewDetector(detectorOpts...)
+	detectionResult := detector.Detect(ctx, crawlResult)
+
+	// Build scanner options
+	scannerOpts := []websocket.ScannerOption{
+		websocket.WithScannerTimeout(time.Duration(cfg.Timeout) * time.Second),
+		websocket.WithActiveMode(!cfg.SafeMode), // Active mode if not in safe mode
+	}
+	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
+		scannerOpts = append(scannerOpts, websocket.WithScannerAuth(cfg.AuthConfig))
+	}
+	if cfg.RateLimitConfig.IsEnabled() {
+		limiter := ratelimit.NewLimiterFromConfig(cfg.RateLimitConfig)
+		scannerOpts = append(scannerOpts, websocket.WithScannerRateLimiter(limiter))
+	}
+	if cfg.Tracer != nil {
+		scannerOpts = append(scannerOpts, websocket.WithScannerTracer(cfg.Tracer))
+	}
+
+	// Scan detected WebSocket endpoints
+	securityScanner := websocket.NewSecurityScanner(scannerOpts...)
+	wsScanResult := securityScanner.Scan(ctx, detectionResult)
+
+	// Convert to aggregator-compatible format
+	websocketResult = &WebSocketScanResult{
+		Findings: make([]WebSocketFinding, len(wsScanResult.Findings)),
+		Summary: WebSocketSummary{
+			TotalEndpoints:      wsScanResult.Summary.TotalEndpoints,
+			VulnerableEndpoints: wsScanResult.Summary.VulnerableEndpoints,
+			HighSeverityCount:   wsScanResult.Summary.HighSeverityCount,
+			MediumSeverityCount: wsScanResult.Summary.MediumSeverityCount,
+			LowSeverityCount:    wsScanResult.Summary.LowSeverityCount,
+		},
+	}
+
+	// Copy findings
+	for i, finding := range wsScanResult.Findings {
+		websocketResult.Findings[i] = WebSocketFinding{
+			URL:         finding.URL,
+			FindingType: finding.FindingType,
+			Severity:    finding.Severity,
+			Description: finding.Description,
+			Confidence:  finding.Confidence,
+			RuleID:      finding.RuleID,
+		}
+	}
+
 	// Create unified result
 	unifiedResult := NewUnifiedScanResult(
 		cfg.Target,
@@ -729,7 +794,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.CMDi,
 		intermediateResult.PathTraversal,
 		intermediateResult.SSTI,
-		nil, // WebSocket scanning (will be added later)
+		websocketResult,
 		intermediateResult.Errors,
 	)
 
