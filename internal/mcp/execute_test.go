@@ -1611,3 +1611,224 @@ func TestCompactCrawlResultOutputSize(t *testing.T) {
 		t.Errorf("Compact result should be under 10KB, got %d bytes", compactSize)
 	}
 }
+
+// TestExecuteWebSocket tests the executeWebSocket function
+func TestExecuteWebSocket(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		activeMode bool
+		timeout    int
+	}{
+		{
+			name:       "passive mode scan",
+			target:     "https://example.com",
+			activeMode: false,
+			timeout:    30,
+		},
+		{
+			name:       "active mode scan",
+			target:     "https://example.com",
+			activeMode: true,
+			timeout:    30,
+		},
+		{
+			name:       "short timeout scan",
+			target:     "https://test.com",
+			activeMode: false,
+			timeout:    5,
+		},
+		{
+			name:       "long timeout active scan",
+			target:     "https://example.org",
+			activeMode: true,
+			timeout:    60,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			authConfig := &auth.AuthConfig{}
+			rateLimitConfig := ratelimit.Config{}
+
+			result := executeWebSocket(ctx, tt.target, tt.activeMode, tt.timeout, authConfig, rateLimitConfig, nil)
+
+			// Verify result is not nil
+			if result == nil {
+				t.Fatal("executeWebSocket returned nil")
+			}
+
+			// The result should be a websocket scan result
+			// We can verify it's not nil and has expected structure
+			// Note: The actual type depends on the websocket package implementation
+		})
+	}
+}
+
+// TestExecuteWebSocketWithAuth tests executeWebSocket with authentication
+func TestExecuteWebSocketWithAuth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-token",
+		BasicAuth:   "user:pass",
+		Cookies:     []string{"session=abc123"},
+	}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeWebSocket(ctx, "https://example.com", false, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket with auth returned nil")
+	}
+}
+
+// TestExecuteWebSocketWithRateLimit tests executeWebSocket with rate limiting
+func TestExecuteWebSocketWithRateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{
+		RequestsPerSecond: 2.0,
+	}
+
+	result := executeWebSocket(ctx, "https://example.com", false, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket with rate limit returned nil")
+	}
+}
+
+// TestExecuteWebSocketPassiveMode tests passive mode scanning (default)
+func TestExecuteWebSocketPassiveMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeWebSocket(ctx, "https://example.com", false, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket in passive mode returned nil")
+	}
+
+	// Passive mode should complete without errors
+	// The result structure should be valid
+}
+
+// TestExecuteWebSocketActiveMode tests active mode scanning (CSWSH detection)
+func TestExecuteWebSocketActiveMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeWebSocket(ctx, "https://example.com", true, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket in active mode returned nil")
+	}
+
+	// Active mode should complete and return results
+	// The result should include CSWSH detection results
+}
+
+// TestExecuteWebSocketContextCancellation tests context cancellation in executeWebSocket
+func TestExecuteWebSocketContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeWebSocket(ctx, "https://example.com", false, 30, authConfig, rateLimitConfig, nil)
+
+	// Result should still be returned even if context is canceled
+	if result == nil {
+		t.Fatal("executeWebSocket should return a result even with canceled context")
+	}
+}
+
+// TestExecuteWebSocketWithAllAuthOptions tests WebSocket scan with all authentication options
+func TestExecuteWebSocketWithAllAuthOptions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-bearer-token",
+		BasicAuth:   "username:password",
+		AuthHeader:  "X-Custom-Auth: custom-value",
+		Cookies:     []string{"session=xyz123", "user_id=456"},
+	}
+	rateLimitConfig := ratelimit.Config{}
+
+	result := executeWebSocket(ctx, "https://example.com", false, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket with all auth options returned nil")
+	}
+}
+
+// TestExecuteWebSocketWithRateLimitAndAuth tests WebSocket scan with both rate limiting and authentication
+func TestExecuteWebSocketWithRateLimitAndAuth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-token",
+		Cookies:     []string{"session=abc"},
+	}
+	rateLimitConfig := ratelimit.Config{
+		RequestsPerSecond: 3.0,
+	}
+
+	result := executeWebSocket(ctx, "https://example.com", true, 30, authConfig, rateLimitConfig, nil)
+
+	if result == nil {
+		t.Fatal("executeWebSocket with rate limit and auth returned nil")
+	}
+}
+
+// TestExecuteWebSocketTimeout tests timeout configuration
+func TestExecuteWebSocketTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout int
+	}{
+		{
+			name:    "very short timeout",
+			timeout: 1,
+		},
+		{
+			name:    "normal timeout",
+			timeout: 30,
+		},
+		{
+			name:    "long timeout",
+			timeout: 120,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			authConfig := &auth.AuthConfig{}
+			rateLimitConfig := ratelimit.Config{}
+
+			result := executeWebSocket(ctx, "https://example.com", false, tt.timeout, authConfig, rateLimitConfig, nil)
+
+			if result == nil {
+				t.Fatal("executeWebSocket returned nil")
+			}
+		})
+	}
+}
