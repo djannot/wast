@@ -9,7 +9,7 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 | SQLi | 9 | 511 | Detecting, but some FPs on non-injectable params (`Upload`, `seclev_submit`) |
 | CSRF | 9 | — | Real missing CSRF tokens |
 | SSRF | 0 | 629 | Clean — no false positives |
-| XSS | ✅ Detects | 259 | Detecting reflected XSS on `/xss_r/` (fixed in #166, #174, #176, #178, #180, #183, #211) |
+| XSS | 1+ | 259 | Detecting reflected XSS on `/xss_r/` (fixed in #166, #174, #176, #178, #180, #183, #211) |
 | CMDi | 0 | 1,184 | Not detecting POST injection on `/exec/` |
 | Path Traversal | 0 | 666 | Not detecting LFI on `/fi/?page=` |
 | SSTI | 29 | 370 | All false positives — massive FP problem |
