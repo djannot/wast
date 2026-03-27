@@ -1,65 +1,78 @@
 # WAST - Remaining Issues
 
-## Fixed in this session
+## Fixed
 
 - **Form action resolution** (`pkg/crawler/crawler.go:415-428`) — `action="#"` was resolved relative to the root target URL instead of the current page. Now resolves correctly.
 - **robots.txt blocking discovery** (`pkg/scanner/discovery.go:56`) — Discovery mode hardcoded `WithRespectRobots(true)`, blocking crawling on sites with `Disallow: /`. Changed to `false` since active scanning implies authorization.
 - **Discovered parameters discarded** (`pkg/scanner/discovery.go:671-729`) — `scanTargetFor*` functions passed only the URL, ignoring discovered form parameters. Added `buildURLWithParams()` to embed them as query params.
+- **SSRF false positives on invented parameters** — Added `WithSSRFOnlyProvidedParams(true)` in discovery mode so the SSRF scanner only tests parameters actually found during crawling, not invented ones. Eliminated all SSRF false positives.
+- **POST form scanning** — Added `ScanPOST()` routing in `scanTargetFor*` functions so POST forms are tested with payloads in the request body instead of GET query params.
+- **SQLi detection improved** — Boolean-based SQLi now detects real injection on DVWA (`/vulnerabilities/brute/` username param, `/vulnerabilities/fi/` page param). 4 high-confidence findings.
+- **SSTI scanner added** — New scanner for Server-Side Template Injection.
+
+## Retest results (2026-03-27)
+
+Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
+
+| Scanner | Findings | Notes |
+|---------|----------|-------|
+| SQLi | 4 | Boolean-based on `/brute/` and `/fi/` — real positives |
+| CSRF | 9 | Real missing CSRF tokens |
+| SSRF | 0 | No false positives (fixed) |
+| XSS | 0 | Reflected XSS on `/xss_r/` not detected |
+| CMDi | 0 | POST injection on `/exec/` not detected |
+| Path Traversal | 0 | LFI on `/fi/?page=` not detected |
+| Headers | 7 missing | Expected for DVWA |
 
 ## Still broken
 
-### P0: SQLi scanner doesn't detect trivial SQL injection
-
-**Impact:** DVWA at security=low has `1' OR '1'='1` injectable `id` param. WAST runs 26 tests against it and finds nothing.
-
-**Root cause:** The detection heuristics (error-based, boolean-based, time-based) likely fail because:
-- Error-based: DVWA may not return SQL error strings in the response body
-- Boolean-based: Baseline comparison may not detect the difference between normal and injected responses
-- Time-based: `SLEEP()` payloads may work but the timing threshold could be miscalibrated
-
-**Files:** `pkg/scanner/sqli.go` — `testErrorBased()`, `testBooleanBased()`, `testTimeBased()`
-
 ### P0: XSS scanner doesn't detect reflected XSS
 
-**Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects input directly. WAST runs 12 tests and finds nothing.
+**Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects the payload verbatim in the response HTML. WAST finds nothing.
 
-**Root cause:** Likely the response body analysis doesn't check if the payload appears unescaped in the response HTML.
+**Root cause:** The `testParameter()` function in `xss.go` likely doesn't check whether the injected payload appears unescaped in the response body. Reflected XSS detection requires:
+1. Send a payload containing HTML/JS (e.g., `<script>alert(1)</script>`)
+2. Check if the exact payload string appears in the response body without encoding
+3. If found unescaped, it's reflected XSS
 
 **Files:** `pkg/scanner/xss.go` — `testParameter()`
 
-### P0: CMDi scanner doesn't detect command injection
+### P0: CMDi scanner doesn't detect command injection via POST
 
-**Impact:** DVWA `/vulnerabilities/exec/` accepts `ip` param and passes it to `shell_exec()`. WAST runs 42 tests (via discovery) and finds nothing.
+**Impact:** DVWA `/vulnerabilities/exec/` accepts POST param `ip` and passes it to `shell_exec()`. Despite POST scanning support being added, CMDi still finds nothing.
 
-**Root cause:** The scanner sends payloads via GET query params, but the DVWA form uses POST. The `buildURLWithParams` approach only works for GET — POST form parameters need to be sent in the request body.
+**Likely root cause:** The CMDi detection logic may not be recognizing command output in the response. DVWA's exec page returns ping output when `ip=127.0.0.1`. The scanner needs to:
+1. Send a baseline request with a normal value (e.g., `ip=127.0.0.1`)
+2. Send a payload like `127.0.0.1; whoami` or `127.0.0.1 && id`
+3. Detect that extra output (username, uid) appeared in the response compared to baseline
 
-**Files:** `pkg/scanner/cmdi.go`, `pkg/scanner/discovery.go`
+Alternatively, `ScanPOST()` might not be wired up correctly for CMDi, or the POST form parameters aren't reaching the scanner.
 
-### P1: SSRF scanner produces false positives on invented parameters
+**Debug approach:** Add logging or test directly: `curl -X POST http://localhost:8080/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit" -b "PHPSESSID=...; security=low"` — verify the injection works, then trace why the scanner doesn't flag it.
 
-**Impact:** When no query params exist, the scanner invents parameters (`url`, `uri`, `path`, etc.) and reports SSRF when it gets a 200 response. Any application that ignores unknown query params triggers this.
+**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testParameter()`, detection heuristics
 
-**Root cause:** Detection logic at `pkg/scanner/ssrf.go:423-487` treats any 200 OK from a private IP payload as evidence of SSRF, without comparing to a baseline response.
+### P0: SQLi scanner misses the classic `/vulnerabilities/sqli/?id=` injection
 
-**Fix approach:** Get a baseline response first (no SSRF payload). Only flag if the response differs meaningfully from baseline when the payload is injected.
+**Impact:** DVWA's primary SQLi endpoint at `/vulnerabilities/sqli/` with GET param `id` is trivially injectable (`1' OR '1'='1`), but the scanner doesn't detect it. It did find SQLi on `/brute/` and `/fi/` — so the detection logic works, but something about the `/sqli/` endpoint specifically causes a miss.
 
-### P1: SSRF scanner still tests invented parameters when real ones exist
+**Likely root cause:** The `/vulnerabilities/sqli/` page uses a form that submits via GET with `id` and `Submit` params. The baseline vs. injected comparison might be thrown off by DVWA's response structure for that specific page. The boolean-based heuristic that worked on `/brute/` and `/fi/` should also work here — investigate why it doesn't.
 
-**Impact:** Even with `buildURLWithParams`, the SSRF scanner sees real params in the URL but also adds invented ones via its fallback. Discovery mode should skip the invented-params fallback entirely.
+**Files:** `pkg/scanner/sqli.go` — `testBooleanBased()`
 
-**Fix approach:** Add a `ScanWithParams` method or a flag that tells scanners "only test these specific parameters, don't invent more."
+### P1: Path traversal scanner misses LFI on `/vulnerabilities/fi/?page=`
 
-### P2: POST form scanning not supported
+**Impact:** DVWA's file inclusion page accepts `page=../../etc/passwd` and returns the file contents. The scanner doesn't detect it.
 
-**Impact:** Many web forms use POST. Currently all scanners only test via GET query parameters. POST forms like DVWA's command injection (`ip` field), stored XSS (`txtName`, `mtxMessage`), and file upload are never tested.
+**Root cause:** The path traversal scanner likely sends payloads like `../../../../etc/passwd` and checks for specific strings (e.g., `root:`) in the response. Either the payloads don't match what DVWA expects, or the response content check is too strict/wrong.
 
-**Fix approach:** Each scanner needs a `testPOSTParameter()` method that sends payloads as form-encoded POST body. `scanTargetFor*` in `discovery.go` should check `target.Method` and call the appropriate method.
+**Files:** `pkg/scanner/pathtraversal.go` — detection heuristics
 
 ### P2: Summary aggregation incorrect in discovery mode
 
-**Impact:** `total_tests` shows 0 for scanners that did run in discovery mode. The per-target scan results don't accumulate into the aggregate summary correctly.
+**Impact:** `total_tests` shows 0 for all scanners that ran in discovery mode, even though they clearly executed tests (SQLi ran tests and found 4 vulns but reports `total_tests: 0`). Per-target scan results don't accumulate into the aggregate summary.
 
-**Files:** `pkg/scanner/discovery.go:392-453` — Summary structs are initialized with zero values, and individual target results overwrite rather than accumulate.
+**Files:** `pkg/scanner/discovery.go` — summary aggregation logic. Individual target results overwrite rather than accumulate into the aggregate summary structs.
 
 ### P3: Crawl output too large for MCP
 
