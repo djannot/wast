@@ -1834,14 +1834,14 @@ func TestXSSScanner_DVWAFixtures_ContextAnalysisPre(t *testing.T) {
 	// Verify the payload is detected as executable
 	if !isExecutable {
 		t.Errorf("Expected payload to be executable in DVWA <pre> context")
-		
+
 		// Debug: check if payload is verbatim in response
 		idx := strings.Index(bodyStr, payload)
 		if idx == -1 {
 			t.Errorf("Payload not found in response")
 		} else {
 			t.Logf("Payload found at index %d", idx)
-			
+
 			// Extract context around payload
 			start := idx - 100
 			if start < 0 {
@@ -1885,7 +1885,7 @@ func TestXSSScanner_DVWAFixtures_PayloadInPre(t *testing.T) {
 	// Verify payload is inside <pre> tag
 	preStartIdx := strings.Index(bodyStr, "<pre>")
 	preEndIdx := strings.Index(bodyStr, "</pre>")
-	
+
 	if preStartIdx == -1 || preEndIdx == -1 {
 		t.Fatal("Could not find <pre> tags in fixture")
 	}
@@ -1978,9 +1978,9 @@ func TestXSSScanner_DVWAFixtures_EncodedVsUnencoded(t *testing.T) {
 // payloads commonly used against DVWA.
 func TestXSSScanner_DVWAFixtures_MultiplePayloads(t *testing.T) {
 	tests := []struct {
-		name        string
-		payload     string
-		shouldDetect bool
+		name          string
+		payload       string
+		shouldDetect  bool
 		minConfidence string
 	}{
 		{
@@ -2075,9 +2075,9 @@ func TestXSSScanner_DVWAFixtures_ResponseStructure(t *testing.T) {
 	// Verify payload is in the <pre> tag
 	preStart := strings.Index(bodyStr, "<pre>")
 	preEnd := strings.Index(bodyStr, "</pre>")
-	
+
 	if preStart != -1 && preEnd != -1 {
-		preContent := bodyStr[preStart+5:preEnd]
+		preContent := bodyStr[preStart+5 : preEnd]
 		t.Logf("Content in <pre> tag: %q", preContent)
 
 		if strings.Contains(preContent, "<script>") {

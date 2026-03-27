@@ -2260,7 +2260,7 @@ func TestSQLiScanner_MinimalDataDifference(t *testing.T) {
 	}
 }
 
-// TestSQLiScanner_DVWAFixtures_BooleanBased tests boolean-based SQLi detection 
+// TestSQLiScanner_DVWAFixtures_BooleanBased tests boolean-based SQLi detection
 // using actual DVWA HTML response fixtures to match real-world DVWA behavior.
 func TestSQLiScanner_DVWAFixtures_BooleanBased(t *testing.T) {
 	// Load actual DVWA response fixtures
@@ -2375,7 +2375,7 @@ func TestSQLiScanner_DVWAFixtures_DataContentDifference(t *testing.T) {
 	t.Logf("Data words difference: %d", dataWordsDiff)
 
 	if dataWordsDiff < minWordCountDifference {
-		t.Errorf("Data words difference (%d) is below threshold (%d) - detection may fail", 
+		t.Errorf("Data words difference (%d) is below threshold (%d) - detection may fail",
 			dataWordsDiff, minWordCountDifference)
 	}
 
