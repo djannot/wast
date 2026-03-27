@@ -9,7 +9,7 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 | SQLi | 9 | 511 | Detecting, but some FPs on non-injectable params (`Upload`, `seclev_submit`) |
 | CSRF | 9 | — | Real missing CSRF tokens |
 | SSRF | 0 | 629 | Clean — no false positives |
-| XSS | 0 | 259 | Not detecting reflected XSS on `/xss_r/` |
+| XSS | ✅ Detects | 259 | Detecting reflected XSS on `/xss_r/` (fixed in #166, #174, #176, #178, #180, #183, #211) |
 | CMDi | 0 | 1,184 | Not detecting POST injection on `/exec/` |
 | Path Traversal | 0 | 666 | Not detecting LFI on `/fi/?page=` |
 | SSTI | 29 | 370 | All false positives — massive FP problem |
@@ -29,16 +29,26 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 **Files:** `pkg/scanner/ssti.go`, `pkg/scanner/ssti_test.go`
 
-## P0: XSS scanner doesn't detect reflected XSS
+## ✅ P0: XSS scanner doesn't detect reflected XSS - RESOLVED
 
 **Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects the payload verbatim in the response HTML. 259 tests run, 0 findings.
 
-**Root cause:** The `testParameter()` detection logic is not checking whether injected payloads appear unescaped in the response body. Detection should:
-1. Send a payload containing HTML/JS (e.g., `<script>alert(1)</script>`)
-2. Check if the exact payload appears unescaped in the response HTML
-3. If found, it's reflected XSS
+**Root cause:** The `testParameter()` detection logic was not properly checking whether injected payloads appear unescaped in the response body. Multiple issues needed to be addressed:
+1. Early detection for verbatim script tags was added (lines 438-453 in `analyzeContext()`)
+2. HTML comment detection was fixed to avoid false negatives
+3. URL-encoded vs unencoded payload handling was corrected
+4. Context analysis was enhanced to properly detect executable contexts
 
-**Files:** `pkg/scanner/xss.go` — `testParameter()`
+**Fix implemented:** Updated `analyzeContext()` and `testParameter()` to:
+1. Add early detection for verbatim script tags and event handlers (returns high confidence)
+2. Properly check if payload is inside HTML comments or textarea (skip early detection)
+3. Fix URL-encoded payload detection to only skip if ONLY the encoded version is found
+4. Ensure payload position is checked (not just presence in the response)
+5. Added comprehensive DVWA-style unit tests including `TestXSSScanner_Issue182_DVWAReflectedXSS`, `TestXSSScanner_DVWA_EndToEnd`, and multiple fixture tests
+
+**Files:** `pkg/scanner/xss.go` (specifically `testParameter()` and `analyzeContext()`), `pkg/scanner/xss_test.go`
+
+**Resolved in commits:** #166, #174, #176, #178, #180, #183, #211
 
 ## P0: CMDi scanner doesn't detect command injection via POST
 
