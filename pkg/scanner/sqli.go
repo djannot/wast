@@ -42,6 +42,31 @@ var (
 	divRegex = regexp.MustCompile(`(?i)<div[^>]*class=['"][^'"]*(?:item|row|entry|record|result)[^'"]*['"][^>]*>`)
 )
 
+// Pre-compiled regex patterns for dynamic content normalization (performance optimization)
+var dynamicContentPatterns = []*regexp.Regexp{
+	// CSRF tokens - common patterns
+	regexp.MustCompile(`(?i)<input[^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*value=['"][^'"]*['"][^>]*>`),
+	regexp.MustCompile(`(?i)<input[^>]*value=['"][^'"]*['"][^>]*name=['"]?(csrf_?token|user_?token|token|_token|authenticity_?token)['"]?[^>]*>`),
+
+	// CSRF token meta tags
+	regexp.MustCompile(`(?i)<meta[^>]*name=['"]?(csrf-token|csrf_token)['"]?[^>]*content=['"][^'"]*['"][^>]*>`),
+
+	// Nonces and session IDs in attribute values (quoted)
+	regexp.MustCompile(`(?i)(nonce|session_?id|sid|jsessionid)=['"][0-9a-f]{8,}['"]`),
+
+	// Nonces and session IDs in URLs (query parameters)
+	regexp.MustCompile(`(?i)[?&](nonce|session_?id|sid|jsessionid)=[0-9a-f]{8,}`),
+
+	// Timestamps in attribute values (quoted)
+	regexp.MustCompile(`(?i)(timestamp|ts|time|_t)=['"][0-9]{10,}['"]`),
+
+	// Timestamps in URLs (query parameters)
+	regexp.MustCompile(`(?i)[?&](timestamp|ts|time|_t)=[0-9]{10,}`),
+
+	// Common token patterns in hidden inputs
+	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-f]{16,}['"][^>]*>`),
+}
+
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
 	client         HTTPClient
@@ -362,19 +387,10 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 		params.Set("product", "1")
 	}
 
-	// Identify submit-like parameters that should not be tested for SQLi
-	submitParamNames := []string{"submit", "button", "action", "send", "go"}
+	// Filter out non-data parameters (submit buttons, CSRF tokens, etc.)
 	paramsToTest := make(map[string]bool)
 	for paramName := range params {
-		paramLower := strings.ToLower(paramName)
-		isSubmitParam := false
-		for _, submitName := range submitParamNames {
-			if paramLower == submitName {
-				isSubmitParam = true
-				break
-			}
-		}
-		if !isSubmitParam {
+		if !isNonDataParameter(paramName) {
 			paramsToTest[paramName] = true
 		}
 	}
@@ -576,11 +592,19 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 		}
 	}
 
+	// Filter out non-data parameters (submit buttons, CSRF tokens, etc.)
+	paramsToTest := make(map[string]string)
+	for paramName, paramValue := range params {
+		if !isNonDataParameter(paramName) {
+			paramsToTest[paramName] = paramValue
+		}
+	}
+
 	// Get baseline responses for boolean-based detection and baseline timing for time-based detection
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
-	for paramName := range params {
-		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, params)
+	for paramName := range paramsToTest {
+		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, paramsToTest)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
 			baselineTiming[paramName] = duration
@@ -588,7 +612,7 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	}
 
 	// Test each parameter with each payload
-	for paramName := range params {
+	for paramName := range paramsToTest {
 		for _, payload := range sqliPayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
@@ -602,14 +626,14 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 			if payload.Type == "time-based" {
 				// Time-based detection
 				baseline := baselineTiming[paramName]
-				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
+				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, paramsToTest)
 			} else if payload.CompareBaseline {
 				// Boolean-based detection
 				baseline := baselineResponses[paramName]
-				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
+				finding = s.testBooleanBasedPOST(ctx, parsedURL, paramName, payload, baseline, paramsToTest)
 			} else {
 				// Error-based detection
-				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, params)
+				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, paramsToTest)
 			}
 
 			result.Summary.TotalTests++
@@ -838,6 +862,49 @@ type responseCharacteristics struct {
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
 // Uses golang.org/x/net/html parser to avoid ReDoS vulnerabilities from regex patterns
+
+// normalizeResponseContent removes dynamic content (CSRF tokens, nonces, timestamps)
+// from HTML responses before comparison to reduce false positives in differential analysis
+func normalizeResponseContent(htmlStr string) string {
+	normalized := htmlStr
+	for _, pattern := range dynamicContentPatterns {
+		normalized = pattern.ReplaceAllString(normalized, "")
+	}
+	return normalized
+}
+
+// isNonDataParameter checks if a parameter name indicates it's not a data field
+// (e.g., submit buttons, action selectors, known non-data fields)
+func isNonDataParameter(paramName string) bool {
+	paramLower := strings.ToLower(paramName)
+
+	// Submit button patterns
+	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action"}
+	for _, pattern := range submitPatterns {
+		if strings.Contains(paramLower, pattern) {
+			return true
+		}
+	}
+
+	// DVWA-specific non-data fields
+	dvwaPatterns := []string{"seclev_submit", "upload", "security", "phpids"}
+	for _, pattern := range dvwaPatterns {
+		if paramLower == pattern {
+			return true
+		}
+	}
+
+	// Common non-data form fields
+	nonDataFields := []string{"csrf", "token", "_token", "nonce", "session"}
+	for _, field := range nonDataFields {
+		if strings.Contains(paramLower, field) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func extractBodyContent(htmlStr string) string {
 	// Limit input size to prevent memory exhaustion
 	if len(htmlStr) > maxResponseSize {
@@ -887,6 +954,9 @@ func extractBodyContent(htmlStr string) string {
 // This is more targeted than extractBodyContent and helps detect DVWA-style responses
 // where the difference is only in the actual data cells, not the overall page structure
 func extractDataContent(htmlStr string) string {
+	// Normalize to remove dynamic content like CSRF tokens
+	htmlStr = normalizeResponseContent(htmlStr)
+
 	// Limit input size to prevent memory exhaustion
 	if len(htmlStr) > maxResponseSize {
 		htmlStr = htmlStr[:maxResponseSize]
@@ -950,14 +1020,18 @@ func extractDataContent(htmlStr string) string {
 // Note: MD5 is intentionally used here for performance in a non-cryptographic context.
 // This is for content fingerprinting/comparison only, not security or authentication.
 func computeContentHash(html string) string {
-	content := extractBodyContent(html)
+	// Normalize to remove dynamic content like CSRF tokens before hashing
+	normalized := normalizeResponseContent(html)
+	content := extractBodyContent(normalized)
 	hash := md5.Sum([]byte(content))
 	return fmt.Sprintf("%x", hash)
 }
 
 // countWords counts the number of words in the response body
 func countWords(body string) int {
-	content := extractBodyContent(body)
+	// Normalize to remove dynamic content like CSRF tokens before counting
+	normalized := normalizeResponseContent(body)
+	content := extractBodyContent(normalized)
 	if content == "" {
 		return 0
 	}
