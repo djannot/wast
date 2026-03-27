@@ -101,3 +101,26 @@ jobs:
           name: wast-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/*
           retention-days: 7
+
+  integration-dvwa:
+    name: DVWA Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: true
+
+      - name: Download dependencies
+        run: make deps
+
+      - name: Run DVWA integration tests
+        run: make test-dvwa
+
+      - name: Stop DVWA containers
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
