@@ -2392,3 +2392,229 @@ func TestXSSScanner_DVWAFixtures_ResponseStructure(t *testing.T) {
 		}
 	}
 }
+
+// TestXSSScanner_Scan_DefaultParameterName tests that the scanner detects
+// reflected XSS on the 'name' parameter even when it's not in the URL initially.
+// This ensures 'name' is included in the defaultTestParams list.
+func TestXSSScanner_Scan_DefaultParameterName(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Simulate DVWA-style response that reflects the 'name' parameter verbatim
+	testPayload := "<script>alert(1)</script>"
+	dvwaResponse := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<title>Vulnerability: Reflected Cross Site Scripting (XSS)</title>
+</head>
+<body>
+<div id="main_body">
+<h1>Vulnerability: Reflected Cross Site Scripting (XSS)</h1>
+<div class="vulnerable_code_area">
+<form name="XSS" action="#" method="GET">
+<p>
+What's your name?
+<input type="text" name="name" size="30">
+<input type="submit" value="Submit">
+</p>
+</form>
+<pre>Hello %s</pre>
+</div>
+</div>
+</body>
+</html>`, testPayload)
+
+	// Set up responses for all payloads that might be tested
+	// The scanner will test 'name' as part of defaultTestParams
+	mock.responses["http://localhost:8080/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+		Header:     make(http.Header),
+	}
+
+	// Also need to respond to other default params to avoid blocking
+	for _, param := range []string{"q", "search", "query", "input", "username", "email", "id", "user", "text", "message", "comment", "title", "content", "value", "data"} {
+		for _, payload := range []string{
+			"%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E",
+			"%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+			"%3Cimg+src%3Dx+onerror%3Dalert%28%27XSS%27%29%3E",
+			"%3Csvg%2Fonload%3Dalert%28%27XSS%27%29%3E",
+			"%27%22%3E%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E",
+			"javascript%3Aalert%28%27XSS%27%29",
+			"%3Ciframe+src%3D%22javascript%3Aalert%28%27XSS%27%29%22%3E",
+		} {
+			url := fmt.Sprintf("http://localhost:8080/vulnerabilities/xss_r/?%s=%s", param, payload)
+			mock.responses[url] = &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("<html><body>Safe response</body></html>")),
+				Header:     make(http.Header),
+			}
+		}
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	// Note: URL does NOT have any parameters - scanner should test default params including 'name'
+	result := scanner.Scan(ctx, "http://localhost:8080/vulnerabilities/xss_r/")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect the XSS vulnerability via the 'name' parameter
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability in 'name' parameter via default test params")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Errors: %v", result.Errors)
+		t.Logf("Number of findings: %d", len(result.Findings))
+		return
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding")
+	}
+
+	// Find the 'name' parameter finding
+	var nameFinding *XSSFinding
+	for i := range result.Findings {
+		if result.Findings[i].Parameter == "name" {
+			nameFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if nameFinding == nil {
+		t.Fatalf("Expected to find vulnerability in 'name' parameter, found parameters: %v",
+			func() []string {
+				params := make([]string, len(result.Findings))
+				for i, f := range result.Findings {
+					params[i] = f.Parameter
+				}
+				return params
+			}())
+	}
+
+	// Verify the finding details
+	if nameFinding.Type != "reflected" {
+		t.Errorf("Expected type 'reflected', got %s", nameFinding.Type)
+	}
+
+	if nameFinding.Confidence != "high" {
+		t.Errorf("Expected high confidence for verbatim script tag reflection, got %s", nameFinding.Confidence)
+	}
+
+	if nameFinding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, nameFinding.Severity)
+	}
+
+	if !strings.Contains(nameFinding.Payload, "<script>") {
+		t.Errorf("Expected payload to contain <script> tag, got %s", nameFinding.Payload)
+	}
+}
+
+// mockPOSTXSSHTTPClient is a custom mock for POST request testing
+type mockPOSTXSSHTTPClient struct {
+	requests []*http.Request
+}
+
+func (m *mockPOSTXSSHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	m.requests = append(m.requests, req)
+
+	// Simulate DVWA-style response that reflects the 'name' parameter from POST
+	testPayload := "<script>alert(1)</script>"
+	dvwaResponse := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<title>Vulnerability: Reflected Cross Site Scripting (XSS)</title>
+</head>
+<body>
+<div class="vulnerable_code_area">
+<pre>Hello %s</pre>
+</div>
+</body>
+</html>`, testPayload)
+
+	// Only handle POST requests
+	if req.Method != http.MethodPost {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Safe</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Parse the form data
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	formData := string(body)
+	// Check if 'name' parameter contains the payload
+	if strings.Contains(formData, "name=") && strings.Contains(formData, "%3Cscript%3Ealert%281%29%3C%2Fscript%3E") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Default safe response
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Safe response</body></html>")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestXSSScanner_ScanPOST_DefaultParameterName tests that the POST scanner
+// detects reflected XSS on the 'name' parameter when no parameters are provided.
+func TestXSSScanner_ScanPOST_DefaultParameterName(t *testing.T) {
+	mock := &mockPOSTXSSHTTPClient{
+		requests: make([]*http.Request, 0),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	// Call ScanPOST with no parameters - should test default params including 'name'
+	result := scanner.ScanPOST(ctx, "http://localhost:8080/vulnerabilities/xss_r/", nil)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should detect the XSS vulnerability via the 'name' parameter
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability in 'name' parameter via POST default test params")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Errors: %v", result.Errors)
+		return
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding")
+	}
+
+	// Find the 'name' parameter finding
+	var nameFinding *XSSFinding
+	for i := range result.Findings {
+		if result.Findings[i].Parameter == "name" {
+			nameFinding = &result.Findings[i]
+			break
+		}
+	}
+
+	if nameFinding == nil {
+		t.Fatalf("Expected to find vulnerability in 'name' parameter")
+	}
+
+	// Verify the finding details
+	if nameFinding.Type != "reflected" {
+		t.Errorf("Expected type 'reflected', got %s", nameFinding.Type)
+	}
+
+	if nameFinding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, nameFinding.Severity)
+	}
+}

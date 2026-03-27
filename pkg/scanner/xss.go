@@ -83,6 +83,13 @@ type xssPayload struct {
 	Evidence    string // What to look for in the response
 }
 
+// defaultTestParams is the list of common parameter names to test when no parameters are present.
+var defaultTestParams = []string{
+	"q", "search", "query", "input",
+	"name", "username", "email", "id", "user",
+	"text", "message", "comment", "title", "content", "value", "data",
+}
+
 // xssPayloads is the list of safe detection payloads to test for XSS.
 var xssPayloads = []xssPayload{
 	{
@@ -232,12 +239,11 @@ func (s *XSSScanner) Scan(ctx context.Context, targetURL string) *XSSScanResult 
 	// Extract query parameters to test
 	params := parsedURL.Query()
 
-	// If no query parameters exist, test with a common parameter name
+	// If no query parameters exist, test with common parameter names
 	if len(params) == 0 {
-		params.Set("q", "")
-		params.Set("search", "")
-		params.Set("query", "")
-		params.Set("input", "")
+		for _, paramName := range defaultTestParams {
+			params.Set(paramName, "")
+		}
 	}
 
 	// Test each parameter with each payload
@@ -322,11 +328,9 @@ func (s *XSSScanner) ScanPOST(ctx context.Context, targetURL string, parameters 
 	// Use provided parameters or fallback to common parameter names
 	params := parameters
 	if len(params) == 0 {
-		params = map[string]string{
-			"q":      "",
-			"search": "",
-			"query":  "",
-			"input":  "",
+		params = make(map[string]string)
+		for _, paramName := range defaultTestParams {
+			params[paramName] = ""
 		}
 	}
 
