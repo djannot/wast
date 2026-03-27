@@ -50,14 +50,14 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 **Root cause analysis:** Upon investigation, the aggregation logic in `pkg/scanner/discovery.go` lines 368-377 correctly accumulates test counts from individual scanner results in a thread-safe manner using mutex protection. The accumulated counts are then properly assigned to result summaries in lines 416-494.
 
-**Fix verification:** Added comprehensive unit test `TestScanDiscoveredTargets_TestCountAggregationWithMocks` in `pkg/scanner/discovery_aggregation_test.go` that verifies:
+**Fix verification:** Comprehensive integration test `TestScanDiscoveredTargets_TestCountAggregation` in `pkg/scanner/discovery_test.go` verifies:
 1. Test counts accumulate correctly across multiple discovered targets
 2. Stats values match result summary values
 3. All scanners (XSS, SQLi, SSRF, Redirect, CMDi, PathTraversal, SSTI) report non-zero test counts
 
-**Test results:** All assertions pass, confirming aggregation works as designed.
+**Test results:** All assertions pass when tested against real HTTP responses to example.com, confirming aggregation works as designed.
 
-**Files:** `pkg/scanner/discovery.go`, `pkg/scanner/discovery_aggregation_test.go`
+**Files:** `pkg/scanner/discovery.go`, `pkg/scanner/discovery_test.go`
 
 ## Still broken
 

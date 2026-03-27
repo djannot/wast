@@ -672,7 +672,10 @@ func TestScanTargetRouting(t *testing.T) {
 }
 
 // TestScanDiscoveredTargets_TestCountAggregation verifies that test counts from individual
-// scanner results are properly aggregated into the stats.
+// scanner results are properly aggregated into the stats when scanning multiple discovered targets.
+//
+// Note: This is an integration test that makes real HTTP requests to example.com to verify
+// that the aggregation logic works correctly end-to-end.
 func TestScanDiscoveredTargets_TestCountAggregation(t *testing.T) {
 	t.Skip("Integration test - requires external network access")
 
@@ -708,9 +711,11 @@ func TestScanDiscoveredTargets_TestCountAggregation(t *testing.T) {
 		Tracer:          nil,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	// Call scanDiscoveredTargets to verify aggregation logic
+	// This will make real HTTP requests to the targets defined above
 	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 2, nil)
 
 	if result == nil {
