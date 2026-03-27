@@ -1369,9 +1369,9 @@ func TestGeneratePriorityActions_ActionListTruncation(t *testing.T) {
 // TestCorrelateFindings_XSSWithMissingCSP tests XSS + missing CSP correlation
 func TestCorrelateFindings_XSSWithMissingCSP(t *testing.T) {
 	tests := []struct {
-		name              string
-		xssType           string
-		shouldCorrelate   bool
+		name            string
+		xssType         string
+		shouldCorrelate bool
 	}{
 		{
 			name:            "reflected XSS should correlate",
