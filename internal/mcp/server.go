@@ -1142,7 +1142,7 @@ func (t *VerifyTool) InputSchema() map[string]interface{} {
 			"finding_type": map[string]interface{}{
 				"type":        "string",
 				"description": "Type of finding to verify",
-				"enum":        []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"},
+				"enum":        []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti"},
 			},
 			"finding_url": map[string]interface{}{
 				"type":        "string",
@@ -1258,10 +1258,10 @@ func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (inter
 	// Validate finding_type
 	validTypes := map[string]bool{
 		"sqli": true, "xss": true, "ssrf": true, "cmdi": true,
-		"pathtraversal": true, "redirect": true, "csrf": true,
+		"pathtraversal": true, "redirect": true, "csrf": true, "ssti": true,
 	}
 	if !validTypes[args.FindingType] {
-		return nil, fmt.Errorf("invalid finding_type: %s (must be one of: sqli, xss, ssrf, cmdi, pathtraversal, redirect, csrf)", args.FindingType)
+		return nil, fmt.Errorf("invalid finding_type: %s (must be one of: sqli, xss, ssrf, cmdi, pathtraversal, redirect, csrf, ssti)", args.FindingType)
 	}
 
 	// Validate and normalize target URL

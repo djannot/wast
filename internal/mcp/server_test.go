@@ -2240,7 +2240,7 @@ func TestVerifyToolSchema(t *testing.T) {
 		t.Fatal("finding_type should have enum constraint")
 	}
 
-	expectedTypes := []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+	expectedTypes := []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti"}
 	if len(enum) != len(expectedTypes) {
 		t.Errorf("Expected %d finding types in enum, got %d", len(expectedTypes), len(enum))
 	}
