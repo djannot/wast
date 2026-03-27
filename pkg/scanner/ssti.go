@@ -305,9 +305,55 @@ func (s *SSTIScanner) Scan(ctx context.Context, targetURL string) *SSTIScanResul
 	return result
 }
 
+// getBaselineResponse fetches a baseline response with a benign value to detect false positives.
+func (s *SSTIScanner) getBaselineResponse(ctx context.Context, baseURL *url.URL, paramName string) string {
+	// Create a copy of the URL with a benign baseline value
+	baselineURL := *baseURL
+	q := baselineURL.Query()
+	q.Set(paramName, "WAST_BASELINE_12345")
+	baselineURL.RawQuery = q.Encode()
+
+	// Create the baseline request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baselineURL.String(), nil)
+	if err != nil {
+		return ""
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	// Only read successful responses
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return ""
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	return string(body)
+}
+
 // testParameter tests a single parameter with a specific payload.
 func (s *SSTIScanner) testParameter(ctx context.Context, baseURL *url.URL, paramName string, payload sstiPayload) *SSTIFinding {
-	// Create a copy of the URL with the test payload
+	// Step 1: Get baseline response with a benign value
+	baselineBody := s.getBaselineResponse(ctx, baseURL, paramName)
+
+	// Step 2: Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
 	q.Set(paramName, payload.Payload)
@@ -352,8 +398,8 @@ func (s *SSTIScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 
 	bodyStr := string(body)
 
-	// Check if the expected result is in the response
-	if s.detectTemplateInjection(bodyStr, payload) {
+	// Step 3: Compare with baseline - only flag if result appears in payload response but NOT in baseline
+	if s.detectTemplateInjection(bodyStr, payload, baselineBody) {
 		confidence := s.calculateConfidence(bodyStr, payload)
 
 		// Vulnerability found!
@@ -375,9 +421,15 @@ func (s *SSTIScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 }
 
 // detectTemplateInjection checks if the response indicates template injection.
-func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload) bool {
+// It compares the payload response with a baseline to avoid false positives.
+func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, baselineBody string) bool {
 	// Check for expected result
 	if payload.ExpectedResult != "" && strings.Contains(body, payload.ExpectedResult) {
+		// If expected result already exists in baseline, it's not injection - it's naturally present in the page
+		if baselineBody != "" && strings.Contains(baselineBody, payload.ExpectedResult) {
+			return false
+		}
+
 		// Make sure it's not just the payload being reflected
 		// The expected result should appear without the template syntax
 		if !strings.Contains(body, payload.Payload) || s.isEvaluated(body, payload) {
