@@ -98,6 +98,8 @@ func TestSSTIScan_Jinja2Detection(t *testing.T) {
 		responses: make(map[string]string),
 	}
 
+	// Set up baseline response (no "49" in baseline)
+	mockClient.responses["http://example.com/?q=WAST_BASELINE_12345"] = "Search page"
 	// Set up response with evaluated template
 	mockClient.responses["http://example.com/?q=%7B%7B7%2A7%7D%7D"] = "Result: 49"
 
@@ -131,6 +133,8 @@ func TestSSTIScan_FreemarkerDetection(t *testing.T) {
 		responses: make(map[string]string),
 	}
 
+	// Set up baseline response (no "49" in baseline)
+	mockClient.responses["http://example.com/?input=WAST_BASELINE_12345"] = "Value: nothing"
 	// Set up response with evaluated Freemarker template
 	mockClient.responses["http://example.com/?input=%24%7B7%2A7%7D"] = "Value: 49 calculated"
 
@@ -152,6 +156,9 @@ func TestSSTIScan_MultipleParameters(t *testing.T) {
 		responses: make(map[string]string),
 	}
 
+	// Set up baseline responses (no "49" in baselines)
+	mockClient.responses["http://example.com/?email=WAST_BASELINE_12345&name=test"] = "Hello"
+	mockClient.responses["http://example.com/?email=test&name=WAST_BASELINE_12345"] = "Email:"
 	// Set up responses for multiple parameters - the scanner will try each payload
 	// Just set up a few key responses that should trigger findings
 	mockClient.responses["http://example.com/?email=test&name=%7B%7B7%2A7%7D%7D"] = "Hello 49"
@@ -265,6 +272,8 @@ func TestSSTIScan_Summary(t *testing.T) {
 		responses: make(map[string]string),
 	}
 
+	// Set up baseline response (no "49" in baseline)
+	mockClient.responses["http://example.com/?q=WAST_BASELINE_12345"] = "Result: nothing"
 	// Set up responses with different severities
 	mockClient.responses["http://example.com/?q=%7B%7B7%2A7%7D%7D"] = "Result: 49"
 	mockClient.responses["http://example.com/?q=%7B7%2A7%7D"] = "Result: 49"
@@ -361,7 +370,7 @@ func TestDetectTemplateInjection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := scanner.detectTemplateInjection(tt.body, tt.payload)
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, "")
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v for body: %s", tt.expected, result, tt.body)
 			}
@@ -697,6 +706,131 @@ func TestIsEvaluated(t *testing.T) {
 			result := scanner.isEvaluated(tt.body, tt.payload)
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestSSTIScan_NoFalsePositiveWhenResultInBaseline(t *testing.T) {
+	mockClient := &MockSSTIHTTPClient{
+		responses: make(map[string]string),
+	}
+
+	// Set up baseline response that naturally contains "49"
+	mockClient.responses["http://example.com/?q=WAST_BASELINE_12345"] = "Page showing: 49 items available"
+	// Set up payload response that also contains "49" (but it's not from template injection)
+	mockClient.responses["http://example.com/?q=%7B%7B7%2A7%7D%7D"] = "Page showing: 49 items available"
+
+	scanner := NewSSTIScanner(WithSSTIHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/?q=test")
+
+	// Should NOT detect any vulnerabilities because "49" is naturally present in the baseline
+	if len(result.Findings) > 0 {
+		t.Errorf("Expected no vulnerabilities (false positive), but found %d findings", len(result.Findings))
+		for _, f := range result.Findings {
+			t.Logf("False positive: %s - %s", f.Payload, f.Evidence)
+		}
+	}
+}
+
+func TestSSTIScan_DetectsRealInjectionNotInBaseline(t *testing.T) {
+	mockClient := &MockSSTIHTTPClient{
+		responses: make(map[string]string),
+	}
+
+	// Set up baseline response without "49"
+	mockClient.responses["http://example.com/?q=WAST_BASELINE_12345"] = "Search results page"
+	// Set up payload response with evaluated template (49 appears)
+	mockClient.responses["http://example.com/?q=%7B%7B7%2A7%7D%7D"] = "Result: 49"
+
+	scanner := NewSSTIScanner(WithSSTIHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/?q=test")
+
+	// Should detect vulnerability because "49" is NOT in baseline but IS in payload response
+	if len(result.Findings) == 0 {
+		t.Error("Expected to find SSTI vulnerability but found none")
+	}
+
+	// Verify it's the correct finding
+	found := false
+	for _, f := range result.Findings {
+		if f.Payload == "{{7*7}}" && strings.Contains(f.Evidence, "49") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected to find {{7*7}} payload with 49 in evidence")
+	}
+}
+
+func TestDetectTemplateInjection_WithBaseline(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name         string
+		body         string
+		payload      sstiPayload
+		baselineBody string
+		expected     bool
+	}{
+		{
+			name: "Evaluated template - result not in baseline",
+			body: "Result: 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Result: nothing",
+			expected:     true,
+		},
+		{
+			name: "False positive - result already in baseline",
+			body: "Page has 49 items",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Page has 49 items",
+			expected:     false,
+		},
+		{
+			name: "Reflected but not evaluated",
+			body: "You searched for: {{7*7}}",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "You searched for: WAST_BASELINE_12345",
+			expected:     false,
+		},
+		{
+			name: "Both payload and result present - evaluated, not in baseline",
+			body: "Input: {{7*7}} Result: 49 and another 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: WAST_BASELINE_12345 Result: nothing",
+			expected:     true,
+		},
+		{
+			name: "No baseline available - old behavior",
+			body: "Result: 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "",
+			expected:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v for body: %s, baseline: %s", tt.expected, result, tt.body, tt.baselineBody)
 			}
 		})
 	}
