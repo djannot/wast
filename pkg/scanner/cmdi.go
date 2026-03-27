@@ -99,6 +99,27 @@ var cmdErrorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)exec format error`),
 }
 
+// Common command output patterns that indicate successful command execution.
+var cmdOutputPatterns = []*regexp.Regexp{
+	// Unix command output indicators
+	regexp.MustCompile(`(?i)uid=[0-9]+`),
+	regexp.MustCompile(`(?i)gid=[0-9]+`),
+	regexp.MustCompile(`(?i)groups=[0-9]+`),
+	regexp.MustCompile(`www-data`),
+	regexp.MustCompile(`root:[x*]:[0-9]+`),
+	regexp.MustCompile(`/bin/(ba)?sh`),
+	regexp.MustCompile(`(?i)/home/[a-z0-9_-]+`),
+	regexp.MustCompile(`(?i)/usr/bin`),
+	regexp.MustCompile(`(?i)/etc/passwd`),
+
+	// Windows command output indicators
+	regexp.MustCompile(`(?i)NT AUTHORITY`),
+	regexp.MustCompile(`(?i)BUILTIN\\`),
+	regexp.MustCompile(`(?i)\\Users\\`),
+	regexp.MustCompile(`(?i)C:\\Windows`),
+	regexp.MustCompile(`(?i)C:\\Program Files`),
+}
+
 // cmdiPayloads is the list of safe detection payloads to test for command injection.
 //
 // SECURITY WARNING: This list contains ONLY non-destructive payloads for responsible
@@ -286,6 +307,87 @@ var cmdiPayloads = []cmdiPayload{
 		Description:  "Command injection detected - Windows whoami command (OR)",
 		ErrorPattern: nil,
 	},
+
+	// Output-based Unix/Linux payloads - append commands to valid input
+	{
+		Payload:     "127.0.0.1; id",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix id command output in response (semicolon separator)",
+	},
+	{
+		Payload:     "127.0.0.1 && whoami",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix whoami command output in response (AND separator)",
+	},
+	{
+		Payload:     "127.0.0.1 | id",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix id command output in response (pipe separator)",
+	},
+	{
+		Payload:     "test; whoami",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix whoami command output in response (semicolon)",
+	},
+	{
+		Payload:     "test && id",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix id command output in response (AND)",
+	},
+	{
+		Payload:     "test | whoami",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix whoami command output in response (pipe)",
+	},
+	{
+		Payload:     "localhost; cat /etc/passwd",
+		Type:        "output-based",
+		OSType:      "unix",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Unix cat /etc/passwd output in response",
+	},
+
+	// Output-based Windows payloads
+	{
+		Payload:     "127.0.0.1 & whoami",
+		Type:        "output-based",
+		OSType:      "windows",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Windows whoami command output in response",
+	},
+	{
+		Payload:     "127.0.0.1 | whoami",
+		Type:        "output-based",
+		OSType:      "windows",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Windows whoami command output in response (pipe)",
+	},
+	{
+		Payload:     "test & whoami",
+		Type:        "output-based",
+		OSType:      "windows",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Windows whoami command output in response",
+	},
+	{
+		Payload:     "test && whoami",
+		Type:        "output-based",
+		OSType:      "windows",
+		Severity:    SeverityHigh,
+		Description: "Command injection detected - Windows whoami command output in response (AND)",
+	},
 }
 
 // Common vulnerable parameter names to test.
@@ -433,9 +535,13 @@ func (s *CMDiScanner) Scan(ctx context.Context, targetURL string) *CMDiScanResul
 				// Time-based detection
 				baseline := baselineTiming[paramName]
 				finding = s.testTimeBased(ctx, parsedURL, paramName, payload, baseline)
-			} else {
+			} else if payload.Type == "error-based" {
 				// Error-based detection
 				finding = s.testErrorBased(ctx, parsedURL, paramName, payload)
+			} else if payload.Type == "output-based" {
+				// Output-based detection
+				baseline := baselineResponses[paramName]
+				finding = s.testOutputBased(ctx, parsedURL, paramName, payload, baseline)
 			}
 
 			result.Summary.TotalTests++
@@ -536,9 +642,13 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 				// Time-based detection
 				baseline := baselineTiming[paramName]
 				finding = s.testTimeBasedPOST(ctx, parsedURL, paramName, payload, baseline, params)
-			} else {
+			} else if payload.Type == "error-based" {
 				// Error-based detection
 				finding = s.testErrorBasedPOST(ctx, parsedURL, paramName, payload, params)
+			} else if payload.Type == "output-based" {
+				// Output-based detection
+				baseline := baselineResponses[paramName]
+				finding = s.testOutputBasedPOST(ctx, parsedURL, paramName, payload, params, baseline)
 			}
 
 			result.Summary.TotalTests++
@@ -739,6 +849,82 @@ func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 	return nil
 }
 
+// testOutputBased tests a single parameter with an output-based command injection payload.
+// It performs differential analysis by comparing the response with payload against the baseline response.
+func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baseline *baselineResponse) *CMDiFinding {
+	// Create a copy of the URL with the test payload
+	testURL := *baseURL
+	q := testURL.Query()
+	q.Set(paramName, payload.Payload)
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check if baseline is available for differential analysis
+	if baseline == nil {
+		return nil
+	}
+
+	// Perform differential analysis: check if command output patterns appear in the
+	// injected response but NOT in the baseline response (to avoid false positives)
+	for _, pattern := range cmdOutputPatterns {
+		if pattern.MatchString(bodyStr) {
+			// Pattern found in injected response - now check if it was also in baseline
+			if !pattern.MatchString(baseline.ContainsKey) {
+				// Pattern is NEW - this indicates command output from our injection!
+				match := pattern.FindString(bodyStr)
+				finding := &CMDiFinding{
+					URL:         testURL.String(),
+					Parameter:   paramName,
+					Payload:     payload.Payload,
+					Evidence:    s.extractEvidence(bodyStr, match),
+					Severity:    payload.Severity,
+					Type:        payload.Type,
+					OSType:      payload.OSType,
+					Description: payload.Description,
+					Remediation: s.getRemediation(),
+					Confidence:  "high", // Output-based detection with differential analysis is high confidence
+				}
+				return finding
+			}
+		}
+	}
+
+	return nil
+}
+
 // testTimeBased tests a single parameter with a time-based command injection payload.
 // It measures request duration and compares with baseline and expected delay.
 func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration) *CMDiFinding {
@@ -903,6 +1089,85 @@ func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 				Confidence:  "high", // Error-based detection with shell errors is high confidence
 			}
 			return finding
+		}
+	}
+
+	return nil
+}
+
+// testOutputBasedPOST tests a single parameter with an output-based command injection payload using POST.
+// It performs differential analysis by comparing the response with payload against the baseline response.
+func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string, baseline *baselineResponse) *CMDiFinding {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Check if baseline is available for differential analysis
+	if baseline == nil {
+		return nil
+	}
+
+	// Perform differential analysis: check if command output patterns appear in the
+	// injected response but NOT in the baseline response (to avoid false positives)
+	for _, pattern := range cmdOutputPatterns {
+		if pattern.MatchString(bodyStr) {
+			// Pattern found in injected response - now check if it was also in baseline
+			if !pattern.MatchString(baseline.ContainsKey) {
+				// Pattern is NEW - this indicates command output from our injection!
+				match := pattern.FindString(bodyStr)
+				finding := &CMDiFinding{
+					URL:         baseURL.String(),
+					Parameter:   paramName,
+					Payload:     payload.Payload,
+					Evidence:    s.extractEvidence(bodyStr, match),
+					Severity:    payload.Severity,
+					Type:        payload.Type,
+					OSType:      payload.OSType,
+					Description: payload.Description,
+					Remediation: s.getRemediation(),
+					Confidence:  "high", // Output-based detection with differential analysis is high confidence
+				}
+				return finding
+			}
 		}
 	}
 
