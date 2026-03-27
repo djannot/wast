@@ -424,44 +424,44 @@ func TestScanTargetForPOSTMethod(t *testing.T) {
 		Source: "form on /login",
 	}
 
-	sqliFindings := scanTargetForSQLi(ctx, sqliScanner, postTarget)
-	if sqliFindings == nil {
-		t.Error("Expected scanTargetForSQLi to return findings for POST method")
+	sqliResult := scanTargetForSQLi(ctx, sqliScanner, postTarget)
+	if sqliResult == nil {
+		t.Error("Expected scanTargetForSQLi to return result for POST method")
 	}
 
 	// Test XSS with POST method
 	xssScanner := NewXSSScanner(WithXSSTimeout(30 * time.Second))
-	xssFindings := scanTargetForXSS(ctx, xssScanner, postTarget)
-	if xssFindings == nil {
-		t.Error("Expected scanTargetForXSS to return findings for POST method")
+	xssResult := scanTargetForXSS(ctx, xssScanner, postTarget)
+	if xssResult == nil {
+		t.Error("Expected scanTargetForXSS to return result for POST method")
 	}
 
 	// Test CMDi with POST method
 	cmdiScanner := NewCMDiScanner(WithCMDiTimeout(30 * time.Second))
-	cmdiFindings := scanTargetForCMDi(ctx, cmdiScanner, postTarget)
-	if cmdiFindings == nil {
-		t.Error("Expected scanTargetForCMDi to return findings for POST method")
+	cmdiResult := scanTargetForCMDi(ctx, cmdiScanner, postTarget)
+	if cmdiResult == nil {
+		t.Error("Expected scanTargetForCMDi to return result for POST method")
 	}
 
 	// Test SSRF with POST method
 	ssrfScanner := NewSSRFScanner(WithSSRFTimeout(30 * time.Second))
-	ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, postTarget)
-	if ssrfFindings == nil {
-		t.Error("Expected scanTargetForSSRF to return findings for POST method")
+	ssrfResult := scanTargetForSSRF(ctx, ssrfScanner, postTarget)
+	if ssrfResult == nil {
+		t.Error("Expected scanTargetForSSRF to return result for POST method")
 	}
 
 	// Test Redirect with POST method
 	redirectScanner := NewRedirectScanner(WithRedirectTimeout(30 * time.Second))
-	redirectFindings := scanTargetForRedirect(ctx, redirectScanner, postTarget)
-	if redirectFindings == nil {
-		t.Error("Expected scanTargetForRedirect to return findings for POST method")
+	redirectResult := scanTargetForRedirect(ctx, redirectScanner, postTarget)
+	if redirectResult == nil {
+		t.Error("Expected scanTargetForRedirect to return result for POST method")
 	}
 
 	// Test PathTraversal with POST method
 	pathtraversalScanner := NewPathTraversalScanner(WithPathTraversalTimeout(30 * time.Second))
-	pathtraversalFindings := scanTargetForPathTraversal(ctx, pathtraversalScanner, postTarget)
-	if pathtraversalFindings == nil {
-		t.Error("Expected scanTargetForPathTraversal to return findings for POST method")
+	pathtraversalResult := scanTargetForPathTraversal(ctx, pathtraversalScanner, postTarget)
+	if pathtraversalResult == nil {
+		t.Error("Expected scanTargetForPathTraversal to return result for POST method")
 	}
 
 	// Test GET method still works
@@ -474,9 +474,9 @@ func TestScanTargetForPOSTMethod(t *testing.T) {
 		Source: "link with query params",
 	}
 
-	sqliGetFindings := scanTargetForSQLi(ctx, sqliScanner, getTarget)
-	if sqliGetFindings == nil {
-		t.Error("Expected scanTargetForSQLi to return findings for GET method")
+	sqliGetResult := scanTargetForSQLi(ctx, sqliScanner, getTarget)
+	if sqliGetResult == nil {
+		t.Error("Expected scanTargetForSQLi to return result for GET method")
 	}
 }
 
@@ -628,45 +628,146 @@ func TestScanTargetRouting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// XSS
 			xssScanner := NewXSSScanner(WithXSSTimeout(5 * time.Second))
-			xssFindings := scanTargetForXSS(ctx, xssScanner, tc.target)
-			if xssFindings == nil {
+			xssResult := scanTargetForXSS(ctx, xssScanner, tc.target)
+			if xssResult == nil {
 				t.Error("XSS scanner should handle both POST and GET")
 			}
 
 			// SQLi
 			sqliScanner := NewSQLiScanner(WithSQLiTimeout(5 * time.Second))
-			sqliFindings := scanTargetForSQLi(ctx, sqliScanner, tc.target)
-			if sqliFindings == nil {
+			sqliResult := scanTargetForSQLi(ctx, sqliScanner, tc.target)
+			if sqliResult == nil {
 				t.Error("SQLi scanner should handle both POST and GET")
 			}
 
 			// CMDi
 			cmdiScanner := NewCMDiScanner(WithCMDiTimeout(5 * time.Second))
-			cmdiFindings := scanTargetForCMDi(ctx, cmdiScanner, tc.target)
-			if cmdiFindings == nil {
+			cmdiResult := scanTargetForCMDi(ctx, cmdiScanner, tc.target)
+			if cmdiResult == nil {
 				t.Error("CMDi scanner should handle both POST and GET")
 			}
 
 			// SSRF
 			ssrfScanner := NewSSRFScanner(WithSSRFTimeout(5 * time.Second))
-			ssrfFindings := scanTargetForSSRF(ctx, ssrfScanner, tc.target)
-			if ssrfFindings == nil {
+			ssrfResult := scanTargetForSSRF(ctx, ssrfScanner, tc.target)
+			if ssrfResult == nil {
 				t.Error("SSRF scanner should handle both POST and GET")
 			}
 
 			// Redirect
 			redirectScanner := NewRedirectScanner(WithRedirectTimeout(5 * time.Second))
-			redirectFindings := scanTargetForRedirect(ctx, redirectScanner, tc.target)
-			if redirectFindings == nil {
+			redirectResult := scanTargetForRedirect(ctx, redirectScanner, tc.target)
+			if redirectResult == nil {
 				t.Error("Redirect scanner should handle both POST and GET")
 			}
 
 			// PathTraversal
 			pathtraversalScanner := NewPathTraversalScanner(WithPathTraversalTimeout(5 * time.Second))
-			pathtraversalFindings := scanTargetForPathTraversal(ctx, pathtraversalScanner, tc.target)
-			if pathtraversalFindings == nil {
+			pathtraversalResult := scanTargetForPathTraversal(ctx, pathtraversalScanner, tc.target)
+			if pathtraversalResult == nil {
 				t.Error("PathTraversal scanner should handle both POST and GET")
 			}
 		})
 	}
+}
+
+// TestScanDiscoveredTargets_TestCountAggregation verifies that test counts from individual
+// scanner results are properly aggregated into the stats.
+func TestScanDiscoveredTargets_TestCountAggregation(t *testing.T) {
+	t.Skip("Integration test - requires external network access")
+
+	// Create multiple targets to simulate discovery scan
+	targets := []DiscoveredTarget{
+		{
+			URL:        "https://example.com/page1?id=1",
+			Method:     "GET",
+			Parameters: map[string]string{"id": "1"},
+			Source:     "test page 1",
+		},
+		{
+			URL:        "https://example.com/page2?q=search",
+			Method:     "GET",
+			Parameters: map[string]string{"q": "search"},
+			Source:     "test page 2",
+		},
+		{
+			URL:        "https://example.com/form",
+			Method:     "POST",
+			Parameters: map[string]string{"username": "test", "email": "test@example.com"},
+			Source:     "test form",
+		},
+	}
+
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         10,
+		SafeMode:        false, // Enable active scanning
+		VerifyFindings:  false,
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+		Tracer:          nil,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	result, stats := scanDiscoveredTargets(ctx, cfg, targets, 2, nil)
+
+	if result == nil {
+		t.Fatal("scanDiscoveredTargets returned nil result")
+	}
+
+	if stats == nil {
+		t.Fatal("scanDiscoveredTargets returned nil stats")
+	}
+
+	// Verify that test counts are populated (should be > 0 if tests ran)
+	// Each scanner should have executed tests across the discovered targets
+	if stats.TotalXSSTests == 0 {
+		t.Error("Expected TotalXSSTests to be > 0, got 0")
+	}
+	if stats.TotalSQLiTests == 0 {
+		t.Error("Expected TotalSQLiTests to be > 0, got 0")
+	}
+	if stats.TotalSSRFTests == 0 {
+		t.Error("Expected TotalSSRFTests to be > 0, got 0")
+	}
+	if stats.TotalRedirectTests == 0 {
+		t.Error("Expected TotalRedirectTests to be > 0, got 0")
+	}
+	if stats.TotalCMDiTests == 0 {
+		t.Error("Expected TotalCMDiTests to be > 0, got 0")
+	}
+	if stats.TotalPathTraversalTests == 0 {
+		t.Error("Expected TotalPathTraversalTests to be > 0, got 0")
+	}
+
+	// Verify that the summary in results also shows test counts
+	if result.XSS != nil && result.XSS.Summary.TotalTests == 0 {
+		t.Error("Expected XSS result summary to show TotalTests > 0, got 0")
+	}
+	if result.SQLi != nil && result.SQLi.Summary.TotalTests == 0 {
+		t.Error("Expected SQLi result summary to show TotalTests > 0, got 0")
+	}
+	if result.SSRF != nil && result.SSRF.Summary.TotalTests == 0 {
+		t.Error("Expected SSRF result summary to show TotalTests > 0, got 0")
+	}
+	if result.Redirect != nil && result.Redirect.Summary.TotalTests == 0 {
+		t.Error("Expected Redirect result summary to show TotalTests > 0, got 0")
+	}
+	if result.CMDi != nil && result.CMDi.Summary.TotalTests == 0 {
+		t.Error("Expected CMDi result summary to show TotalTests > 0, got 0")
+	}
+	if result.PathTraversal != nil && result.PathTraversal.Summary.TotalTests == 0 {
+		t.Error("Expected PathTraversal result summary to show TotalTests > 0, got 0")
+	}
+
+	t.Logf("Test counts aggregated successfully:")
+	t.Logf("  XSS: %d tests", stats.TotalXSSTests)
+	t.Logf("  SQLi: %d tests", stats.TotalSQLiTests)
+	t.Logf("  CSRF: %d tests", stats.TotalCSRFTests)
+	t.Logf("  SSRF: %d tests", stats.TotalSSRFTests)
+	t.Logf("  Redirect: %d tests", stats.TotalRedirectTests)
+	t.Logf("  CMDi: %d tests", stats.TotalCMDiTests)
+	t.Logf("  PathTraversal: %d tests", stats.TotalPathTraversalTests)
 }
