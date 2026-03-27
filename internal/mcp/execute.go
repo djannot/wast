@@ -509,15 +509,15 @@ func executeVerify(ctx context.Context, findingType string, findingURL string, p
 
 // CompactCrawlResult represents a compact version of CrawlResult with summarized data.
 type CompactCrawlResult struct {
-	Target              string                   `json:"target" yaml:"target"`
-	Statistics          crawler.CrawlStats       `json:"statistics" yaml:"statistics"`
-	Forms               []crawler.FormInfo       `json:"forms,omitempty" yaml:"forms,omitempty"`
-	ResourcesSummary    *ResourcesSummary        `json:"resources_summary,omitempty" yaml:"resources_summary,omitempty"`
-	InternalLinksSummary *LinksSummary            `json:"internal_links_summary,omitempty" yaml:"internal_links_summary,omitempty"`
-	ExternalLinksSummary *LinksSummary            `json:"external_links_summary,omitempty" yaml:"external_links_summary,omitempty"`
-	RobotsDisallow      []string                 `json:"robots_disallow,omitempty" yaml:"robots_disallow,omitempty"`
-	SitemapURLs         []string                 `json:"sitemap_urls,omitempty" yaml:"sitemap_urls,omitempty"`
-	Errors              []string                 `json:"errors,omitempty" yaml:"errors,omitempty"`
+	Target               string             `json:"target" yaml:"target"`
+	Statistics           crawler.CrawlStats `json:"statistics" yaml:"statistics"`
+	Forms                []crawler.FormInfo `json:"forms,omitempty" yaml:"forms,omitempty"`
+	ResourcesSummary     *ResourcesSummary  `json:"resources_summary,omitempty" yaml:"resources_summary,omitempty"`
+	InternalLinksSummary *LinksSummary      `json:"internal_links_summary,omitempty" yaml:"internal_links_summary,omitempty"`
+	ExternalLinksSummary *LinksSummary      `json:"external_links_summary,omitempty" yaml:"external_links_summary,omitempty"`
+	RobotsDisallow       []string           `json:"robots_disallow,omitempty" yaml:"robots_disallow,omitempty"`
+	SitemapURLs          []string           `json:"sitemap_urls,omitempty" yaml:"sitemap_urls,omitempty"`
+	Errors               []string           `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
 
 // ResourcesSummary provides a compact summary of resources.
