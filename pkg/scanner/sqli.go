@@ -25,14 +25,14 @@ const (
 
 	// Content-based detection thresholds - these are baseline values
 	// Actual thresholds are adaptive based on response characteristics
-	minWordCountDifference         = 3  // Minimum word count difference to consider significant (lowered from 5)
+	minWordCountDifference         = 2  // Minimum word count difference to consider significant (lowered from 3 for DVWA)
 	minStructuralElementDifference = 1  // Minimum structural element difference to consider significant
 	lengthDifferenceThresholdPct   = 10 // Minimum percentage difference in length to consider significant (lowered from 20)
 
 	// Adaptive threshold settings
 	smallResponseSizeThreshold = 1024 // Responses < 1KB use more sensitive thresholds
 	fewStructuralElementsLimit = 10   // Responses with < 10 structural elements use sensitive thresholds
-	minWordCountForPercentage  = 10   // If baseline has < 10 words, use absolute difference instead of percentage (lowered from 20 for DVWA detection)
+	minWordCountForPercentage  = 5    // If baseline has < 5 words, use absolute difference instead of percentage (lowered from 10 for DVWA detection)
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -728,6 +728,7 @@ type responseCharacteristics struct {
 	StructuralElements int    // Count of structural HTML elements (tr, li, etc.)
 	DataContent        string // Text extracted from data-bearing elements (td, th, pre)
 	DataWordCount      int    // Number of words in data content
+	DataRowCount       int    // Number of table rows in data regions (for DVWA-style detection)
 }
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
@@ -880,6 +881,81 @@ func countStructuralElements(htmlStr string) int {
 	return count
 }
 
+// countDataRows counts table rows that contain actual data (td elements)
+// This is more specific than countStructuralElements and helps detect DVWA-style
+// responses where the difference is in the number of data rows returned
+func countDataRows(htmlStr string) int {
+	// Limit input size to prevent excessive processing
+	if len(htmlStr) > maxResponseSize {
+		htmlStr = htmlStr[:maxResponseSize]
+	}
+
+	// Parse HTML to count rows with data cells
+	doc, err := html.Parse(strings.NewReader(htmlStr))
+	if err != nil {
+		// Fallback: use simple string counting if parsing fails
+		// Count <tr> tags that have at least one <td> child
+		trMatches := trRegex.FindAllStringIndex(htmlStr, -1)
+		count := 0
+		for _, trMatch := range trMatches {
+			// Look for a <td> tag after this <tr> and before the next </tr>
+			trStart := trMatch[1]
+			trEndIndex := strings.Index(htmlStr[trStart:], "</tr>")
+			if trEndIndex == -1 {
+				trEndIndex = len(htmlStr) - trStart
+			}
+			rowContent := htmlStr[trStart : trStart+trEndIndex]
+			if strings.Contains(rowContent, "<td") {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Use HTML parser to accurately count data rows
+	dataRowCount := 0
+	var countRows func(*html.Node)
+
+	countRows = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "tr" {
+			// Check if this tr has any td children
+			hasTD := false
+			var checkForTD func(*html.Node)
+			checkForTD = func(child *html.Node) {
+				if child.Type == html.ElementNode && child.Data == "td" {
+					hasTD = true
+					return
+				}
+				for c := child.FirstChild; c != nil; c = c.NextSibling {
+					if hasTD {
+						return
+					}
+					checkForTD(c)
+				}
+			}
+
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				checkForTD(c)
+				if hasTD {
+					break
+				}
+			}
+
+			if hasTD {
+				dataRowCount++
+			}
+		}
+
+		// Continue traversing
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			countRows(c)
+		}
+	}
+
+	countRows(doc)
+	return dataRowCount
+}
+
 // detectNoResultsPattern checks if the response indicates "no results" or empty data
 func detectNoResultsPattern(body string) bool {
 	bodyLower := strings.ToLower(body)
@@ -978,7 +1054,7 @@ func hasResultsData(body string, structuralElements int) bool {
 
 // analyzeResponse extracts all characteristics from a response
 // Optimized to extract body content only once
-func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int, dataContent string, dataWordCount int) {
+func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int, dataContent string, dataWordCount int, dataRowCount int) {
 	// Extract content once and reuse for both hash and word count
 	extractedContent := extractBodyContent(body)
 
@@ -1003,6 +1079,9 @@ func analyzeResponse(body string) (contentHash string, wordCount int, structural
 	} else {
 		dataWordCount = len(strings.Fields(dataContent))
 	}
+
+	// Count data rows (rows with td elements) for DVWA-style detection
+	dataRowCount = countDataRows(body)
 
 	return
 }
@@ -1042,7 +1121,7 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 	}
 
 	bodyStr := string(body)
-	contentHash, wordCount, structuralElements, dataContent, dataWordCount := analyzeResponse(bodyStr)
+	contentHash, wordCount, structuralElements, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
 
 	return &responseCharacteristics{
 		StatusCode:         resp.StatusCode,
@@ -1053,6 +1132,7 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 		StructuralElements: structuralElements,
 		DataContent:        dataContent,
 		DataWordCount:      dataWordCount,
+		DataRowCount:       dataRowCount,
 	}, nil
 }
 
@@ -1095,7 +1175,7 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 	}
 
 	bodyStr := string(body)
-	contentHash, wordCount, structuralElements, dataContent, dataWordCount := analyzeResponse(bodyStr)
+	contentHash, wordCount, structuralElements, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
 
 	return &responseCharacteristics{
 		StatusCode:         resp.StatusCode,
@@ -1106,6 +1186,7 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 		StructuralElements: structuralElements,
 		DataContent:        dataContent,
 		DataWordCount:      dataWordCount,
+		DataRowCount:       dataRowCount,
 	}, nil
 }
 
@@ -1333,8 +1414,24 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	dataWordCountDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
 	dataWordCountDiffersSignificantly := dataWordCountDiff >= adaptiveWordCountThreshold
 
-	if dataContentDiffers && dataWordCountDiffersSignificantly {
-		detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs (true: %d words, false: %d words, diff: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount, dataWordCountDiff))
+	// Enhanced DVWA-style detection: If data content differs at all, even with low word count, flag it
+	// DVWA often has minimal differences (e.g., "ID: 1, First name: admin" vs no data)
+	if dataContentDiffers {
+		if dataWordCountDiffersSignificantly {
+			detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs (true: %d words, false: %d words, diff: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount, dataWordCountDiff))
+			detectedVulnerability = true
+		} else if dataWordCountDiff > 0 {
+			// Even a small difference in data content is suspicious for SQLi
+			detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs subtly (true: %d words, false: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount))
+			detectedVulnerability = true
+		}
+	}
+
+	// Row-count differential detection (DVWA-style): Compare number of table rows with data
+	// This catches cases where true condition returns more rows than false condition
+	dataRowCountDiff := abs(trueResp.DataRowCount - falseResp.DataRowCount)
+	if dataRowCountDiff > 0 {
+		detectionMethods = append(detectionMethods, fmt.Sprintf("data row count differs (true: %d rows, false: %d rows, diff: %d rows)", trueResp.DataRowCount, falseResp.DataRowCount, dataRowCountDiff))
 		detectedVulnerability = true
 	}
 
