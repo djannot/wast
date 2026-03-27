@@ -28,16 +28,9 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 
 - **XSS reflected detection improved** — Added check for URL-encoded payload reflection to handle edge cases where applications reflect parameters without decoding. Made the detection logic more robust and explicit. The scanner now properly detects DVWA-style reflected XSS where `<script>alert(1)</script>` is echoed unescaped in the response.
 - **CMDi POST detection improved** — Enhanced `cmdOutputPatterns` to detect simple usernames from `whoami` command (e.g., `www-data`, `root`, `apache`, `nginx`, etc.). The scanner now properly detects DVWA's `/vulnerabilities/exec/` endpoint where injecting `; whoami` or `; id` appends command output to the ping response. Added comprehensive test case simulating DVWA behavior.
+- **SQLi scanner now detects DVWA `/vulnerabilities/sqli/?id=` injection** (Issue #188) — Fixed the scanner to detect classic DVWA SQLi endpoint. Root cause was that DVWA requires a `Submit` parameter to process form submissions. When the crawler discovers URLs with only data parameters (e.g., `id=1`), DVWA returns just the form without executing queries, causing all responses (baseline, true, false) to be identical. Added fallback mechanism: when no vulnerabilities are found and responses look like empty forms, the scanner automatically retries with `Submit=Submit` parameter added. This fixes the P0 issue where the scanner detected SQLi on `/brute/` and `/fi/` but missed the primary `/sqli/` test page.
 
 ## Still broken
-
-### P0: SQLi scanner misses the classic `/vulnerabilities/sqli/?id=` injection
-
-**Impact:** DVWA's primary SQLi endpoint at `/vulnerabilities/sqli/` with GET param `id` is trivially injectable (`1' OR '1'='1`), but the scanner doesn't detect it. It did find SQLi on `/brute/` and `/fi/` — so the detection logic works, but something about the `/sqli/` endpoint specifically causes a miss.
-
-**Likely root cause:** The `/vulnerabilities/sqli/` page uses a form that submits via GET with `id` and `Submit` params. The baseline vs. injected comparison might be thrown off by DVWA's response structure for that specific page. The boolean-based heuristic that worked on `/brute/` and `/fi/` should also work here — investigate why it doesn't.
-
-**Files:** `pkg/scanner/sqli.go` — `testBooleanBased()`
 
 ### P1: Path traversal scanner misses LFI on `/vulnerabilities/fi/?page=`
 

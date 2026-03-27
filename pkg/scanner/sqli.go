@@ -362,10 +362,27 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 		params.Set("product", "1")
 	}
 
+	// Identify submit-like parameters that should not be tested for SQLi
+	submitParamNames := []string{"submit", "button", "action", "send", "go"}
+	paramsToTest := make(map[string]bool)
+	for paramName := range params {
+		paramLower := strings.ToLower(paramName)
+		isSubmitParam := false
+		for _, submitName := range submitParamNames {
+			if paramLower == submitName {
+				isSubmitParam = true
+				break
+			}
+		}
+		if !isSubmitParam {
+			paramsToTest[paramName] = true
+		}
+	}
+
 	// Get baseline responses for boolean-based detection and baseline timing for time-based detection
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
-	for paramName := range params {
+	for paramName := range paramsToTest {
 		baseline, duration := s.getBaselineWithTiming(ctx, parsedURL, paramName)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
@@ -374,7 +391,7 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 	}
 
 	// Test each parameter with each payload
-	for paramName := range params {
+	for paramName := range paramsToTest {
 		for _, payload := range sqliPayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
@@ -412,6 +429,94 @@ func (s *SQLiScanner) Scan(ctx context.Context, targetURL string) *SQLiScanResul
 				s.calculateSummary(result)
 				return result
 			default:
+			}
+		}
+	}
+
+	// DVWA-style fallback: If no vulnerabilities found and responses look like empty forms,
+	// try adding a Submit parameter. This handles cases where forms require a submit button
+	// parameter to process the query (e.g., DVWA's /vulnerabilities/sqli/).
+	// This fixes issue #188.
+	if result.Summary.VulnerabilitiesFound == 0 && len(paramsToTest) > 0 {
+		// Check if baseline responses look like empty forms (no data, just structure)
+		looksLikeEmptyForm := false
+		for _, baseline := range baselineResponses {
+			// If response is small and contains form-like keywords, it might be an unprocessed form
+			if baseline.BodyLength < 3000 && strings.Contains(strings.ToLower(baseline.ContainsKey), "form") {
+				looksLikeEmptyForm = true
+				break
+			}
+		}
+
+		// Check if URL path suggests it's a form endpoint
+		pathLower := strings.ToLower(parsedURL.Path)
+		isLikelyFormEndpoint := strings.Contains(pathLower, "sqli") ||
+			strings.Contains(pathLower, "sql") ||
+			strings.Contains(pathLower, "search") ||
+			strings.Contains(pathLower, "query") ||
+			strings.Contains(pathLower, "login") ||
+			strings.Contains(pathLower, "user")
+
+		// If it looks like an empty form or is a likely form endpoint, try adding Submit parameter
+		if looksLikeEmptyForm || isLikelyFormEndpoint {
+			// Check if Submit parameter is already present
+			hasSubmit := false
+			for paramName := range params {
+				if strings.ToLower(paramName) == "submit" {
+					hasSubmit = true
+					break
+				}
+			}
+
+			if !hasSubmit {
+				// Create a new URL with Submit parameter added
+				retryURL := *parsedURL
+				retryParams := retryURL.Query()
+				retryParams.Set("Submit", "Submit")
+				retryURL.RawQuery = retryParams.Encode()
+
+				// Get new baselines with Submit parameter
+				retryBaselineResponses := make(map[string]*baselineResponse)
+				for paramName := range paramsToTest {
+					baseline, _ := s.getBaselineWithTiming(ctx, &retryURL, paramName)
+					if baseline != nil {
+						retryBaselineResponses[paramName] = baseline
+					}
+				}
+
+				// Re-test with Submit parameter - only boolean-based payloads since those are most affected
+				for paramName := range paramsToTest {
+					for _, payload := range sqliPayloads {
+						if !payload.CompareBaseline {
+							continue // Skip non-boolean payloads in retry
+						}
+
+						if s.rateLimiter != nil {
+							if err := s.rateLimiter.Wait(ctx); err != nil {
+								break
+							}
+						}
+
+						baseline := retryBaselineResponses[paramName]
+						finding := s.testBooleanBased(ctx, &retryURL, paramName, payload, baseline)
+
+						result.Summary.TotalTests++
+
+						if finding != nil {
+							result.Findings = append(result.Findings, *finding)
+							result.Summary.VulnerabilitiesFound++
+						}
+
+						// Check context cancellation
+						select {
+						case <-ctx.Done():
+							result.Errors = append(result.Errors, "Scan cancelled")
+							s.calculateSummary(result)
+							return result
+						default:
+						}
+					}
+				}
 			}
 		}
 	}
