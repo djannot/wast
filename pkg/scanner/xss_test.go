@@ -2618,3 +2618,100 @@ func TestXSSScanner_ScanPOST_DefaultParameterName(t *testing.T) {
 		t.Errorf("Expected severity %s, got %s", SeverityHigh, nameFinding.Severity)
 	}
 }
+
+// TestXSSScanner_Scan_CommentInContextWindowButNotAroundPayload tests that
+// the scanner correctly detects XSS when there's an HTML comment in the context
+// window (200 chars around the payload) but the payload itself is not inside the comment.
+// This tests the fix for the bug where the presence of "<!--" anywhere in the context
+// would cause the scanner to skip detection even if the payload was outside the comment.
+func TestXSSScanner_Scan_CommentInContextWindowButNotAroundPayload(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	// Create a response where:
+	// 1. There's an HTML comment in the page
+	// 2. The payload is reflected verbatim OUTSIDE the comment
+	// 3. The comment is within 200 characters of the payload (in context window)
+	scriptPayload := "<script>alert(1)</script>"
+	responseHTML := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<title>Test Page</title>
+</head>
+<body>
+<!-- This is a comment that should not affect detection -->
+<div class="content">
+<p>User input: %s</p>
+</div>
+</body>
+</html>`, scriptPayload)
+
+	mock.responses["https://example.com/test?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseHTML)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/test?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect the XSS vulnerability despite the comment in the context
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find XSS vulnerability - payload is outside HTML comment")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Findings: %v", result.Findings)
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding - script tag reflected outside comment")
+	}
+
+	// Verify the finding details
+	finding := result.Findings[0]
+	if finding.Confidence != "high" {
+		t.Errorf("Expected high confidence for verbatim script tag reflection outside comment, got %s", finding.Confidence)
+	}
+
+	if finding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+	}
+
+	if !strings.Contains(finding.Payload, "<script>") {
+		t.Errorf("Expected payload to contain <script> tag, got %s", finding.Payload)
+	}
+}
+
+// TestXSSScanner_Scan_PayloadInUnclosedComment tests that the scanner correctly
+// handles payloads inside unclosed HTML comments. When a comment starts but never
+// closes (malformed HTML), the payload should not be reported as high confidence XSS
+// because browsers may treat content differently in this edge case.
+func TestXSSScanner_Scan_PayloadInUnclosedComment(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+	scriptPayload := "<script>alert(1)</script>"
+	responseHTML := fmt.Sprintf(`<!DOCTYPE html>
+<html><body>
+<!-- This comment never closes
+<div>%s</div>
+</body></html>`, scriptPayload)
+
+	mock.responses["https://example.com/test?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseHTML)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+	result := scanner.Scan(context.Background(), "https://example.com/test?q=test")
+
+	// Should not report high confidence for payload in unclosed comment
+	for _, finding := range result.Findings {
+		if strings.Contains(finding.Payload, "<script>") && finding.Confidence == "high" {
+			t.Error("Should not report high confidence for payload in unclosed comment")
+		}
+	}
+}

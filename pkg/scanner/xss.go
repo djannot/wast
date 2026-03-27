@@ -406,7 +406,6 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	}
 	contextSnippet := body[start:end]
 	beforePayload := body[start:idx]
-	afterPayload := body[idx:]
 
 	// Early detection: If payload contains executable tags and appears verbatim, it's likely executable
 	// This handles DVWA-style trivial reflected XSS
@@ -417,9 +416,15 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	commentStart := strings.Index(contextSnippet, "<!--")
 	payloadIdx := strings.Index(contextSnippet, payload)
 	if commentStart >= 0 && payloadIdx >= 0 && commentStart < payloadIdx {
-		// Check if comment is closed after payload
-		if strings.Contains(afterPayload, "-->") {
-			// Payload is inside a comment - skip early detection, let detailed analysis handle it
+		// Check if comment is closed
+		commentEnd := strings.Index(contextSnippet, "-->")
+		if commentEnd < 0 || commentEnd < commentStart {
+			// Comment is not closed, or closed before it starts - payload is in unclosed comment
+			goto detailedAnalysis
+		}
+		// Comment is closed - check if it closes after the payload
+		if commentEnd > payloadIdx {
+			// Comment closes after payload - payload is inside comment
 			goto detailedAnalysis
 		}
 	}
@@ -501,17 +506,42 @@ detailedAnalysis:
 	if strings.Contains(payload, "<script") || strings.Contains(payload, "<img") || strings.Contains(payload, "<svg") || strings.Contains(payload, "<iframe") {
 		tagPattern := regexp.MustCompile(`<(script|img|svg|iframe)[^>]*>`)
 		if tagPattern.MatchString(payload) {
-			// Check if the tag is actually rendered (not inside a string, comment, or textarea)
-			if !strings.Contains(context, "<!--") && !strings.Contains(context, "*/") {
-				// Check if payload is inside textarea (not directly executable)
-				if strings.Contains(beforePayload, "<textarea") && !strings.Contains(beforePayload, "</textarea>") {
-					// Payload is inside textarea - report as low confidence
-					return ContextHTMLBody, false, "low"
-				}
-				return ContextHTMLBody, true, "high"
+			// Check if payload is inside textarea (not directly executable)
+			if strings.Contains(beforePayload, "<textarea") && !strings.Contains(beforePayload, "</textarea>") {
+				// Payload is inside textarea - report as low confidence
+				return ContextHTMLBody, false, "low"
 			}
+
+			// Check if payload is inside an HTML comment
+			// Look for comment start before the payload and comment end after
+			lastCommentStart := strings.LastIndex(beforePayload, "<!--")
+			lastCommentEnd := strings.LastIndex(beforePayload, "-->")
+			if lastCommentStart >= 0 {
+				// Comment start found - check if it's closed before payload
+				if lastCommentEnd < lastCommentStart {
+					// Comment is not closed before payload - payload is inside comment
+					// Skip detection regardless of whether comment closes after
+					goto defaultAnalysis
+				}
+			}
+
+			// Check if payload is inside a JavaScript comment
+			// This is a simple check - more comprehensive would require parsing
+			if strings.Contains(context, "*/") {
+				lastJsCommentStart := strings.LastIndex(beforePayload, "/*")
+				lastJsCommentEnd := strings.LastIndex(beforePayload, "*/")
+				if lastJsCommentStart >= 0 && lastJsCommentEnd < lastJsCommentStart {
+					// Inside JS block comment - skip
+					goto defaultAnalysis
+				}
+			}
+
+			// Tag is properly formed and not in a comment/textarea
+			return ContextHTMLBody, true, "high"
 		}
 	}
+
+defaultAnalysis:
 
 	// Default: payload is reflected but context is unclear
 	return ContextHTMLBody, false, "low"
