@@ -112,6 +112,10 @@ var cmdOutputPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)/usr/bin`),
 	regexp.MustCompile(`(?i)/etc/passwd`),
 
+	// Common Unix/Linux usernames from whoami command
+	// Pattern matches typical service account usernames at line boundaries
+	regexp.MustCompile(`(?m)^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|backup|list|irc|gnats|nobody|systemd-network|systemd-resolve|systemd-timesync|messagebus|syslog|_apt|tss|uuidd|tcpdump|sshd|landscape|pollinate|fwupd-refresh|systemd-coredump|lxd|usbmux|avahi|hplip|pulse|gnome-initial-setup|colord|geoclue|speech-dispatcher|dnsmasq|lightdm|nm-openconnect|nm-openvpn|saned|cups-browsed|kernoops|whoopsie|gdm|rtkit|cups-pk-helper|apache|apache2|httpd|nginx|www-data|www|http|_www|wwwrun)$`),
+
 	// Windows command output indicators
 	regexp.MustCompile(`(?i)NT AUTHORITY`),
 	regexp.MustCompile(`(?i)BUILTIN\\`),

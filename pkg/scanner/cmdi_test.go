@@ -895,3 +895,114 @@ func TestCMDiScanner_OutputBasedDetection_NoDifferential(t *testing.T) {
 		}
 	}
 }
+
+// TestCMDiScanner_DVWALikeExecPOST tests detection of command injection on DVWA-like exec endpoint
+// that accepts a POST parameter 'ip' and passes it to shell_exec() for ping command.
+// This simulates DVWA's /vulnerabilities/exec/ endpoint behavior.
+func TestCMDiScanner_DVWALikeExecPOST(t *testing.T) {
+	// Create a custom mock client that simulates DVWA exec endpoint behavior
+	mockClient := &mockDVWAExecHTTPClient{}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	params := map[string]string{
+		"ip": "127.0.0.1",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://localhost:8080/vulnerabilities/exec/", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should detect output-based command injection when whoami/id appended to valid IP
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" && finding.Parameter == "ip" {
+			foundOutputBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected confidence high, got %s", finding.Confidence)
+			}
+			if finding.Evidence == "" {
+				t.Error("Expected evidence to be captured")
+			}
+			t.Logf("Detected DVWA-like vulnerability: payload=%s, evidence=%s", finding.Payload, finding.Evidence)
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based command injection on DVWA-like exec endpoint")
+	}
+}
+
+// mockDVWAExecHTTPClient simulates DVWA's /vulnerabilities/exec/ endpoint behavior:
+// - Valid IP (127.0.0.1) returns ping output
+// - Injected command (127.0.0.1; whoami) returns ping output + username
+// - Injected command (127.0.0.1; id) returns ping output + uid/gid info
+type mockDVWAExecHTTPClient struct{}
+
+func (m *mockDVWAExecHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		// Read the form data
+		body, _ := io.ReadAll(req.Body)
+		formData := string(body)
+
+		// Baseline: valid IP returns only ping output
+		if (strings.Contains(formData, "ip=127.0.0.1") || strings.Contains(formData, "ip=127.0.0.1")) &&
+			!strings.Contains(formData, "%3B") && !strings.Contains(formData, ";") &&
+			!strings.Contains(formData, "%26") && !strings.Contains(formData, "&") &&
+			!strings.Contains(formData, "%7C") && !strings.Contains(formData, "|") {
+			return &http.Response{
+				StatusCode: 200,
+				Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.051 ms
+64 bytes from 127.0.0.1: icmp_seq=3 ttl=64 time=0.043 ms
+
+--- 127.0.0.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2037ms
+rtt min/avg/max/mdev = 0.028/0.040/0.051/0.009 ms`)),
+			}, nil
+		}
+
+		// Command injection: 127.0.0.1; whoami or similar patterns
+		if (strings.Contains(formData, "whoami") || strings.Contains(formData, "WHOAMI")) &&
+			(strings.Contains(formData, "127.0.0.1") || strings.Contains(formData, "test")) {
+			return &http.Response{
+				StatusCode: 200,
+				Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.028/0.028/0.028/0.000 ms
+www-data`)),
+			}, nil
+		}
+
+		// Command injection: 127.0.0.1; id
+		if strings.Contains(formData, "id") && strings.Contains(formData, "127.0.0.1") {
+			return &http.Response{
+				StatusCode: 200,
+				Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.028 ms
+
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.028/0.028/0.028/0.000 ms
+uid=33(www-data) gid=33(www-data) groups=33(www-data)`)),
+			}, nil
+		}
+
+		// Default baseline response
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("Normal response")),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("OK")),
+	}, nil
+}

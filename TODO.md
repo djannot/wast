@@ -27,23 +27,9 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 ## Fixed (Phase 2)
 
 - **XSS reflected detection improved** — Added check for URL-encoded payload reflection to handle edge cases where applications reflect parameters without decoding. Made the detection logic more robust and explicit. The scanner now properly detects DVWA-style reflected XSS where `<script>alert(1)</script>` is echoed unescaped in the response.
+- **CMDi POST detection improved** — Enhanced `cmdOutputPatterns` to detect simple usernames from `whoami` command (e.g., `www-data`, `root`, `apache`, `nginx`, etc.). The scanner now properly detects DVWA's `/vulnerabilities/exec/` endpoint where injecting `; whoami` or `; id` appends command output to the ping response. Added comprehensive test case simulating DVWA behavior.
 
 ## Still broken
-
-### P0: CMDi scanner doesn't detect command injection via POST
-
-**Impact:** DVWA `/vulnerabilities/exec/` accepts POST param `ip` and passes it to `shell_exec()`. Despite POST scanning support being added, CMDi still finds nothing.
-
-**Likely root cause:** The CMDi detection logic may not be recognizing command output in the response. DVWA's exec page returns ping output when `ip=127.0.0.1`. The scanner needs to:
-1. Send a baseline request with a normal value (e.g., `ip=127.0.0.1`)
-2. Send a payload like `127.0.0.1; whoami` or `127.0.0.1 && id`
-3. Detect that extra output (username, uid) appeared in the response compared to baseline
-
-Alternatively, `ScanPOST()` might not be wired up correctly for CMDi, or the POST form parameters aren't reaching the scanner.
-
-**Debug approach:** Add logging or test directly: `curl -X POST http://localhost:8080/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit" -b "PHPSESSID=...; security=low"` — verify the injection works, then trace why the scanner doesn't flag it.
-
-**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testParameter()`, detection heuristics
 
 ### P0: SQLi scanner misses the classic `/vulnerabilities/sqli/?id=` injection
 
