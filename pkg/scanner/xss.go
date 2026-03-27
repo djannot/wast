@@ -581,7 +581,9 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 		return nil
 	}
 
-	// Only check successful responses
+	// Check responses in the success range (200-299) and redirect range (300-399)
+	// We include redirects because some applications reflect payloads in redirect responses
+	// The HTTP client may have followed redirects, but we still want to check the final response
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		return nil
 	}
@@ -595,10 +597,23 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 	bodyStr := string(body)
 
 	// Check if the payload or evidence is reflected in the response
-	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+	// Note: We check for both the original payload and the URL-encoded version
+	// because some applications may reflect the encoded form without decoding
+	urlEncodedPayload := url.QueryEscape(payload.Payload)
+	payloadFound := strings.Contains(bodyStr, payload.Payload)
+	encodedPayloadFound := strings.Contains(bodyStr, urlEncodedPayload)
+	evidenceFound := strings.Contains(bodyStr, payload.Evidence)
+
+	if payloadFound || encodedPayloadFound || evidenceFound {
+		// If only the URL-encoded version is found, it's likely not executable
+		// as it would appear as text rather than actual HTML/JS
+		if !payloadFound && encodedPayloadFound {
+			return nil
+		}
+
 		// If the payload is not found verbatim but only evidence is found,
 		// it's likely HTML-encoded and not executable
-		if !strings.Contains(bodyStr, payload.Payload) && strings.Contains(bodyStr, payload.Evidence) {
+		if !payloadFound && evidenceFound {
 			// Evidence found but not the full payload - likely encoded
 			return nil
 		}
@@ -699,10 +714,23 @@ func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, pa
 	bodyStr := string(body)
 
 	// Check if the payload or evidence is reflected in the response
-	if strings.Contains(bodyStr, payload.Evidence) || strings.Contains(bodyStr, payload.Payload) {
+	// Note: We check for both the original payload and the URL-encoded version
+	// because some applications may reflect the encoded form without decoding
+	urlEncodedPayload := url.QueryEscape(payload.Payload)
+	payloadFound := strings.Contains(bodyStr, payload.Payload)
+	encodedPayloadFound := strings.Contains(bodyStr, urlEncodedPayload)
+	evidenceFound := strings.Contains(bodyStr, payload.Evidence)
+
+	if payloadFound || encodedPayloadFound || evidenceFound {
+		// If only the URL-encoded version is found, it's likely not executable
+		// as it would appear as text rather than actual HTML/JS
+		if !payloadFound && encodedPayloadFound {
+			return nil
+		}
+
 		// If the payload is not found verbatim but only evidence is found,
 		// it's likely HTML-encoded and not executable
-		if !strings.Contains(bodyStr, payload.Payload) && strings.Contains(bodyStr, payload.Evidence) {
+		if !payloadFound && evidenceFound {
 			// Evidence found but not the full payload - likely encoded
 			return nil
 		}
