@@ -790,6 +790,16 @@ func TestExecuteVerify(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "ssti verification",
+			findingType: "ssti",
+			findingURL:  "https://example.com/template",
+			parameter:   "name",
+			payload:     "{{7*7}}",
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
 			name:        "invalid finding type",
 			findingType: "invalid",
 			findingURL:  "https://example.com/test",
@@ -944,7 +954,7 @@ func TestExecuteVerifyContextCancellation(t *testing.T) {
 
 // TestExecuteVerifyAllFindingTypes tests all supported finding types
 func TestExecuteVerifyAllFindingTypes(t *testing.T) {
-	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti"}
 
 	for _, findingType := range findingTypes {
 		t.Run(findingType, func(t *testing.T) {

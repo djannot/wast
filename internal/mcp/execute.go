@@ -503,6 +503,20 @@ func executeVerify(ctx context.Context, findingType string, findingURL string, p
 		}
 		return csrfScanner.VerifyFinding(ctx, finding, verifyConfig)
 
+	case "ssti":
+		sstiScanner := scanner.NewSSTIScanner(
+			scanner.WithSSTITimeout(timeout),
+			scanner.WithSSTIAuth(authConfig),
+			scanner.WithSSTIRateLimiter(rateLimiter),
+			scanner.WithSSTITracer(tracer),
+		)
+		finding := &scanner.SSTIFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return sstiScanner.VerifyFinding(ctx, finding, verifyConfig)
+
 	default:
 		return nil, fmt.Errorf("unsupported finding type: %s", findingType)
 	}
