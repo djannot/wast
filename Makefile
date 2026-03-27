@@ -56,6 +56,14 @@ test-integration:
 	$(GOTEST) -v -tags=integration -race ./internal/mcp/
 	@echo "Integration tests complete"
 
+# Run DVWA integration tests
+.PHONY: test-dvwa
+test-dvwa:
+	@echo "Running DVWA integration tests..."
+	@echo "Starting DVWA containers (this may take a minute)..."
+	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/...
+	@echo "DVWA integration tests complete"
+
 # Run tests with coverage report
 .PHONY: test-coverage
 test-coverage: test
@@ -136,6 +144,7 @@ help:
 	@echo "  test             Run tests with coverage"
 	@echo "  test-coverage    Generate HTML coverage report"
 	@echo "  test-integration Run integration tests"
+	@echo "  test-dvwa        Run DVWA integration tests"
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  fmt-check        Check code formatting"
