@@ -311,46 +311,55 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					}
 
 					// Scan this target with its discovered parameters
-					xssFindings := scanTargetForXSS(workerCtx, xssScanner, target)
-					sqliFindings := scanTargetForSQLi(workerCtx, sqliScanner, target)
-					csrfFindings := scanTargetForCSRF(workerCtx, csrfScanner, target)
-					ssrfFindings := scanTargetForSSRF(workerCtx, ssrfScanner, target)
-					redirectFindings := scanTargetForRedirect(workerCtx, redirectScanner, target)
-					cmdiFindings := scanTargetForCMDi(workerCtx, cmdiScanner, target)
-					pathtraversalFindings := scanTargetForPathTraversal(workerCtx, pathtraversalScanner, target)
+					xssResult := scanTargetForXSS(workerCtx, xssScanner, target)
+					sqliResult := scanTargetForSQLi(workerCtx, sqliScanner, target)
+					csrfResult := scanTargetForCSRF(workerCtx, csrfScanner, target)
+					ssrfResult := scanTargetForSSRF(workerCtx, ssrfScanner, target)
+					redirectResult := scanTargetForRedirect(workerCtx, redirectScanner, target)
+					cmdiResult := scanTargetForCMDi(workerCtx, cmdiScanner, target)
+					pathtraversalResult := scanTargetForPathTraversal(workerCtx, pathtraversalScanner, target)
 
 					// Add source information to findings
-					for i := range xssFindings {
-						xssFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xssFindings[i].Evidence)
+					for i := range xssResult.Findings {
+						xssResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xssResult.Findings[i].Evidence)
 					}
-					for i := range sqliFindings {
-						sqliFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliFindings[i].Evidence)
+					for i := range sqliResult.Findings {
+						sqliResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliResult.Findings[i].Evidence)
 					}
-					for i := range csrfFindings {
-						csrfFindings[i].FormAction = target.URL
+					for i := range csrfResult.Findings {
+						csrfResult.Findings[i].FormAction = target.URL
 					}
-					for i := range ssrfFindings {
-						ssrfFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfFindings[i].Evidence)
+					for i := range ssrfResult.Findings {
+						ssrfResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, ssrfResult.Findings[i].Evidence)
 					}
-					for i := range redirectFindings {
-						redirectFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, redirectFindings[i].Evidence)
+					for i := range redirectResult.Findings {
+						redirectResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, redirectResult.Findings[i].Evidence)
 					}
-					for i := range cmdiFindings {
-						cmdiFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, cmdiFindings[i].Evidence)
+					for i := range cmdiResult.Findings {
+						cmdiResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, cmdiResult.Findings[i].Evidence)
 					}
-					for i := range pathtraversalFindings {
-						pathtraversalFindings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, pathtraversalFindings[i].Evidence)
+					for i := range pathtraversalResult.Findings {
+						pathtraversalResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, pathtraversalResult.Findings[i].Evidence)
 					}
 
-					// Thread-safe aggregation of findings
+					// Thread-safe aggregation of findings and test counts
 					mu.Lock()
-					allXSSFindings = append(allXSSFindings, xssFindings...)
-					allSQLiFindings = append(allSQLiFindings, sqliFindings...)
-					allCSRFFindings = append(allCSRFFindings, csrfFindings...)
-					allSSRFFindings = append(allSSRFFindings, ssrfFindings...)
-					allRedirectFindings = append(allRedirectFindings, redirectFindings...)
-					allCMDiFindings = append(allCMDiFindings, cmdiFindings...)
-					allPathTraversalFindings = append(allPathTraversalFindings, pathtraversalFindings...)
+					allXSSFindings = append(allXSSFindings, xssResult.Findings...)
+					allSQLiFindings = append(allSQLiFindings, sqliResult.Findings...)
+					allCSRFFindings = append(allCSRFFindings, csrfResult.Findings...)
+					allSSRFFindings = append(allSSRFFindings, ssrfResult.Findings...)
+					allRedirectFindings = append(allRedirectFindings, redirectResult.Findings...)
+					allCMDiFindings = append(allCMDiFindings, cmdiResult.Findings...)
+					allPathTraversalFindings = append(allPathTraversalFindings, pathtraversalResult.Findings...)
+
+					// Accumulate test counts from each scanner's summary
+					stats.TotalXSSTests += xssResult.Summary.TotalTests
+					stats.TotalSQLiTests += sqliResult.Summary.TotalTests
+					stats.TotalCSRFTests += csrfResult.Summary.TotalFormsTested
+					stats.TotalSSRFTests += ssrfResult.Summary.TotalTests
+					stats.TotalRedirectTests += redirectResult.Summary.TotalTests
+					stats.TotalCMDiTests += cmdiResult.Summary.TotalTests
+					stats.TotalPathTraversalTests += pathtraversalResult.Summary.TotalTests
 					mu.Unlock()
 
 					// Report progress if callback is set
@@ -389,11 +398,12 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		}
 
 	skipVerification:
-		// Create result structures
+		// Create result structures with accumulated test counts
 		xssResult := &XSSScanResult{
 			Target:   cfg.Target,
 			Findings: allXSSFindings,
 			Summary: XSSSummary{
+				TotalTests:           stats.TotalXSSTests,
 				VulnerabilitiesFound: len(allXSSFindings),
 			},
 			Errors: []string{},
@@ -403,6 +413,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allSQLiFindings,
 			Summary: SQLiSummary{
+				TotalTests:           stats.TotalSQLiTests,
 				VulnerabilitiesFound: len(allSQLiFindings),
 			},
 			Errors: []string{},
@@ -412,7 +423,8 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allCSRFFindings,
 			Summary: CSRFSummary{
-				VulnerableForms: len(allCSRFFindings),
+				TotalFormsTested: stats.TotalCSRFTests,
+				VulnerableForms:  len(allCSRFFindings),
 			},
 			Errors: []string{},
 		}
@@ -421,6 +433,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allSSRFFindings,
 			Summary: SSRFSummary{
+				TotalTests:           stats.TotalSSRFTests,
 				VulnerabilitiesFound: len(allSSRFFindings),
 			},
 			Errors: []string{},
@@ -430,6 +443,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allRedirectFindings,
 			Summary: RedirectSummary{
+				TotalTests:           stats.TotalRedirectTests,
 				VulnerabilitiesFound: len(allRedirectFindings),
 			},
 			Errors: []string{},
@@ -439,6 +453,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allCMDiFindings,
 			Summary: CMDiSummary{
+				TotalTests:           stats.TotalCMDiTests,
 				VulnerabilitiesFound: len(allCMDiFindings),
 			},
 			Errors: []string{},
@@ -448,6 +463,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Target:   cfg.Target,
 			Findings: allPathTraversalFindings,
 			Summary: PathTraversalSummary{
+				TotalTests:           stats.TotalPathTraversalTests,
 				VulnerabilitiesFound: len(allPathTraversalFindings),
 			},
 			Errors: []string{},
@@ -703,97 +719,94 @@ func buildURLWithParams(target DiscoveredTarget) string {
 }
 
 // scanTargetForXSS scans a single discovered target for XSS vulnerabilities.
-func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) []XSSFinding {
+func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) *XSSScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }
 
 // scanTargetForSQLi scans a single discovered target for SQL injection vulnerabilities.
-func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) []SQLiFinding {
+func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) *SQLiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }
 
 // scanTargetForCSRF scans a single discovered target for CSRF vulnerabilities.
-func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target DiscoveredTarget) []CSRFFinding {
+func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target DiscoveredTarget) *CSRFScanResult {
 	// Only scan POST forms for CSRF
 	if !strings.EqualFold(target.Method, "POST") {
-		return []CSRFFinding{}
+		return &CSRFScanResult{
+			Target:   target.URL,
+			Findings: []CSRFFinding{},
+			Summary:  CSRFSummary{},
+			Errors:   []string{},
+		}
 	}
 
 	// Parse URL to get the page that contains the form
 	parsedURL, err := url.Parse(target.URL)
 	if err != nil {
-		return []CSRFFinding{}
+		return &CSRFScanResult{
+			Target:   target.URL,
+			Findings: []CSRFFinding{},
+			Summary:  CSRFSummary{},
+			Errors:   []string{},
+		}
 	}
 
 	// Scan the page containing the form
-	result := scanner.Scan(ctx, fmt.Sprintf("%s://%s%s", parsedURL.Scheme, parsedURL.Host, parsedURL.Path))
-	return result.Findings
+	return scanner.Scan(ctx, fmt.Sprintf("%s://%s%s", parsedURL.Scheme, parsedURL.Host, parsedURL.Path))
 }
 
 // scanTargetForSSRF scans a single discovered target for SSRF vulnerabilities.
-func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) []SSRFFinding {
+func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) *SSRFScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }
 
 // scanTargetForRedirect scans a single discovered target for Open Redirect vulnerabilities.
-func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) []RedirectFinding {
+func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) *RedirectScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }
 
 // scanTargetForCMDi scans a single discovered target for Command Injection vulnerabilities.
-func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) []CMDiFinding {
+func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) *CMDiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }
 
 // scanTargetForPathTraversal scans a single discovered target for Path Traversal vulnerabilities.
-func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) []PathTraversalFinding {
+func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) *PathTraversalScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		result := scanner.ScanPOST(ctx, target.URL, target.Parameters)
-		return result.Findings
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
-	result := scanner.Scan(ctx, targetURL)
-	return result.Findings
+	return scanner.Scan(ctx, targetURL)
 }

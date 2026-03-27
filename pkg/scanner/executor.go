@@ -50,6 +50,14 @@ type ScanStats struct {
 	TotalCMDiFindings          int
 	TotalPathTraversalFindings int
 	TotalSSTIFindings          int
+	TotalXSSTests              int
+	TotalSQLiTests             int
+	TotalCSRFTests             int
+	TotalSSRFTests             int
+	TotalRedirectTests         int
+	TotalCMDiTests             int
+	TotalPathTraversalTests    int
+	TotalSSTITests             int
 }
 
 // ExecuteScan performs the complete scan workflow.
