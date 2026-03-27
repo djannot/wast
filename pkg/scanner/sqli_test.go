@@ -2672,3 +2672,214 @@ func TestSQLiScanner_Scan_DVWAStyleBooleanBased(t *testing.T) {
 		t.Error("Expected to find boolean-based SQLi with differential analysis for DVWA-style responses")
 	}
 }
+
+// TestIsNonDataParameter tests the parameter filtering logic to prevent false positives
+func TestIsNonDataParameter(t *testing.T) {
+	tests := []struct {
+		name       string
+		paramName  string
+		shouldSkip bool
+	}{
+		// Submit buttons and action parameters
+		{"submit button", "submit", true},
+		{"Submit button uppercase", "Submit", true},
+		{"button param", "button", true},
+		{"btn param", "btnSearch", true},
+		{"send param", "send", true},
+		{"action param", "action", true},
+
+		// DVWA-specific non-data fields
+		{"seclev_submit", "seclev_submit", true},
+		{"Upload button", "Upload", true},
+		{"security dropdown", "security", true},
+		{"phpids param", "phpids", true},
+
+		// CSRF tokens and session fields
+		{"csrf token", "csrf_token", true},
+		{"token field", "user_token", true},
+		{"nonce field", "nonce", true},
+		{"session field", "session_id", true},
+
+		// Valid data parameters that should NOT be skipped
+		{"id parameter", "id", false},
+		{"user parameter", "user", false},
+		{"name parameter", "name", false},
+		{"email parameter", "email", false},
+		{"search parameter", "search", false},
+		{"query parameter", "query", false},
+		{"page parameter", "page", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isNonDataParameter(tt.paramName)
+			if result != tt.shouldSkip {
+				t.Errorf("isNonDataParameter(%q) = %v, want %v", tt.paramName, result, tt.shouldSkip)
+			}
+		})
+	}
+}
+
+// TestNormalizeResponseContent tests that CSRF tokens and dynamic content are removed
+func TestNormalizeResponseContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains []string // strings that should be removed
+	}{
+		{
+			name: "CSRF token in input field",
+			input: `<html><body>
+				<input type="hidden" name="csrf_token" value="abc123def456">
+				<input type="text" name="username">
+			</body></html>`,
+			contains: []string{"csrf_token", "abc123def456"},
+		},
+		{
+			name: "User token in input field",
+			input: `<html><body>
+				<input name="user_token" value="xyz789" type="hidden">
+			</body></html>`,
+			contains: []string{"user_token", "xyz789"},
+		},
+		{
+			name: "CSRF meta tag",
+			input: `<html><head>
+				<meta name="csrf-token" content="meta123abc">
+			</head><body></body></html>`,
+			contains: []string{"csrf-token", "meta123abc"},
+		},
+		{
+			name: "Nonce in URL",
+			input: `<html><body>
+				<a href="/page?nonce=1234567890abcdef">Link</a>
+			</body></html>`,
+			contains: []string{"nonce="},
+		},
+		{
+			name: "Timestamp parameter",
+			input: `<html><body>
+				<form action="/submit?timestamp=1234567890"></form>
+			</body></html>`,
+			contains: []string{"timestamp="},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized := normalizeResponseContent(tt.input)
+
+			// Check that the specified strings were removed
+			for _, str := range tt.contains {
+				if strings.Contains(normalized, str) {
+					t.Errorf("normalizeResponseContent() should have removed %q from output, but it's still present", str)
+				}
+			}
+		})
+	}
+}
+
+// TestSQLiScanner_NoFalsePositivesOnSubmitButtons tests that submit buttons don't trigger false positives
+func TestSQLiScanner_NoFalsePositivesOnSubmitButtons(t *testing.T) {
+	// Create a stable mock response
+	responseBody := `<html><body>
+		<form method="post">
+			<input type="text" name="id" value="1">
+			<input type="submit" name="submit" value="Submit">
+			<input type="submit" name="Upload" value="Upload">
+		</form>
+	</body></html>`
+
+	// Mock client that returns stable responses
+	mockClient := &mockSQLiHTTPClient{
+		responses:       make(map[string]*http.Response),
+		defaultResponse: responseBody,
+	}
+
+	scanner := NewSQLiScanner(
+		WithSQLiHTTPClient(mockClient),
+		WithSQLiTimeout(5*time.Second),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://example.com/page?id=1&submit=Submit&Upload=Upload")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// Check that submit buttons were filtered out
+	for _, finding := range result.Findings {
+		if finding.Parameter == "submit" || finding.Parameter == "Upload" {
+			t.Errorf("Found false positive on submit button parameter: %s", finding.Parameter)
+		}
+	}
+
+	t.Logf("Scan result: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+}
+
+// TestSQLiScanner_NoFalsePositivesOnCSRFTokenChanges tests that changing CSRF tokens don't cause false positives
+func TestSQLiScanner_NoFalsePositivesOnCSRFTokenChanges(t *testing.T) {
+	// Use differential response mode but with CSRF tokens
+	// The baseline will have one token, true/false payloads will have different tokens
+	// But after normalization, they should all look the same
+	baselineBody := `<html><body>
+		<h1>Welcome</h1>
+		<p>User ID: 1</p>
+		<input type="hidden" name="csrf_token" value="csrf_baseline_token_123">
+		<form>
+			<input type="text" name="id" value="1">
+			<input type="submit" value="Submit">
+		</form>
+	</body></html>`
+
+	trueBody := `<html><body>
+		<h1>Welcome</h1>
+		<p>User ID: 1</p>
+		<input type="hidden" name="csrf_token" value="csrf_true_token_456">
+		<form>
+			<input type="text" name="id" value="1">
+			<input type="submit" value="Submit">
+		</form>
+	</body></html>`
+
+	falseBody := `<html><body>
+		<h1>Welcome</h1>
+		<p>User ID: 1</p>
+		<input type="hidden" name="csrf_token" value="csrf_false_token_789">
+		<form>
+			<input type="text" name="id" value="1">
+			<input type="submit" value="Submit">
+		</form>
+	</body></html>`
+
+	mockClient := &mockSQLiHTTPClient{
+		responses:            make(map[string]*http.Response),
+		defaultResponse:      baselineBody,
+		differentialResponse: true,
+		trueResponse:         trueBody,
+		falseResponse:        falseBody,
+	}
+
+	scanner := NewSQLiScanner(
+		WithSQLiHTTPClient(mockClient),
+		WithSQLiTimeout(5*time.Second),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://example.com/page?id=1")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// Should find no vulnerabilities since only CSRF token changes (normalization should handle this)
+	if len(result.Findings) > 0 {
+		t.Errorf("Found %d false positives due to CSRF token changes:", len(result.Findings))
+		for _, finding := range result.Findings {
+			t.Logf("  - Parameter: %s, Payload: %s, Evidence: %s", finding.Parameter, finding.Payload, finding.Evidence)
+		}
+	}
+
+	t.Logf("Scan result: %d tests, %d findings (expected 0)", result.Summary.TotalTests, len(result.Findings))
+}

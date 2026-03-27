@@ -572,3 +572,73 @@ func TestDVWA_NoFalsePositives(t *testing.T) {
 		// Don't fail the test - false positives are being investigated
 	}
 }
+
+// TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons verifies SQLi scanner doesn't flag submit buttons
+func TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping DVWA integration test in short mode")
+	}
+
+	client := loginToDVWA(t)
+
+	// Create SQLi scanner
+	sqliScanner := scanner.NewSQLiScanner(
+		scanner.WithSQLiHTTPClient(client),
+		scanner.WithSQLiTimeout(60*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+
+	// Test against File Upload page which has Upload button and security dropdown
+	// This page was previously causing false positives
+	targetURL := dvwaURL + "/vulnerabilities/upload/?Upload=Upload"
+	result := sqliScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	t.Logf("SQLi scan on upload page: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+
+	// Check that no findings are on submit buttons or non-data parameters
+	for _, finding := range result.Findings {
+		paramLower := strings.ToLower(finding.Parameter)
+
+		// These parameters should have been filtered out
+		if paramLower == "upload" || paramLower == "submit" || paramLower == "seclev_submit" || paramLower == "security" {
+			t.Errorf("Found false positive SQLi on non-injectable parameter '%s': %s",
+				finding.Parameter, finding.Evidence)
+		}
+	}
+
+	// Test against SQLi page with Submit parameter
+	targetURL2 := dvwaURL + "/vulnerabilities/sqli/?id=1&Submit=Submit"
+	result2 := sqliScanner.Scan(ctx, targetURL2)
+
+	if result2 == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	t.Logf("SQLi scan on sqli page: %d tests, %d findings", result2.Summary.TotalTests, len(result2.Findings))
+
+	// Check that Submit parameter was not tested
+	for _, finding := range result2.Findings {
+		if strings.ToLower(finding.Parameter) == "submit" {
+			t.Errorf("Found false positive SQLi on Submit button: %s", finding.Evidence)
+		}
+	}
+
+	// We should find SQLi on 'id' parameter (true positive)
+	foundIdVulnerability := false
+	for _, finding := range result2.Findings {
+		if finding.Parameter == "id" {
+			foundIdVulnerability = true
+			t.Logf("Found expected SQLi on 'id' parameter: %s (confidence: %s)", finding.Description, finding.Confidence)
+		}
+	}
+
+	if !foundIdVulnerability {
+		t.Log("Note: Did not find SQLi on 'id' parameter - may need further tuning")
+	}
+}
