@@ -126,10 +126,10 @@ User ID:
 	// - When accessing with just id=1 (no Submit), show form only
 	// - When accessing with both id=1&Submit=Submit, show results
 	customMock := &dvwaMockClient{
-		requests: make([]*http.Request, 0),
-		noSubmitHTML: noSubmitHTML,
-		withSubmitHTML: withSubmitHTML,
-		truePayloadHTML: truePayloadHTML,
+		requests:         make([]*http.Request, 0),
+		noSubmitHTML:     noSubmitHTML,
+		withSubmitHTML:   withSubmitHTML,
+		truePayloadHTML:  truePayloadHTML,
 		falsePayloadHTML: falsePayloadHTML,
 	}
 
