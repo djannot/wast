@@ -2685,3 +2685,33 @@ func TestXSSScanner_Scan_CommentInContextWindowButNotAroundPayload(t *testing.T)
 		t.Errorf("Expected payload to contain <script> tag, got %s", finding.Payload)
 	}
 }
+
+// TestXSSScanner_Scan_PayloadInUnclosedComment tests that the scanner correctly
+// handles payloads inside unclosed HTML comments. When a comment starts but never
+// closes (malformed HTML), the payload should not be reported as high confidence XSS
+// because browsers may treat content differently in this edge case.
+func TestXSSScanner_Scan_PayloadInUnclosedComment(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+	scriptPayload := "<script>alert(1)</script>"
+	responseHTML := fmt.Sprintf(`<!DOCTYPE html>
+<html><body>
+<!-- This comment never closes
+<div>%s</div>
+</body></html>`, scriptPayload)
+
+	mock.responses["https://example.com/test?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(responseHTML)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+	result := scanner.Scan(context.Background(), "https://example.com/test?q=test")
+
+	// Should not report high confidence for payload in unclosed comment
+	for _, finding := range result.Findings {
+		if strings.Contains(finding.Payload, "<script>") && finding.Confidence == "high" {
+			t.Error("Should not report high confidence for payload in unclosed comment")
+		}
+	}
+}

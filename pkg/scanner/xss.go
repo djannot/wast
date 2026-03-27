@@ -406,7 +406,6 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	}
 	contextSnippet := body[start:end]
 	beforePayload := body[start:idx]
-	afterPayload := body[idx:]
 
 	// Early detection: If payload contains executable tags and appears verbatim, it's likely executable
 	// This handles DVWA-style trivial reflected XSS
@@ -417,9 +416,15 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	commentStart := strings.Index(contextSnippet, "<!--")
 	payloadIdx := strings.Index(contextSnippet, payload)
 	if commentStart >= 0 && payloadIdx >= 0 && commentStart < payloadIdx {
-		// Check if comment is closed after payload
-		if strings.Contains(afterPayload, "-->") {
-			// Payload is inside a comment - skip early detection, let detailed analysis handle it
+		// Check if comment is closed
+		commentEnd := strings.Index(contextSnippet, "-->")
+		if commentEnd < 0 || commentEnd < commentStart {
+			// Comment is not closed, or closed before it starts - payload is in unclosed comment
+			goto detailedAnalysis
+		}
+		// Comment is closed - check if it closes after the payload
+		if commentEnd > payloadIdx {
+			// Comment closes after payload - payload is inside comment
 			goto detailedAnalysis
 		}
 	}
@@ -515,10 +520,8 @@ detailedAnalysis:
 				// Comment start found - check if it's closed before payload
 				if lastCommentEnd < lastCommentStart {
 					// Comment is not closed before payload - payload is inside comment
-					if strings.Contains(afterPayload, "-->") {
-						// Comment is closed after payload - skip
-						goto defaultAnalysis
-					}
+					// Skip detection regardless of whether comment closes after
+					goto defaultAnalysis
 				}
 			}
 
