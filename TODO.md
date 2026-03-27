@@ -30,15 +30,21 @@ Tested against DVWA (security=low) with `active=true, discover=true, depth=3`.
 - **CMDi POST detection improved** — Enhanced `cmdOutputPatterns` to detect simple usernames from `whoami` command (e.g., `www-data`, `root`, `apache`, `nginx`, etc.). The scanner now properly detects DVWA's `/vulnerabilities/exec/` endpoint where injecting `; whoami` or `; id` appends command output to the ping response. Added comprehensive test case simulating DVWA behavior.
 - **SQLi scanner now detects DVWA `/vulnerabilities/sqli/?id=` injection** (Issue #188) — Fixed the scanner to detect classic DVWA SQLi endpoint. Root cause was that DVWA requires a `Submit` parameter to process form submissions. When the crawler discovers URLs with only data parameters (e.g., `id=1`), DVWA returns just the form without executing queries, causing all responses (baseline, true, false) to be identical. Added fallback mechanism: when no vulnerabilities are found and responses look like empty forms, the scanner automatically retries with `Submit=Submit` parameter added. This fixes the P0 issue where the scanner detected SQLi on `/brute/` and `/fi/` but missed the primary `/sqli/` test page.
 
+## Fixed (Phase 3)
+
+### P1: Path traversal scanner misses LFI on `/vulnerabilities/fi/?page=` (Issue #190)
+
+**Impact:** DVWA's file inclusion page accepts `page=../../etc/passwd` and returns the file contents. The scanner now detects it.
+
+**Root cause:** The `containsPasswdSignature()` function required at least 2 passwd-style entries. Some systems or partial file reads (like DVWA's LFI) return only 1 matching line, causing false negatives.
+
+**Fix:** Enhanced detection logic with two improvements:
+1. Added specific passwd signatures (root:x:0:0:, daemon:x:1:1:, www-data:x:, etc.) that provide high confidence even with single-line matches
+2. Lowered the generic pattern threshold from 2 to 1 matching line to catch partial file reads
+
+**Files:** `pkg/scanner/pathtraversal.go`, `pkg/scanner/pathtraversal_test.go`
+
 ## Still broken
-
-### P1: Path traversal scanner misses LFI on `/vulnerabilities/fi/?page=`
-
-**Impact:** DVWA's file inclusion page accepts `page=../../etc/passwd` and returns the file contents. The scanner doesn't detect it.
-
-**Root cause:** The path traversal scanner likely sends payloads like `../../../../etc/passwd` and checks for specific strings (e.g., `root:`) in the response. Either the payloads don't match what DVWA expects, or the response content check is too strict/wrong.
-
-**Files:** `pkg/scanner/pathtraversal.go` — detection heuristics
 
 ### P2: Summary aggregation incorrect in discovery mode
 

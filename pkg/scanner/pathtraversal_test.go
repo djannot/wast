@@ -544,14 +544,29 @@ func TestContainsPasswdSignature(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "Valid passwd file",
+			name:     "Valid passwd file with multiple entries",
 			body:     "root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin:/usr/sbin/nologin\ndaemon:x:2:2:daemon:/usr/sbin:/usr/sbin/nologin\n",
 			expected: true,
 		},
 		{
-			name:     "Single entry not enough",
+			name:     "Single root entry (DVWA-style LFI)",
 			body:     "root:x:0:0:root:/root:/bin/bash\n",
-			expected: false,
+			expected: true, // Changed to true - should detect single specific entries
+		},
+		{
+			name:     "Single daemon entry",
+			body:     "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n",
+			expected: true,
+		},
+		{
+			name:     "Single www-data entry",
+			body:     "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n",
+			expected: true,
+		},
+		{
+			name:     "Single generic entry",
+			body:     "someuser:x:1000:1000:Some User:/home/someuser:/bin/bash\n",
+			expected: true, // Changed to true - threshold lowered to 1
 		},
 		{
 			name:     "Normal text",
@@ -561,6 +576,11 @@ func TestContainsPasswdSignature(t *testing.T) {
 		{
 			name:     "Empty string",
 			body:     "",
+			expected: false,
+		},
+		{
+			name:     "Text with colon but not passwd format",
+			body:     "Some text: with colons: but not: a passwd file",
 			expected: false,
 		},
 	}
@@ -605,5 +625,106 @@ func TestContainsWindowsHostsSignature(t *testing.T) {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
 		})
+	}
+}
+
+// TestPathTraversalScanner_DVWA_LFI tests detection of DVWA's Local File Inclusion vulnerability
+// on the /vulnerabilities/fi/?page= endpoint. This simulates DVWA's behavior where the
+// page parameter accepts path traversal payloads like ../../etc/passwd and returns
+// file contents.
+func TestPathTraversalScanner_DVWA_LFI(t *testing.T) {
+	// DVWA's file inclusion page with normal include
+	normalPageHTML := `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Vulnerability: File Inclusion :: Damn Vulnerable Web Application (DVWA) v1.10</title>
+</head>
+<body>
+<div id="wrapper">
+<div id="main_body">
+<h1>File Inclusion</h1>
+<div class="body_padded">
+Welcome to the file inclusion page.
+</div>
+</div>
+</div>
+</body>
+</html>`
+
+	// DVWA returns /etc/passwd contents when exploited
+	// This simulates a partial file read that might only return a single entry
+	passwdFileHTML := `root:x:0:0:root:/root:/bin/bash`
+
+	mockClient := &mockPathTraversalHTTPClient{
+		responses: map[string]*mockPathTraversalResponse{
+			"http://dvwa.local/vulnerabilities/fi/?page=include.php": {
+				statusCode: 200,
+				body:       normalPageHTML,
+			},
+			// Match various path traversal payloads
+			"../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+			"../../../../../../etc/passwd": {
+				statusCode: 200,
+				body:       passwdFileHTML,
+			},
+		},
+	}
+
+	scanner := NewPathTraversalScanner(WithPathTraversalHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://dvwa.local/vulnerabilities/fi/?page=include.php")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	t.Logf("Vulnerabilities found: %d", result.Summary.VulnerabilitiesFound)
+
+	if len(result.Findings) > 0 {
+		for i, finding := range result.Findings {
+			t.Logf("Finding %d: param=%s, payload=%s, confidence=%s, evidence=%s",
+				i+1, finding.Parameter, finding.Payload, finding.Confidence, finding.Evidence)
+		}
+	}
+
+	// Verify we detected the LFI vulnerability
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to detect DVWA LFI vulnerability on /vulnerabilities/fi/?page=")
+	}
+
+	// Check for specific passwd file detection
+	foundPasswdLFI := false
+	for _, finding := range result.Findings {
+		if finding.Parameter == "page" && finding.Type == "unix" {
+			if strings.Contains(finding.Evidence, "passwd") || strings.Contains(finding.Evidence, "root:x:0:0") {
+				foundPasswdLFI = true
+				if finding.Confidence != "high" {
+					t.Errorf("Expected high confidence for passwd file detection, got %s", finding.Confidence)
+				}
+				if finding.Severity != SeverityHigh {
+					t.Errorf("Expected high severity, got %s", finding.Severity)
+				}
+			}
+		}
+	}
+
+	if !foundPasswdLFI {
+		t.Error("Expected to find passwd file LFI specifically on the 'page' parameter")
 	}
 }
