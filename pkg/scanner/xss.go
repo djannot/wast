@@ -464,9 +464,15 @@ detailedAnalysis:
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "\"", "&quot;")
 	htmlEncodedPayload = strings.ReplaceAll(htmlEncodedPayload, "'", "&#39;")
 
-	if strings.Contains(body, htmlEncodedPayload) {
-		return ContextHTMLBody, false, "low" // Payload is HTML-encoded, not executable
+	// IMPORTANT: We need to check if the payload at the specific location (idx) is HTML-encoded,
+	// not just if an encoded version exists somewhere else in the body.
+	// Check if the found payload instance is actually the encoded version
+	encodedIdx := strings.Index(body, htmlEncodedPayload)
+	if encodedIdx >= 0 && encodedIdx == idx {
+		// The payload at the found location is HTML-encoded, not executable
+		return ContextHTMLBody, false, "low"
 	}
+	// If encoded version exists elsewhere but not at idx, the unencoded version at idx is still vulnerable
 
 	// Use the context snippet we already extracted for early detection
 	context := contextSnippet
