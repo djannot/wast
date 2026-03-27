@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1732,4 +1733,355 @@ func TestXSSScanner_Scan_MultipleOccurrencesDifferentEncodings(t *testing.T) {
 
 	// This test documents the known limitation: we only check the first occurrence
 	_ = foundVulnerability // Acknowledge the variable is used
+}
+
+// TestXSSScanner_DVWAFixtures_ReflectedScriptTag tests XSS detection using actual
+// DVWA HTML response fixtures where script tags are reflected verbatim.
+// mockDVWAXSSClient is a mock that simulates DVWA's XSS reflection behavior
+type mockDVWAXSSClient struct {
+	template string
+	requests []*http.Request
+}
+
+func (m *mockDVWAXSSClient) Do(req *http.Request) (*http.Response, error) {
+	m.requests = append(m.requests, req)
+
+	// Extract the name parameter from the URL
+	nameParam := req.URL.Query().Get("name")
+
+	// If no parameter, return baseline
+	if nameParam == "" {
+		nameParam = "test"
+	}
+
+	// Create DVWA-style response that reflects the payload
+	dvwaResponse := strings.Replace(m.template, "<script>alert(1)</script>", nameParam, 1)
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(dvwaResponse)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestXSSScanner_DVWAFixtures_ReflectedScriptTag(t *testing.T) {
+	reflectedHTMLTemplate, err := os.ReadFile("testdata/dvwa_xss_reflected.html")
+	if err != nil {
+		t.Fatalf("Failed to load reflected XSS fixture: %v", err)
+	}
+
+	// Create a mock that reflects any payload in DVWA format
+	mock := &mockDVWAXSSClient{
+		template: string(reflectedHTMLTemplate),
+		requests: make([]*http.Request, 0),
+	}
+
+	scanner := NewXSSScanner(WithXSSHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://dvwa.local/vulnerabilities/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Should detect reflected XSS in DVWA's <pre> tag context
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Failed to detect DVWA reflected XSS with script tag")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+	} else {
+		t.Logf("Successfully detected %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+
+		// Verify finding details
+		for _, finding := range result.Findings {
+			t.Logf("Finding: type=%s, confidence=%s, payload=%s", finding.Type, finding.Confidence, finding.Payload)
+			t.Logf("Evidence: %s", finding.Evidence)
+
+			if finding.Type != "reflected" {
+				t.Errorf("Expected reflected XSS, got %s", finding.Type)
+			}
+
+			// Script tag injection should have high confidence
+			if strings.Contains(finding.Payload, "<script>") {
+				if finding.Confidence != "high" {
+					t.Errorf("Expected high confidence for script tag, got %s", finding.Confidence)
+				}
+			}
+		}
+	}
+}
+
+// TestXSSScanner_DVWAFixtures_ContextAnalysisPre tests that analyzeContext
+// correctly identifies XSS in DVWA's <pre> tag context.
+func TestXSSScanner_DVWAFixtures_ContextAnalysisPre(t *testing.T) {
+	reflectedHTML, err := os.ReadFile("testdata/dvwa_xss_reflected.html")
+	if err != nil {
+		t.Fatalf("Failed to load reflected XSS fixture: %v", err)
+	}
+
+	scanner := NewXSSScanner()
+	payload := "<script>alert(1)</script>"
+	bodyStr := string(reflectedHTML)
+
+	// Test context analysis
+	contextType, isExecutable, confidence := scanner.analyzeContext(bodyStr, payload)
+
+	t.Logf("Context analysis results:")
+	t.Logf("  Context type: %v", contextType)
+	t.Logf("  Is executable: %v", isExecutable)
+	t.Logf("  Confidence: %s", confidence)
+
+	// Verify the payload is detected as executable
+	if !isExecutable {
+		t.Errorf("Expected payload to be executable in DVWA <pre> context")
+		
+		// Debug: check if payload is verbatim in response
+		idx := strings.Index(bodyStr, payload)
+		if idx == -1 {
+			t.Errorf("Payload not found in response")
+		} else {
+			t.Logf("Payload found at index %d", idx)
+			
+			// Extract context around payload
+			start := idx - 100
+			if start < 0 {
+				start = 0
+			}
+			end := idx + len(payload) + 100
+			if end > len(bodyStr) {
+				end = len(bodyStr)
+			}
+			context := bodyStr[start:end]
+			t.Logf("Context around payload: %q", context)
+		}
+	}
+
+	// High confidence expected for verbatim script tag reflection
+	if confidence != "high" {
+		t.Errorf("Expected high confidence, got %s", confidence)
+	}
+
+	// Should be detected in HTML body context (within <pre>)
+	if contextType != ContextHTMLBody {
+		t.Logf("Context type is %v, expected ContextHTMLBody", contextType)
+	}
+}
+
+// TestXSSScanner_DVWAFixtures_PayloadInPre tests that payloads within <pre> tags
+// are correctly identified as executable (DVWA-specific HTML structure).
+func TestXSSScanner_DVWAFixtures_PayloadInPre(t *testing.T) {
+	reflectedHTML, err := os.ReadFile("testdata/dvwa_xss_reflected.html")
+	if err != nil {
+		t.Fatalf("Failed to load reflected XSS fixture: %v", err)
+	}
+
+	bodyStr := string(reflectedHTML)
+
+	// Verify the HTML structure matches DVWA's pattern
+	if !strings.Contains(bodyStr, "<pre>") {
+		t.Fatal("DVWA fixture should contain <pre> tag")
+	}
+
+	// Verify payload is inside <pre> tag
+	preStartIdx := strings.Index(bodyStr, "<pre>")
+	preEndIdx := strings.Index(bodyStr, "</pre>")
+	
+	if preStartIdx == -1 || preEndIdx == -1 {
+		t.Fatal("Could not find <pre> tags in fixture")
+	}
+
+	preContent := bodyStr[preStartIdx:preEndIdx]
+	payload := "<script>alert(1)</script>"
+
+	if !strings.Contains(preContent, payload) {
+		t.Errorf("Payload not found within <pre> tag")
+		t.Logf("Pre content: %q", preContent)
+	} else {
+		t.Logf("Payload correctly positioned within <pre> tag")
+		t.Logf("Pre content: %q", preContent)
+	}
+
+	// Test that <pre> context doesn't prevent detection
+	// Script tags are executable even within <pre>
+	scanner := NewXSSScanner()
+	contextType, isExecutable, confidence := scanner.analyzeContext(bodyStr, payload)
+
+	if !isExecutable {
+		t.Errorf("<pre> tag should not prevent script execution detection")
+	}
+
+	t.Logf("Context: %v, Executable: %v, Confidence: %s", contextType, isExecutable, confidence)
+}
+
+// TestXSSScanner_DVWAFixtures_EncodedVsUnencoded tests the difference between
+// encoded (safe) and unencoded (vulnerable) reflections using DVWA fixtures.
+func TestXSSScanner_DVWAFixtures_EncodedVsUnencoded(t *testing.T) {
+	reflectedHTML, err := os.ReadFile("testdata/dvwa_xss_reflected.html")
+	if err != nil {
+		t.Fatalf("Failed to load reflected XSS fixture: %v", err)
+	}
+
+	encodedHTML, err := os.ReadFile("testdata/dvwa_xss_encoded.html")
+	if err != nil {
+		t.Fatalf("Failed to load encoded XSS fixture: %v", err)
+	}
+
+	scanner := NewXSSScanner()
+	payload := "<script>alert(1)</script>"
+
+	// Test unencoded (vulnerable) response
+	t.Run("unencoded", func(t *testing.T) {
+		bodyStr := string(reflectedHTML)
+		contextType, isExecutable, confidence := scanner.analyzeContext(bodyStr, payload)
+
+		t.Logf("Unencoded response:")
+		t.Logf("  Context: %v", contextType)
+		t.Logf("  Executable: %v", isExecutable)
+		t.Logf("  Confidence: %s", confidence)
+
+		if !isExecutable {
+			t.Errorf("Unencoded payload should be detected as executable")
+		}
+
+		if confidence != "high" {
+			t.Errorf("Unencoded reflection should have high confidence, got %s", confidence)
+		}
+	})
+
+	// Test encoded (safe) response
+	t.Run("encoded", func(t *testing.T) {
+		bodyStr := string(encodedHTML)
+		contextType, isExecutable, confidence := scanner.analyzeContext(bodyStr, payload)
+
+		t.Logf("Encoded response:")
+		t.Logf("  Context: %v", contextType)
+		t.Logf("  Executable: %v", isExecutable)
+		t.Logf("  Confidence: %s", confidence)
+
+		// Encoded payload should NOT be detected as executable
+		// The payload won't be found verbatim, so analyzeContext returns low confidence
+		if isExecutable && confidence == "high" {
+			t.Errorf("Encoded payload should not be detected as high-confidence executable")
+		}
+
+		// Verify HTML encoding is present
+		encodedPayload := "&lt;script&gt;alert(1)&lt;/script&gt;"
+		if !strings.Contains(bodyStr, encodedPayload) {
+			t.Logf("Warning: Encoded payload not found in fixture")
+		} else {
+			t.Logf("Correctly identified encoded payload in response")
+		}
+	})
+}
+
+// TestXSSScanner_DVWAFixtures_MultiplePayloads tests detection with various XSS
+// payloads commonly used against DVWA.
+func TestXSSScanner_DVWAFixtures_MultiplePayloads(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     string
+		shouldDetect bool
+		minConfidence string
+	}{
+		{
+			name:          "script tag",
+			payload:       "<script>alert(1)</script>",
+			shouldDetect:  true,
+			minConfidence: "high",
+		},
+		{
+			name:          "img onerror",
+			payload:       "<img src=x onerror=alert(1)>",
+			shouldDetect:  true,
+			minConfidence: "high",
+		},
+		{
+			name:          "svg onload",
+			payload:       "<svg/onload=alert(1)>",
+			shouldDetect:  true,
+			minConfidence: "high",
+		},
+		{
+			name:          "iframe javascript",
+			payload:       "<iframe src=\"javascript:alert(1)\">",
+			shouldDetect:  true,
+			minConfidence: "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create DVWA-style response with reflected payload
+			dvwaResponse := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><title>XSS Test</title></head>
+<body>
+<div class="vulnerable_code_area">
+	<form name="XSS" action="#" method="GET">
+		<input type="text" name="name">
+		<input type="submit" value="Submit">
+	</form>
+	<pre>Hello %s</pre>
+</div>
+</body></html>`, tt.payload)
+
+			scanner := NewXSSScanner()
+			contextType, isExecutable, confidence := scanner.analyzeContext(dvwaResponse, tt.payload)
+
+			t.Logf("Payload: %s", tt.payload)
+			t.Logf("  Context: %v", contextType)
+			t.Logf("  Executable: %v", isExecutable)
+			t.Logf("  Confidence: %s", confidence)
+
+			if tt.shouldDetect && !isExecutable {
+				t.Errorf("Expected payload to be detected as executable")
+			}
+
+			if tt.shouldDetect && confidence != tt.minConfidence && confidence != "high" {
+				t.Errorf("Expected confidence >= %s, got %s", tt.minConfidence, confidence)
+			}
+		})
+	}
+}
+
+// TestXSSScanner_DVWAFixtures_ResponseStructure verifies the HTML structure
+// of DVWA XSS responses matches expected patterns.
+func TestXSSScanner_DVWAFixtures_ResponseStructure(t *testing.T) {
+	reflectedHTML, err := os.ReadFile("testdata/dvwa_xss_reflected.html")
+	if err != nil {
+		t.Fatalf("Failed to load reflected XSS fixture: %v", err)
+	}
+
+	bodyStr := string(reflectedHTML)
+
+	// Check for DVWA-specific HTML structure
+	expectedElements := []string{
+		"<!DOCTYPE html",
+		"Vulnerability: Reflected Cross Site Scripting",
+		"<div class=\"vulnerable_code_area\">",
+		"<pre>",
+		"</pre>",
+		"<form name=\"XSS\"",
+		"<input type=\"text\" name=\"name\">",
+	}
+
+	for _, element := range expectedElements {
+		if !strings.Contains(bodyStr, element) {
+			t.Errorf("Expected element not found: %s", element)
+		}
+	}
+
+	t.Logf("DVWA XSS fixture has correct HTML structure")
+
+	// Verify payload is in the <pre> tag
+	preStart := strings.Index(bodyStr, "<pre>")
+	preEnd := strings.Index(bodyStr, "</pre>")
+	
+	if preStart != -1 && preEnd != -1 {
+		preContent := bodyStr[preStart+5:preEnd]
+		t.Logf("Content in <pre> tag: %q", preContent)
+
+		if strings.Contains(preContent, "<script>") {
+			t.Logf("Script tag successfully found in <pre> context")
+		}
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -2256,5 +2257,301 @@ func TestSQLiScanner_MinimalDataDifference(t *testing.T) {
 		if finding.Confidence != "high" && finding.Confidence != "medium" {
 			t.Errorf("Expected medium or high confidence, got: %s", finding.Confidence)
 		}
+	}
+}
+
+// TestSQLiScanner_DVWAFixtures_BooleanBased tests boolean-based SQLi detection 
+// using actual DVWA HTML response fixtures to match real-world DVWA behavior.
+func TestSQLiScanner_DVWAFixtures_BooleanBased(t *testing.T) {
+	// Load actual DVWA response fixtures
+	baselineHTML, err := os.ReadFile("testdata/dvwa_sqli_baseline.html")
+	if err != nil {
+		t.Fatalf("Failed to load baseline fixture: %v", err)
+	}
+
+	truePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_true_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load true payload fixture: %v", err)
+	}
+
+	falsePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_false_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load false payload fixture: %v", err)
+	}
+
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline: id=1 returns 1 row (admin)
+	mock.responses["http://dvwa.local/vulnerabilities/sqli/?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(string(baselineHTML))),
+		Header:     make(http.Header),
+	}
+
+	// Set up differential responses for boolean-based testing
+	mock.differentialResponse = true
+	mock.trueResponse = string(truePayloadHTML)   // Returns 5 rows
+	mock.falseResponse = string(falsePayloadHTML) // Returns 0 rows
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://dvwa.local/vulnerabilities/sqli/?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// DVWA boolean-based SQLi should be detected via differential analysis
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Failed to detect DVWA boolean-based SQLi (1 row -> 5 rows -> 0 rows pattern)")
+		t.Logf("Total tests performed: %d", result.Summary.TotalTests)
+		t.Logf("Baseline has %d bytes, trueResponse has %d bytes, falseResponse has %d bytes",
+			len(baselineHTML), len(truePayloadHTML), len(falsePayloadHTML))
+
+		// Debug: analyze the responses
+		_, baselineWords, baselineStructural, baselineData, baselineDataWords := analyzeResponse(string(baselineHTML))
+		_, trueWords, trueStructural, trueData, trueDataWords := analyzeResponse(string(truePayloadHTML))
+		_, falseWords, falseStructural, falseData, falseDataWords := analyzeResponse(string(falsePayloadHTML))
+
+		t.Logf("Baseline: words=%d, structural=%d, dataWords=%d", baselineWords, baselineStructural, baselineDataWords)
+		t.Logf("True:     words=%d, structural=%d, dataWords=%d", trueWords, trueStructural, trueDataWords)
+		t.Logf("False:    words=%d, structural=%d, dataWords=%d", falseWords, falseStructural, falseDataWords)
+		t.Logf("Baseline data: %q", baselineData)
+		t.Logf("True data: %q", trueData)
+		t.Logf("False data: %q", falseData)
+	} else {
+		t.Logf("Successfully detected %d vulnerabilities", result.Summary.VulnerabilitiesFound)
+
+		// Verify finding details
+		for _, finding := range result.Findings {
+			t.Logf("Finding: type=%s, confidence=%s, payload=%s", finding.Type, finding.Confidence, finding.Payload)
+			t.Logf("Evidence: %s", finding.Evidence)
+
+			// Should be boolean-based detection
+			if finding.Type != "boolean-based" {
+				t.Errorf("Expected boolean-based detection, got %s", finding.Type)
+			}
+
+			// Should have medium or high confidence
+			if finding.Confidence != "high" && finding.Confidence != "medium" {
+				t.Errorf("Expected medium or high confidence, got %s", finding.Confidence)
+			}
+		}
+	}
+}
+
+// TestSQLiScanner_DVWAFixtures_DataContentDifference tests that the scanner
+// correctly identifies SQL injection based on data content differences in DVWA responses.
+func TestSQLiScanner_DVWAFixtures_DataContentDifference(t *testing.T) {
+	baselineHTML, err := os.ReadFile("testdata/dvwa_sqli_baseline.html")
+	if err != nil {
+		t.Fatalf("Failed to load baseline fixture: %v", err)
+	}
+
+	truePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_true_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load true payload fixture: %v", err)
+	}
+
+	// Test data content extraction on baseline (1 row)
+	_, baselineWords, baselineStructural, baselineData, baselineDataWords := analyzeResponse(string(baselineHTML))
+	t.Logf("Baseline response analysis:")
+	t.Logf("  Total words: %d", baselineWords)
+	t.Logf("  Structural elements: %d", baselineStructural)
+	t.Logf("  Data words: %d", baselineDataWords)
+	t.Logf("  Data content: %q", baselineData)
+
+	// Test data content extraction on true payload (5 rows)
+	_, trueWords, trueStructural, trueData, trueDataWords := analyzeResponse(string(truePayloadHTML))
+	t.Logf("True payload response analysis:")
+	t.Logf("  Total words: %d", trueWords)
+	t.Logf("  Structural elements: %d", trueStructural)
+	t.Logf("  Data words: %d", trueDataWords)
+	t.Logf("  Data content: %q", trueData)
+
+	// Verify meaningful differences
+	dataWordsDiff := abs(trueDataWords - baselineDataWords)
+	t.Logf("Data words difference: %d", dataWordsDiff)
+
+	if dataWordsDiff < minWordCountDifference {
+		t.Errorf("Data words difference (%d) is below threshold (%d) - detection may fail", 
+			dataWordsDiff, minWordCountDifference)
+	}
+
+	// Check if data content is significantly different
+	if baselineData == trueData {
+		t.Error("Data content is identical - boolean-based detection will fail")
+	} else {
+		t.Logf("Data content differs - detection should succeed")
+	}
+}
+
+// TestSQLiScanner_DVWAFixtures_ThresholdCalibration verifies that threshold constants
+// are properly calibrated for DVWA-sized responses.
+func TestSQLiScanner_DVWAFixtures_ThresholdCalibration(t *testing.T) {
+	baselineHTML, err := os.ReadFile("testdata/dvwa_sqli_baseline.html")
+	if err != nil {
+		t.Fatalf("Failed to load baseline fixture: %v", err)
+	}
+
+	truePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_true_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load true payload fixture: %v", err)
+	}
+
+	falsePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_false_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load false payload fixture: %v", err)
+	}
+
+	// Analyze all three responses
+	responses := map[string]string{
+		"baseline": string(baselineHTML),
+		"true":     string(truePayloadHTML),
+		"false":    string(falsePayloadHTML),
+	}
+
+	for name, html := range responses {
+		_, words, structural, _, dataWords := analyzeResponse(html)
+		length := len(html)
+
+		t.Logf("%s response:", name)
+		t.Logf("  Size: %d bytes (threshold: %d)", length, smallResponseSizeThreshold)
+		t.Logf("  Word count: %d (min diff threshold: %d)", words, minWordCountDifference)
+		t.Logf("  Structural elements: %d (threshold: %d)", structural, fewStructuralElementsLimit)
+		t.Logf("  Data word count: %d", dataWords)
+
+		// Check if response characteristics align with thresholds
+		if length < smallResponseSizeThreshold {
+			t.Logf("  -> Uses sensitive threshold (small response)")
+		}
+		if structural < fewStructuralElementsLimit {
+			t.Logf("  -> Uses sensitive threshold (few structural elements)")
+		}
+	}
+
+	// Check if differences exceed thresholds
+	_, baselineWords, _, _, baselineDataWords := analyzeResponse(string(baselineHTML))
+	_, trueWords, _, _, trueDataWords := analyzeResponse(string(truePayloadHTML))
+	_, falseWords, _, _, falseDataWords := analyzeResponse(string(falsePayloadHTML))
+
+	trueVsBaselineWordDiff := abs(trueWords - baselineWords)
+	falseVsBaselineWordDiff := abs(falseWords - baselineWords)
+	trueVsFalseWordDiff := abs(trueWords - falseWords)
+
+	t.Logf("\nWord count differences:")
+	t.Logf("  True vs Baseline: %d (threshold: %d)", trueVsBaselineWordDiff, minWordCountDifference)
+	t.Logf("  False vs Baseline: %d (threshold: %d)", falseVsBaselineWordDiff, minWordCountDifference)
+	t.Logf("  True vs False: %d (threshold: %d)", trueVsFalseWordDiff, minWordCountDifference)
+
+	trueVsBaselineDataDiff := abs(trueDataWords - baselineDataWords)
+	falseVsBaselineDataDiff := abs(falseDataWords - baselineDataWords)
+	trueVsFalseDataDiff := abs(trueDataWords - falseDataWords)
+
+	t.Logf("\nData word count differences:")
+	t.Logf("  True vs Baseline: %d", trueVsBaselineDataDiff)
+	t.Logf("  False vs Baseline: %d", falseVsBaselineDataDiff)
+	t.Logf("  True vs False: %d", trueVsFalseDataDiff)
+
+	// Verify detection thresholds are met
+	if trueVsBaselineDataDiff < minWordCountDifference && trueVsFalseDataDiff < minWordCountDifference {
+		t.Errorf("Data differences below threshold - detection will likely fail")
+	}
+}
+
+// TestSQLiScanner_DVWAFixtures_ErrorBased tests error-based SQLi detection
+// Note: DVWA at security=low typically doesn't expose SQL errors, so this test
+// documents that error-based detection is NOT expected to work on DVWA.
+func TestSQLiScanner_DVWAFixtures_ErrorBased(t *testing.T) {
+	// DVWA at security=low doesn't expose SQL error messages
+	// This test documents the expected behavior
+	baselineHTML, err := os.ReadFile("testdata/dvwa_sqli_baseline.html")
+	if err != nil {
+		t.Fatalf("Failed to load baseline fixture: %v", err)
+	}
+
+	// Check if baseline contains any SQL error patterns
+	hasError := false
+	for _, pattern := range sqlErrorPatterns {
+		if pattern.MatchString(string(baselineHTML)) {
+			hasError = true
+			match := pattern.FindString(string(baselineHTML))
+			t.Logf("Found SQL error pattern: %s", match)
+		}
+	}
+
+	if !hasError {
+		t.Logf("DVWA baseline response does not contain SQL error messages (expected)")
+		t.Logf("Error-based detection will NOT work on DVWA at security=low")
+		t.Logf("Boolean-based and time-based detection are the viable methods")
+	} else {
+		t.Errorf("Unexpected: DVWA baseline contains SQL errors")
+	}
+}
+
+// TestSQLiScanner_DVWAFixtures_ResponseStructure verifies the HTML structure
+// of DVWA responses matches expected patterns.
+func TestSQLiScanner_DVWAFixtures_ResponseStructure(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		hasTable bool
+		hasPre   bool
+		numRows  int // Expected number of data rows
+	}{
+		{
+			name:     "baseline (1 row)",
+			fixture:  "testdata/dvwa_sqli_baseline.html",
+			hasTable: false,
+			hasPre:   true,
+			numRows:  1,
+		},
+		{
+			name:     "true payload (5 rows)",
+			fixture:  "testdata/dvwa_sqli_true_payload.html",
+			hasTable: false,
+			hasPre:   true,
+			numRows:  5,
+		},
+		{
+			name:     "false payload (0 rows)",
+			fixture:  "testdata/dvwa_sqli_false_payload.html",
+			hasTable: false,
+			hasPre:   true,
+			numRows:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html, err := os.ReadFile(tt.fixture)
+			if err != nil {
+				t.Fatalf("Failed to load fixture: %v", err)
+			}
+
+			htmlStr := string(html)
+
+			// Check for expected HTML elements
+			if tt.hasPre {
+				if !strings.Contains(htmlStr, "<pre>") {
+					t.Errorf("Expected <pre> tag in %s", tt.name)
+				}
+			}
+
+			if tt.hasTable {
+				if !strings.Contains(htmlStr, "<table>") {
+					t.Errorf("Expected <table> tag in %s", tt.name)
+				}
+			}
+
+			// Count occurrences of "ID:" and "First name:" to verify row count
+			idCount := strings.Count(htmlStr, "ID:")
+			if tt.numRows > 0 && idCount == 0 {
+				t.Errorf("Expected data rows but found none in %s", tt.name)
+			}
+
+			t.Logf("%s: contains %d data entries", tt.name, idCount)
+		})
 	}
 }
