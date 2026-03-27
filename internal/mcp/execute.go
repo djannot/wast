@@ -127,7 +127,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 }
 
 // executeCrawl performs web crawling on a target URL.
-func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback crawler.ProgressCallback) interface{} {
+func executeCrawl(ctx context.Context, target string, depth int, timeout time.Duration, respectRobots bool, concurrency int, compact bool, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback crawler.ProgressCallback) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -172,6 +172,11 @@ func executeCrawl(ctx context.Context, target string, depth int, timeout time.Du
 
 	// Perform the crawl
 	result := c.Crawl(crawlCtx, target)
+
+	// Apply compact transformation if requested
+	if compact {
+		return compactCrawlResult(result)
+	}
 
 	return result
 }
@@ -500,4 +505,116 @@ func executeVerify(ctx context.Context, findingType string, findingURL string, p
 	default:
 		return nil, fmt.Errorf("unsupported finding type: %s", findingType)
 	}
+}
+
+// CompactCrawlResult represents a compact version of CrawlResult with summarized data.
+type CompactCrawlResult struct {
+	Target               string             `json:"target" yaml:"target"`
+	Statistics           crawler.CrawlStats `json:"statistics" yaml:"statistics"`
+	Forms                []crawler.FormInfo `json:"forms,omitempty" yaml:"forms,omitempty"`
+	ResourcesSummary     *ResourcesSummary  `json:"resources_summary,omitempty" yaml:"resources_summary,omitempty"`
+	InternalLinksSummary *LinksSummary      `json:"internal_links_summary,omitempty" yaml:"internal_links_summary,omitempty"`
+	ExternalLinksSummary *LinksSummary      `json:"external_links_summary,omitempty" yaml:"external_links_summary,omitempty"`
+	RobotsDisallow       []string           `json:"robots_disallow,omitempty" yaml:"robots_disallow,omitempty"`
+	SitemapURLs          []string           `json:"sitemap_urls,omitempty" yaml:"sitemap_urls,omitempty"`
+	Errors               []string           `json:"errors,omitempty" yaml:"errors,omitempty"`
+}
+
+// ResourcesSummary provides a compact summary of resources.
+type ResourcesSummary struct {
+	Total int            `json:"total" yaml:"total"`
+	Types map[string]int `json:"types" yaml:"types"`
+}
+
+// LinksSummary provides a compact summary of links.
+type LinksSummary struct {
+	Total  int      `json:"total" yaml:"total"`
+	Sample []string `json:"sample,omitempty" yaml:"sample,omitempty"`
+}
+
+// compactCrawlResult transforms a CrawlResult into a compact format.
+func compactCrawlResult(result *crawler.CrawlResult) *CompactCrawlResult {
+	if result == nil {
+		return nil
+	}
+
+	// Initialize compact result with preserved fields
+	compact := &CompactCrawlResult{
+		Target:     result.Target,
+		Statistics: result.Statistics,
+	}
+
+	// Preserve forms completely
+	if result.Forms != nil {
+		compact.Forms = result.Forms
+	} else {
+		compact.Forms = []crawler.FormInfo{}
+	}
+
+	// Preserve robots disallow rules
+	if result.RobotsDisallow != nil {
+		compact.RobotsDisallow = result.RobotsDisallow
+	} else {
+		compact.RobotsDisallow = []string{}
+	}
+
+	// Preserve sitemap URLs
+	if result.SitemapURLs != nil {
+		compact.SitemapURLs = result.SitemapURLs
+	} else {
+		compact.SitemapURLs = []string{}
+	}
+
+	// Preserve errors
+	if result.Errors != nil {
+		compact.Errors = result.Errors
+	} else {
+		compact.Errors = []string{}
+	}
+
+	// Summarize resources by type
+	if len(result.Resources) > 0 {
+		resourceTypes := make(map[string]int)
+		for _, res := range result.Resources {
+			resourceTypes[res.Type]++
+		}
+		compact.ResourcesSummary = &ResourcesSummary{
+			Total: len(result.Resources),
+			Types: resourceTypes,
+		}
+	}
+
+	// Summarize internal links with sample
+	if len(result.InternalLinks) > 0 {
+		sampleSize := 10
+		if len(result.InternalLinks) < sampleSize {
+			sampleSize = len(result.InternalLinks)
+		}
+		sample := make([]string, sampleSize)
+		for i := 0; i < sampleSize; i++ {
+			sample[i] = result.InternalLinks[i].URL
+		}
+		compact.InternalLinksSummary = &LinksSummary{
+			Total:  len(result.InternalLinks),
+			Sample: sample,
+		}
+	}
+
+	// Summarize external links with sample
+	if len(result.ExternalLinks) > 0 {
+		sampleSize := 10
+		if len(result.ExternalLinks) < sampleSize {
+			sampleSize = len(result.ExternalLinks)
+		}
+		sample := make([]string, sampleSize)
+		for i := 0; i < sampleSize; i++ {
+			sample[i] = result.ExternalLinks[i].URL
+		}
+		compact.ExternalLinksSummary = &LinksSummary{
+			Total:  len(result.ExternalLinks),
+			Sample: sample,
+		}
+	}
+
+	return compact
 }
