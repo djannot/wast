@@ -587,14 +587,14 @@ func containsPasswdSignature(body string) bool {
 	// First check for highly specific passwd signatures (root, daemon, etc.)
 	// These are strong indicators even with a single match
 	specificSignatures := []*regexp.Regexp{
-		regexp.MustCompile(`root:x:0:0:`),       // Root user (UID 0)
-		regexp.MustCompile(`daemon:x:1:1:`),     // Daemon user (UID 1)
-		regexp.MustCompile(`bin:x:2:2:`),        // Bin user (UID 2)
-		regexp.MustCompile(`sys:x:3:3:`),        // Sys user (UID 3)
-		regexp.MustCompile(`nobody:x:`),         // Nobody user
-		regexp.MustCompile(`www-data:x:`),       // Web server user (common on Debian/Ubuntu)
-		regexp.MustCompile(`apache:x:`),         // Web server user (common on RedHat)
-		regexp.MustCompile(`nginx:x:`),          // Web server user
+		regexp.MustCompile(`root:x:0:0:`),   // Root user (UID 0)
+		regexp.MustCompile(`daemon:x:1:1:`), // Daemon user (UID 1)
+		regexp.MustCompile(`bin:x:2:2:`),    // Bin user (UID 2)
+		regexp.MustCompile(`sys:x:3:3:`),    // Sys user (UID 3)
+		regexp.MustCompile(`nobody:x:`),     // Nobody user
+		regexp.MustCompile(`www-data:x:`),   // Web server user (common on Debian/Ubuntu)
+		regexp.MustCompile(`apache:x:`),     // Web server user (common on RedHat)
+		regexp.MustCompile(`nginx:x:`),      // Web server user
 	}
 
 	for _, pattern := range specificSignatures {
