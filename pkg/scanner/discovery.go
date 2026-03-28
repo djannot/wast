@@ -794,6 +794,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.CMDi,
 		intermediateResult.PathTraversal,
 		intermediateResult.SSTI,
+		intermediateResult.XXE,
 		websocketResult,
 		intermediateResult.Errors,
 	)

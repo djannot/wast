@@ -34,7 +34,7 @@ func TestNewUnifiedScanResult(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.Target != target {
 		t.Errorf("Expected target %s, got %s", target, result.Target)
@@ -81,7 +81,7 @@ func TestCorrelationXSSWithMissingCSP(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected XSS + missing CSP correlation, got no correlations")
@@ -133,7 +133,7 @@ func TestCorrelationSQLiWithServerHeaders(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected SQLi + server header correlation, got no correlations")
@@ -177,7 +177,7 @@ func TestCorrelationCSRFWithMissingSameSite(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected CSRF + missing SameSite correlation, got no correlations")
@@ -213,7 +213,7 @@ func TestCorrelationMultipleInjectionPoints(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Errorf("Expected multiple injection point correlation, got no correlations")
@@ -276,7 +276,7 @@ func TestRiskScoreCalculation(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.RiskScore.Overall <= 0 || result.RiskScore.Overall > 100 {
 		t.Errorf("Expected risk score between 1-100, got %d", result.RiskScore.Overall)
@@ -330,7 +330,7 @@ func TestUnifiedSummary(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.Summary.TotalFindings != 3 {
 		t.Errorf("Expected 3 total findings, got %d", result.Summary.TotalFindings)
@@ -361,7 +361,7 @@ func TestPriorityActions(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Summary.PriorityActions) == 0 {
 		t.Errorf("Expected priority actions to be generated")
@@ -426,7 +426,7 @@ func TestGetPrioritizedFindings(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	prioritized := result.GetPrioritizedFindings()
 
 	if len(prioritized) == 0 {
@@ -443,7 +443,7 @@ func TestGetPrioritizedFindings(t *testing.T) {
 func TestEmptyResultHandling(t *testing.T) {
 	target := "https://example.com"
 
-	result := NewUnifiedScanResult(target, true, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, true, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.RiskScore.Overall != 0 {
 		t.Errorf("Expected zero risk score for empty results, got %d", result.RiskScore.Overall)
@@ -472,7 +472,7 @@ func TestPassiveOnlyFlag(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, true, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, true, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if !result.PassiveOnly {
 		t.Errorf("Expected PassiveOnly flag to be true")
@@ -483,7 +483,7 @@ func TestErrorPropagation(t *testing.T) {
 	target := "https://example.com"
 	errors := []string{"error 1", "error 2"}
 
-	result := NewUnifiedScanResult(target, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, errors)
+	result := NewUnifiedScanResult(target, false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, errors)
 
 	if len(result.Errors) != 2 {
 		t.Errorf("Expected 2 errors, got %d", len(result.Errors))
@@ -585,7 +585,7 @@ func TestCorrelationIDGeneration(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// Check that correlation IDs are unique
 	ids := make(map[string]bool)
@@ -635,7 +635,7 @@ func TestRiskScoreBreakdownCategories(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	// Check that expected categories are present
 	expectedCategories := []string{"injection", "csrf", "misconfiguration"}
@@ -672,7 +672,7 @@ func TestGetPrioritizedFindings_NoDuplicates(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	prioritized := result.GetPrioritizedFindings()
 
 	// Check for duplicates by building a map of findings
@@ -755,7 +755,7 @@ func TestFindCookiesWithoutSameSite_NoneValue(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult(target, false, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult(target, false, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	insecure := result.findCookiesWithoutSameSite()
 
 	// Should find 2 insecure cookies: "none" and empty string
@@ -844,7 +844,7 @@ func TestCalculateRiskScore_AllSeverityCombinations(t *testing.T) {
 			xss := &XSSScanResult{Findings: tt.xssFindings}
 			sqli := &SQLiScanResult{Findings: tt.sqliFindings}
 
-			result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+			result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 			if result.RiskScore.Overall < tt.expectedMinScore {
 				t.Errorf("Expected risk score >= %d, got %d", tt.expectedMinScore, result.RiskScore.Overall)
@@ -858,7 +858,7 @@ func TestCalculateRiskScore_AllSeverityCombinations(t *testing.T) {
 
 // TestCalculateRiskScore_ZeroFindings tests calculateRiskScore with no findings
 func TestCalculateRiskScore_ZeroFindings(t *testing.T) {
-	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.RiskScore.Overall != 0 {
 		t.Errorf("Expected risk score 0 for empty findings, got %d", result.RiskScore.Overall)
@@ -898,7 +898,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, cmdi, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, cmdi, nil, nil, nil, nil, nil)
 			},
 			category:         "injection",
 			expectedMaxScore: 40,
@@ -914,7 +914,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Severity: SeverityHigh},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			category:         "csrf",
 			expectedMaxScore: 20,
@@ -931,7 +931,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, ssrf, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, ssrf, nil, nil, nil, nil, nil, nil, nil)
 			},
 			category:         "ssrf",
 			expectedMaxScore: 30,
@@ -947,7 +947,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, redirect, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, redirect, nil, nil, nil, nil, nil, nil)
 			},
 			category:         "redirect",
 			expectedMaxScore: 25,
@@ -963,7 +963,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, websocket, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, websocket, nil)
 			},
 			category:         "websocket",
 			expectedMaxScore: 20,
@@ -980,7 +980,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{Present: false, Severity: SeverityHigh},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, headers, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			category:         "misconfiguration",
 			expectedMaxScore: 25,
@@ -1014,7 +1014,7 @@ func TestCalculateRiskScore_CategoryCaps(t *testing.T) {
 						{FormAction: "http://test.com/form", Type: "missing_token", Severity: SeverityHigh},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			category:         "correlation_multiplier",
 			expectedMaxScore: 15,
@@ -1049,7 +1049,7 @@ func TestCalculateRiskScore_ConfidenceCalculation(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			}(),
 			expectedConfidence: ConfidenceHigh,
 			tolerance:          0.01,
@@ -1062,7 +1062,7 @@ func TestCalculateRiskScore_ConfidenceCalculation(t *testing.T) {
 						{Severity: SeverityMedium, Confidence: "medium"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			}(),
 			expectedConfidence: ConfidenceMedium,
 			tolerance:          0.01,
@@ -1075,7 +1075,7 @@ func TestCalculateRiskScore_ConfidenceCalculation(t *testing.T) {
 						{Severity: SeverityLow, Confidence: "low"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			}(),
 			expectedConfidence: ConfidenceLow,
 			tolerance:          0.01,
@@ -1089,7 +1089,7 @@ func TestCalculateRiskScore_ConfidenceCalculation(t *testing.T) {
 						{Severity: SeverityLow, Confidence: "low"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			}(),
 			expectedConfidence: (ConfidenceHigh + ConfidenceLow) / 2.0,
 			tolerance:          0.01,
@@ -1108,7 +1108,7 @@ func TestCalculateRiskScore_ConfidenceCalculation(t *testing.T) {
 
 // TestGeneratePriorityActions_EmptyFindings tests generatePriorityActions with no findings
 func TestGeneratePriorityActions_EmptyFindings(t *testing.T) {
-	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Summary.PriorityActions) != 0 {
 		t.Errorf("Expected empty priority actions for empty findings, got %d actions", len(result.Summary.PriorityActions))
@@ -1130,7 +1130,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedKeywords: []string{"SQL injection", "parameterized queries"},
 		},
@@ -1142,7 +1142,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedKeywords: []string{"XSS", "output encoding", "CSP"},
 		},
@@ -1154,7 +1154,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, cmdi, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, cmdi, nil, nil, nil, nil, nil)
 			},
 			expectedKeywords: []string{"Command Injection", "system commands"},
 		},
@@ -1166,7 +1166,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, ssti, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, ssti, nil, nil, nil)
 			},
 			expectedKeywords: []string{"SSTI", "template engines"},
 		},
@@ -1178,7 +1178,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityMedium},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedKeywords: []string{"CSRF tokens"},
 		},
@@ -1190,7 +1190,7 @@ func TestGeneratePriorityActions_SingleFindingType(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, redirect, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, redirect, nil, nil, nil, nil, nil, nil)
 			},
 			expectedKeywords: []string{"Open Redirect", "URL validation"},
 		},
@@ -1244,7 +1244,7 @@ func TestGeneratePriorityActions_MixedSeverityFindings(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, csrf, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Summary.PriorityActions) == 0 {
 		t.Error("Expected multiple priority actions for mixed findings")
@@ -1302,7 +1302,7 @@ func TestGeneratePriorityActions_AllVulnerabilityTypes(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, ssrf, redirect, cmdi, nil, ssti, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, ssrf, redirect, cmdi, nil, ssti, nil, nil, nil)
 
 	if len(result.Summary.PriorityActions) == 0 {
 		t.Error("Expected multiple priority actions with all vulnerability types")
@@ -1358,7 +1358,7 @@ func TestGeneratePriorityActions_ActionListTruncation(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, nil, redirect, cmdi, nil, ssti, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, nil, redirect, cmdi, nil, ssti, nil, nil, nil)
 
 	// Should be truncated to exactly 5 actions
 	if len(result.Summary.PriorityActions) != 5 {
@@ -1403,7 +1403,7 @@ func TestCorrelateFindings_XSSWithMissingCSP(t *testing.T) {
 				},
 			}
 
-			result := NewUnifiedScanResult("http://test.com", false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			result := NewUnifiedScanResult("http://test.com", false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 			if tt.shouldCorrelate {
 				if len(result.Correlations) == 0 {
@@ -1455,7 +1455,7 @@ func TestCorrelateFindings_SQLiWithServerVersionHeader(t *testing.T) {
 				},
 			}
 
-			result := NewUnifiedScanResult("http://test.com", false, headers, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+			result := NewUnifiedScanResult("http://test.com", false, headers, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 			if tt.shouldCorrelate {
 				if len(result.Correlations) == 0 {
@@ -1507,7 +1507,7 @@ func TestCorrelateFindings_CSRFWithMissingSameSiteCookie(t *testing.T) {
 				},
 			}
 
-			result := NewUnifiedScanResult("http://test.com", false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+			result := NewUnifiedScanResult("http://test.com", false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 
 			if tt.shouldCorrelate {
 				if len(result.Correlations) == 0 {
@@ -1535,7 +1535,7 @@ func TestCorrelateFindings_MultipleInjectionPoints(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Error("Expected correlation for SQLi + XSS on same parameter")
@@ -1569,7 +1569,7 @@ func TestCorrelateFindings_CMDiWithSSRF(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, ssrf, nil, cmdi, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, ssrf, nil, cmdi, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Error("Expected correlation for CMDi + SSRF on same parameter")
@@ -1603,7 +1603,7 @@ func TestCorrelateFindings_CMDiWithSQLi(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, cmdi, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, cmdi, nil, nil, nil, nil, nil)
 
 	if len(result.Correlations) == 0 {
 		t.Error("Expected correlation for CMDi + SQLi on same parameter")
@@ -1643,7 +1643,7 @@ func TestCorrelateFindings_NoCorrelations(t *testing.T) {
 						{URL: "http://test.com", Parameter: "q", Severity: SeverityHigh, Type: "reflected", Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, headers, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 		},
 		{
@@ -1654,7 +1654,7 @@ func TestCorrelateFindings_NoCorrelations(t *testing.T) {
 						{URL: "http://test.com", Parameter: "id", Severity: SeverityHigh, Type: "error-based", Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, nil, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 		},
 		{
@@ -1670,7 +1670,7 @@ func TestCorrelateFindings_NoCorrelations(t *testing.T) {
 						{FormAction: "http://test.com/form", Type: "missing_token", Severity: SeverityHigh},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, headers, nil, nil, csrf, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 		},
 		{
@@ -1686,7 +1686,7 @@ func TestCorrelateFindings_NoCorrelations(t *testing.T) {
 						{URL: "http://test.com/user", Parameter: "id", Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, sqli, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 		},
 	}
@@ -1761,7 +1761,7 @@ func TestGenerateSummary_AllScannerResultTypes(t *testing.T) {
 		},
 	}
 
-	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, ssrf, redirect, cmdi, pathtraversal, ssti, websocket, nil)
+	result := NewUnifiedScanResult("http://test.com", false, headers, xss, sqli, csrf, ssrf, redirect, cmdi, pathtraversal, ssti, nil, websocket, nil)
 
 	// Total findings: 1 header + 1 cookie + 1 cors + 1 xss + 1 sqli + 1 csrf + 1 ssrf + 1 redirect + 1 cmdi + 1 pathtraversal + 1 ssti + 1 websocket = 12
 	expectedTotal := 12
@@ -1806,7 +1806,7 @@ func TestGenerateSummary_CorrectSeverityCountAggregation(t *testing.T) {
 						{Severity: SeverityHigh, Confidence: "high"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedHigh:   2,
 			expectedMedium: 0,
@@ -1821,7 +1821,7 @@ func TestGenerateSummary_CorrectSeverityCountAggregation(t *testing.T) {
 						{Severity: SeverityMedium, Confidence: "medium"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedHigh:   0,
 			expectedMedium: 2,
@@ -1836,7 +1836,7 @@ func TestGenerateSummary_CorrectSeverityCountAggregation(t *testing.T) {
 						{Severity: SeverityLow, Confidence: "low"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedHigh:   0,
 			expectedMedium: 0,
@@ -1852,7 +1852,7 @@ func TestGenerateSummary_CorrectSeverityCountAggregation(t *testing.T) {
 						{Severity: SeverityLow, Confidence: "low"},
 					},
 				}
-				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				return NewUnifiedScanResult("http://test.com", false, nil, xss, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			},
 			expectedHigh:   1,
 			expectedMedium: 1,
@@ -1879,7 +1879,7 @@ func TestGenerateSummary_CorrectSeverityCountAggregation(t *testing.T) {
 
 // TestGenerateSummary_EmptyResultsHandling tests generateSummary with empty results
 func TestGenerateSummary_EmptyResultsHandling(t *testing.T) {
-	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	result := NewUnifiedScanResult("http://test.com", false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	if result.Summary.TotalFindings != 0 {
 		t.Errorf("Expected 0 total findings for empty results, got %d", result.Summary.TotalFindings)
