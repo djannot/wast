@@ -16,7 +16,7 @@ All vulnerabilities confirmed exploitable via curl:
 | SSTI | 370 | 0 | 0 (PHP app) | **PASS** |
 | SSRF | 629 | 0 | 0 | **PASS** |
 | XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FAIL** |
-| CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FAIL** |
+| CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FIXED** |
 | Path Traversal | 666 | 0 | LFI on `/fi/?page=` | **FAIL** |
 | Headers | — | 7 | 7 missing | **PASS** |
 
@@ -32,17 +32,15 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## P0: CMDi — not detecting command injection on live DVWA
+## ✅ RESOLVED: CMDi — not detecting command injection on live DVWA (PR #260)
 
-Unit tests pass with simulated DVWA responses but the live scan finds nothing.
+**Root cause (fixed):** Two issues, both resolved:
 
-**Root cause:** Two issues:
+1. **Empty baseline value:** The discovery pipeline extracts the form with `ip=""` (empty default value). Separator-based payloads like `; id` were sent without a leading valid IP, so DVWA's `shell_exec("ping -c 4 " . $target)` received `ping -c 4 ;id` with an empty target and no command was injected. **Fix:** Added `preparePayload()` helper in `cmdi.go` that prepends `127.0.0.1` to separator-based payloads (`;`, `|`, `&`) when the original parameter value is empty, producing `127.0.0.1; id` etc.
 
-1. **Empty baseline value:** The discovery pipeline extracts the form with `ip=""` (empty default value). The CMDi scanner sends a baseline request with `ip=""`, which DVWA doesn't process (no ping output). When injection payloads like `; id` are sent (without a leading valid IP), DVWA may also not process them. The payloads need a valid prefix like `127.0.0.1; id` but the scanner may be sending just `; id` as a replacement for the empty `ip` value rather than prepending to a valid value.
+2. **Submit button injection waste:** Resolved in a prior PR — `isSubmitButton()` excludes submit-type params from injection testing.
 
-2. **Submit button injection waste:** The scanner tests all parameters including `Submit`. When it injects into `Submit` while keeping `ip=""`, DVWA doesn't process the form at all. This wastes test budget and produces noise. Submit-type params should be excluded from injection testing.
-
-**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testOutputBasedPOST()`, baseline value handling
+**Files changed:** `pkg/scanner/cmdi.go` — added `preparePayload()`, updated all six test functions (`testErrorBased`, `testOutputBased`, `testTimeBased` and their POST variants). `pkg/scanner/cmdi_test.go` — added unit tests. Integration test assertions hardened to `t.Errorf`.
 
 ---
 
@@ -81,6 +79,8 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 - CSRF: `TestDVWA_CSRF` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
 - Discovery scan combined check: `TestDVWA_DiscoveryScan` — **HARD FAILURE** (SQLi/CSRF always present)
 
-**Pending (blocked by P0 bugs above):** XSS, CMDi, and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for all three.
+**Done (PR #260):** CMDi warnings converted to `t.Errorf(...)` hard failures in `TestDVWA_CommandInjection` and `TestDVWA_FullDiscoveryScanAssertions` — CMDi P0 scanner bug resolved.
 
-**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for XSS, CMDi, and Path Traversal in `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
+**Pending (blocked by remaining P0 bugs):** XSS and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for both.
+
+**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for XSS and Path Traversal in `TestDVWA_XSS`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.

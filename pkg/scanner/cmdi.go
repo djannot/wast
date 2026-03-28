@@ -855,7 +855,10 @@ func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 	// Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
+	// Prepend a benign prefix when the original value is empty and the payload starts
+	// with a command separator, so the target application processes the input correctly.
+	effectivePayload := preparePayload(q.Get(paramName), payload.Payload)
+	q.Set(paramName, effectivePayload)
 	testURL.RawQuery = q.Encode()
 
 	// Create the request
@@ -900,7 +903,7 @@ func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 			finding := &CMDiFinding{
 				URL:         testURL.String(),
 				Parameter:   paramName,
-				Payload:     payload.Payload,
+				Payload:     effectivePayload,
 				Evidence:    s.extractEvidence(bodyStr, match),
 				Severity:    payload.Severity,
 				Type:        payload.Type,
@@ -922,7 +925,10 @@ func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, par
 	// Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
+	// Prepend a benign prefix when the original value is empty and the payload starts
+	// with a command separator, so the target application processes the input correctly.
+	effectivePayload := preparePayload(q.Get(paramName), payload.Payload)
+	q.Set(paramName, effectivePayload)
 	testURL.RawQuery = q.Encode()
 
 	// Create the request
@@ -975,7 +981,7 @@ func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, par
 				finding := &CMDiFinding{
 					URL:         testURL.String(),
 					Parameter:   paramName,
-					Payload:     payload.Payload,
+					Payload:     effectivePayload,
 					Evidence:    s.extractEvidence(bodyStr, match),
 					Severity:    payload.Severity,
 					Type:        payload.Type,
@@ -998,7 +1004,10 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 	// Create a copy of the URL with the test payload
 	testURL := *baseURL
 	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
+	// Prepend a benign prefix when the original value is empty and the payload starts
+	// with a command separator, so the target application processes the input correctly.
+	effectivePayload := preparePayload(q.Get(paramName), payload.Payload)
+	q.Set(paramName, effectivePayload)
 	testURL.RawQuery = q.Encode()
 
 	// Create the request
@@ -1079,7 +1088,7 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 		return &CMDiFinding{
 			URL:         testURL.String(),
 			Parameter:   paramName,
-			Payload:     payload.Payload,
+			Payload:     effectivePayload,
 			Evidence:    evidenceMsg,
 			Severity:    payload.Severity,
 			Type:        payload.Type,
@@ -1093,6 +1102,39 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 	return nil
 }
 
+// cmdSeparatorPrefixes lists the command separator characters/sequences that require a
+// valid prefix when the original parameter value is empty. Payloads starting with these
+// separators need a benign value before them so the target application processes the input.
+var cmdSeparatorPrefixes = []string{";", "|", "&"}
+
+// benignCMDiPrefix is the default benign value prepended to separator-based payloads
+// when the original parameter value is empty.
+const benignCMDiPrefix = "127.0.0.1"
+
+// preparePayload returns the effective value to send for a parameter.
+//
+// When the original parameter value is empty and the payload starts with a command
+// separator (;, |, &, &&, ||), a benign prefix (127.0.0.1) is prepended so the
+// target application receives well-formed input followed by the injected command.
+// For example, ";sleep 5" becomes "127.0.0.1;sleep 5" so that shell_exec("ping -c 4 "
+// . $target) receives "ping -c 4 127.0.0.1;sleep 5" instead of "ping -c 4 ;sleep 5".
+//
+// Payloads using backtick or $() substitution (e.g. "`sleep 5`", "$(sleep 5)") work
+// regardless of a valid prefix and are returned unchanged.
+func preparePayload(originalValue, payload string) string {
+	if originalValue != "" {
+		// Original value is non-empty: the payload replaces it entirely, no prefix needed.
+		return payload
+	}
+	// Original value is empty — check if the payload starts with a command separator.
+	for _, sep := range cmdSeparatorPrefixes {
+		if strings.HasPrefix(payload, sep) {
+			return benignCMDiPrefix + payload
+		}
+	}
+	return payload
+}
+
 // testErrorBasedPOST tests a single parameter with an error-based command injection payload using POST.
 func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string) *CMDiFinding {
 	// Create form data with ALL parameters
@@ -1100,8 +1142,10 @@ func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 	for k, v := range allParameters {
 		formData.Set(k, v)
 	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
+	// Override the parameter being tested, prepending a benign prefix when the original
+	// value is empty and the payload starts with a command separator.
+	effectivePayload := preparePayload(allParameters[paramName], payload.Payload)
+	formData.Set(paramName, effectivePayload)
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -1146,7 +1190,7 @@ func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 			finding := &CMDiFinding{
 				URL:         baseURL.String(),
 				Parameter:   paramName,
-				Payload:     payload.Payload,
+				Payload:     effectivePayload,
 				Evidence:    s.extractEvidence(bodyStr, match),
 				Severity:    payload.Severity,
 				Type:        payload.Type,
@@ -1170,8 +1214,10 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 	for k, v := range allParameters {
 		formData.Set(k, v)
 	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
+	// Override the parameter being tested, prepending a benign prefix when the original
+	// value is empty and the payload starts with a command separator.
+	effectivePayload := preparePayload(allParameters[paramName], payload.Payload)
+	formData.Set(paramName, effectivePayload)
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -1234,7 +1280,7 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 				finding := &CMDiFinding{
 					URL:         baseURL.String(),
 					Parameter:   paramName,
-					Payload:     payload.Payload,
+					Payload:     effectivePayload,
 					Evidence:    s.extractEvidence(bodyStr, match),
 					Severity:    payload.Severity,
 					Type:        payload.Type,
@@ -1258,8 +1304,10 @@ func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, p
 	for k, v := range allParameters {
 		formData.Set(k, v)
 	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
+	// Override the parameter being tested, prepending a benign prefix when the original
+	// value is empty and the payload starts with a command separator.
+	effectivePayload := preparePayload(allParameters[paramName], payload.Payload)
+	formData.Set(paramName, effectivePayload)
 
 	// Create the request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
@@ -1335,7 +1383,7 @@ func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, p
 		return &CMDiFinding{
 			URL:         baseURL.String(),
 			Parameter:   paramName,
-			Payload:     payload.Payload,
+			Payload:     effectivePayload,
 			Evidence:    evidenceMsg,
 			Severity:    payload.Severity,
 			Type:        payload.Type,

@@ -1277,3 +1277,194 @@ func (m *mockBaselineValueCapturingClient) Do(req *http.Request) (*http.Response
 		Body:       io.NopCloser(strings.NewReader("Normal response")),
 	}, nil
 }
+
+// TestPreparePayload verifies the preparePayload helper prepends the benign prefix
+// when the original value is empty and the payload starts with a command separator,
+// and leaves payloads unchanged otherwise.
+func TestPreparePayload(t *testing.T) {
+	tests := []struct {
+		name          string
+		originalValue string
+		payload       string
+		expected      string
+	}{
+		// Empty original value + separator prefix → should prepend 127.0.0.1
+		{"empty + semicolon", "", ";sleep 5", "127.0.0.1;sleep 5"},
+		{"empty + pipe", "", "|sleep 5", "127.0.0.1|sleep 5"},
+		{"empty + ampersand", "", "&timeout 5", "127.0.0.1&timeout 5"},
+		{"empty + double-ampersand", "", "&&sleep 5", "127.0.0.1&&sleep 5"},
+		{"empty + double-pipe", "", "||sleep 5", "127.0.0.1||sleep 5"},
+		{"empty + semicolon-space", "", "; sleep 5", "127.0.0.1; sleep 5"},
+		{"empty + pipe-space", "", "| sleep 5", "127.0.0.1| sleep 5"},
+		{"empty + semicolon id", "", ";id", "127.0.0.1;id"},
+		{"empty + pipe whoami", "", "|whoami", "127.0.0.1|whoami"},
+
+		// Empty original value + non-separator prefix → should NOT prepend
+		{"empty + backtick", "", "`sleep 5`", "`sleep 5`"},
+		{"empty + command substitution", "", "$(sleep 5)", "$(sleep 5)"},
+		{"empty + already prefixed", "", "127.0.0.1; id", "127.0.0.1; id"},
+
+		// Non-empty original value + separator → should NOT prepend (payload replaces entirely)
+		{"non-empty + semicolon", "127.0.0.1", ";sleep 5", ";sleep 5"},
+		{"non-empty + pipe", "somevalue", "|whoami", "|whoami"},
+		{"non-empty + output payload", "127.0.0.1", "127.0.0.1; id", "127.0.0.1; id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := preparePayload(tt.originalValue, tt.payload)
+			if got != tt.expected {
+				t.Errorf("preparePayload(%q, %q) = %q, want %q",
+					tt.originalValue, tt.payload, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestCMDiScanner_EmptyParamPrefixesPayloadPOST verifies that when ScanPOST is given
+// a parameter with an empty string value, separator-based payloads are prefixed with
+// a benign value (127.0.0.1) so the target application receives well-formed input.
+func TestCMDiScanner_EmptyParamPrefixesPayloadPOST(t *testing.T) {
+	// Track which values are sent for the "ip" parameter (excluding the baseline request)
+	sentValues := make([]string, 0)
+	mockClient := &mockPayloadCapturingClient{sentValues: &sentValues}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+
+	// ip has an empty string value — simulates a form extracted by the discovery pipeline
+	params := map[string]string{
+		"ip": "",
+	}
+	scanner.ScanPOST(context.Background(), "http://example.com/exec", params)
+
+	// Verify that separator-based payloads are prefixed with 127.0.0.1
+	foundSeparatorWithoutPrefix := false
+	foundSeparatorWithPrefix := false
+	for _, v := range sentValues {
+		// Raw separator at start (without prefix) is a bug
+		if strings.HasPrefix(v, ";") || strings.HasPrefix(v, "|") || strings.HasPrefix(v, "&") {
+			foundSeparatorWithoutPrefix = true
+		}
+		// Separator-based payload with proper prefix
+		if strings.HasPrefix(v, "127.0.0.1;") || strings.HasPrefix(v, "127.0.0.1|") ||
+			strings.HasPrefix(v, "127.0.0.1&") {
+			foundSeparatorWithPrefix = true
+		}
+	}
+
+	if foundSeparatorWithoutPrefix {
+		t.Error("Separator-based payload sent without 127.0.0.1 prefix for empty parameter value")
+	}
+	if !foundSeparatorWithPrefix {
+		t.Error("Expected at least one separator-based payload to be sent with 127.0.0.1 prefix")
+	}
+}
+
+// TestCMDiScanner_EmptyParamPrefixesPayloadPOST_DetectsVulnerability verifies end-to-end
+// that a DVWA-like endpoint with ip="" is correctly detected when the scanner prepends
+// the benign prefix to separator-based payloads.
+func TestCMDiScanner_EmptyParamPrefixesPayloadPOST_DetectsVulnerability(t *testing.T) {
+	// Simulate a DVWA-like endpoint that only processes input when it starts with a valid IP.
+	mockClient := &mockDVWAEmptyIPHTTPClient{}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+
+	// ip="" simulates a form extracted by the discovery pipeline with no default value
+	params := map[string]string{
+		"ip":     "",
+		"Submit": "Submit",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://example.com/vulnerabilities/exec/", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should detect output-based or time-based command injection despite empty initial value
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find command injection vulnerability when ip param is empty (prefix should be applied)")
+	}
+
+	// Verify the finding is on the 'ip' parameter
+	foundIPParam := false
+	for _, finding := range result.Findings {
+		if finding.Parameter == "ip" {
+			foundIPParam = true
+			// The reported payload should include the 127.0.0.1 prefix
+			if strings.HasPrefix(finding.Payload, ";") || strings.HasPrefix(finding.Payload, "|") ||
+				strings.HasPrefix(finding.Payload, "&") {
+				t.Errorf("Reported payload %q should include 127.0.0.1 prefix", finding.Payload)
+			}
+		}
+	}
+	if !foundIPParam {
+		t.Error("Expected vulnerability on 'ip' parameter")
+	}
+}
+
+// mockPayloadCapturingClient records all non-baseline values sent for the "ip" parameter.
+type mockPayloadCapturingClient struct {
+	sentValues *[]string
+	callCount  int
+}
+
+func (m *mockPayloadCapturingClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		body, _ := io.ReadAll(req.Body)
+		formData, _ := url.ParseQuery(string(body))
+		if vals, ok := formData["ip"]; ok && len(vals) > 0 {
+			// Skip the first request (baseline)
+			if m.callCount > 0 {
+				*m.sentValues = append(*m.sentValues, vals[0])
+			}
+			m.callCount++
+		} else {
+			m.callCount++
+		}
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("Normal response")),
+	}, nil
+}
+
+// mockDVWAEmptyIPHTTPClient simulates a DVWA exec endpoint where:
+// - Empty ip value returns a generic "no output" response
+// - ip starting with valid IP + separator → executes command and returns output
+// - ip without valid IP prefix (bare ;sleep etc.) → returns same generic response (no execution)
+type mockDVWAEmptyIPHTTPClient struct{}
+
+func (m *mockDVWAEmptyIPHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		body, _ := io.ReadAll(req.Body)
+		formData, _ := url.ParseQuery(string(body))
+
+		ipVals := formData["ip"]
+		ip := ""
+		if len(ipVals) > 0 {
+			ip = ipVals[0]
+		}
+
+		// Valid IP prefix + command injection → return command output
+		if strings.HasPrefix(ip, "127.0.0.1") &&
+			(strings.Contains(ip, ";") || strings.Contains(ip, "|") || strings.Contains(ip, "&")) {
+			if strings.Contains(ip, "id") || strings.Contains(ip, "whoami") {
+				return &http.Response{
+					StatusCode: 200,
+					Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1
+uid=33(www-data) gid=33(www-data) groups=33(www-data)`)),
+				}, nil
+			}
+		}
+
+		// No valid prefix → no command execution (same as empty ip)
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("Enter an IP address.")),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("OK")),
+	}, nil
+}
