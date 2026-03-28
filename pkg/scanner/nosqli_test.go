@@ -583,11 +583,11 @@ func TestNoSQLiScanner_IsSignificantResponseChange(t *testing.T) {
 	scanner := NewNoSQLiScanner()
 
 	tests := []struct {
-		name           string
-		baseline       *baselineResponse
-		statusCode     int
-		bodyLength     int
-		expectSignif   bool
+		name         string
+		baseline     *baselineResponse
+		statusCode   int
+		bodyLength   int
+		expectSignif bool
 	}{
 		{
 			name:         "same response - not significant",
