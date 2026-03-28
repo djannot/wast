@@ -279,11 +279,12 @@ func TestDVWA_SQLi(t *testing.T) {
 	t.Logf("SQLi scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// We expect at least one SQLi finding on the 'id' parameter
+	// NOTE: SQLi detection on live DVWA is still unreliable — P0 scanner bug
+	// open (boolean-based blind detection, response diff thresholds). Keep as
+	// warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No SQLi findings on /vulnerabilities/sqli/")
-		t.Logf("This is a known limitation - SQLi detection in integration tests may need tuning")
+		t.Logf("Warning: No SQLi findings on /vulnerabilities/sqli/ — P0 scanner bug open, detection unreliable on live DVWA")
 		t.Logf("Tests performed: %d", result.Summary.TotalTests)
-		// Don't fail the test - this is being investigated
 	} else {
 		// Verify we found injection on the 'id' parameter
 		foundIDParam := false
@@ -327,11 +328,11 @@ func TestDVWA_XSS(t *testing.T) {
 	t.Logf("XSS scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// We expect at least one XSS finding on the 'name' parameter
+	// NOTE: XSS detection on live DVWA is still unreliable — P0 scanner bug
+	// open (analyzeContext comment detection). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No XSS findings on /vulnerabilities/xss_r/")
-		t.Logf("This is a known limitation - XSS detection in integration tests may need tuning")
+		t.Logf("Warning: No XSS findings on /vulnerabilities/xss_r/ — P0 scanner bug open, detection unreliable on live DVWA")
 		t.Logf("Tests performed: %d", result.Summary.TotalTests)
-		// Don't fail the test - this is being investigated
 	} else {
 		// Verify we found XSS on the 'name' parameter
 		foundNameParam := false
@@ -388,11 +389,11 @@ func TestDVWA_CommandInjection(t *testing.T) {
 	t.Logf("CMDi scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// We expect at least one command injection finding on the 'ip' parameter
+	// NOTE: CMDi detection on live DVWA is still unreliable — P0 scanner bug
+	// open (empty baseline value handling). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No CMDi findings on /vulnerabilities/exec/")
-		t.Logf("This is a known limitation - CMDi detection in integration tests may need tuning")
+		t.Logf("Warning: No CMDi findings on /vulnerabilities/exec/ — P0 scanner bug open, detection unreliable on live DVWA")
 		t.Logf("Tests performed: %d", result.Summary.TotalTests)
-		// Don't fail the test - this is being investigated
 	} else {
 		// Verify we found injection on the 'ip' parameter
 		foundIPParam := false
@@ -436,10 +437,10 @@ func TestDVWA_PathTraversal(t *testing.T) {
 	t.Logf("Path Traversal scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// Path traversal detection can be tricky - log what we found
+	// NOTE: Path Traversal detection on live DVWA is still unreliable — P0 scanner bug
+	// open (payload ordering, URL encoding). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No path traversal findings on /vulnerabilities/fi/")
-		t.Logf("This is a known limitation - Path Traversal detection may need tuning")
-		// Don't fail the test as this is documented in TODO.md as P1 issue
+		t.Logf("Warning: No path traversal findings on /vulnerabilities/fi/ — P0 scanner bug open, detection unreliable on live DVWA")
 	} else {
 		for _, finding := range result.Findings {
 			t.Logf("Found Path Traversal on parameter '%s' with confidence: %s", finding.Parameter, finding.Confidence)
@@ -504,9 +505,7 @@ func TestDVWA_DiscoveryScan(t *testing.T) {
 	hasCSRF := stats != nil && stats.TotalCSRFFindings > 0
 
 	if !hasXSS && !hasSQLi && !hasCSRF {
-		t.Logf("Warning: Expected to find at least XSS, SQLi, or CSRF vulnerabilities in discovery scan")
-		t.Logf("This is a known limitation - scanner detection in integration tests may need tuning")
-		// Don't fail the test - this is being investigated
+		t.Errorf("Expected to find at least XSS, SQLi, or CSRF vulnerabilities in discovery scan")
 	}
 }
 
@@ -539,7 +538,7 @@ func TestDVWA_CSRF(t *testing.T) {
 
 	// DVWA has forms without CSRF tokens
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No CSRF findings on %s", targetURL)
+		t.Errorf("No CSRF findings on %s", targetURL)
 	} else {
 		for _, finding := range result.Findings {
 			t.Logf("Found CSRF vulnerability: %s", finding.Description)
@@ -638,9 +637,9 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 
 	// ----------------------------------------------------------------
 	// SQLi: >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param
-	// NOTE: SQLi detection on live DVWA is a known limitation — scanner
-	// runs tests but currently does not reliably detect injection in the
-	// integration test environment. Logged as a warning until fixed.
+	// NOTE: SQLi detection on live DVWA is still unreliable — P0 scanner bug
+	// open (boolean-based blind detection, response diff thresholds). Keep as
+	// warning until fixed.
 	// ----------------------------------------------------------------
 	sqliOnExpectedPaths := 0
 	if result.SQLi != nil {
@@ -656,17 +655,13 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if sqliOnExpectedPaths < 1 {
-		t.Logf("Warning: SQLi: expected >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param, got %d", sqliOnExpectedPaths)
-		t.Logf("This is a known limitation — SQLi detection against live DVWA needs further tuning")
+		t.Logf("Warning: SQLi: expected >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param, got %d — P0 scanner bug open", sqliOnExpectedPaths)
 	} else {
 		t.Logf("SQLi: %d finding(s) on expected paths — PASS", sqliOnExpectedPaths)
 	}
 
 	// ----------------------------------------------------------------
 	// XSS: >= 1 finding on /xss_r/ with 'name' param
-	// NOTE: XSS detection on live DVWA is a known limitation — scanner
-	// runs tests but currently does not reliably detect reflected XSS
-	// in the integration test environment. Logged as a warning until fixed.
 	// ----------------------------------------------------------------
 	xssOnExpectedPaths := 0
 	if result.XSS != nil {
@@ -678,17 +673,13 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if xssOnExpectedPaths < 1 {
-		t.Logf("Warning: XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d", xssOnExpectedPaths)
-		t.Logf("This is a known limitation — XSS detection against live DVWA needs further tuning")
+		t.Logf("Warning: XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d — P0 scanner bug open", xssOnExpectedPaths)
 	} else {
 		t.Logf("XSS: %d finding(s) on /xss_r/ — PASS", xssOnExpectedPaths)
 	}
 
 	// ----------------------------------------------------------------
 	// CMDi: >= 1 finding on /exec/ with 'ip' param
-	// NOTE: CMDi detection on live DVWA is a known limitation — scanner
-	// runs tests but currently does not reliably detect command injection
-	// in the integration test environment. Logged as a warning until fixed.
 	// ----------------------------------------------------------------
 	cmdiOnExpectedPaths := 0
 	if result.CMDi != nil {
@@ -700,8 +691,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if cmdiOnExpectedPaths < 1 {
-		t.Logf("Warning: CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d", cmdiOnExpectedPaths)
-		t.Logf("This is a known limitation — CMDi detection against live DVWA needs further tuning")
+		t.Logf("Warning: CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d — P0 scanner bug open", cmdiOnExpectedPaths)
 	} else {
 		t.Logf("CMDi: %d finding(s) on /exec/ — PASS", cmdiOnExpectedPaths)
 	}
@@ -713,8 +703,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	// stats.TotalCSRFFindings is now correctly set from aggregated findings.
 	// ----------------------------------------------------------------
 	if stats.TotalCSRFFindings < 1 {
-		t.Logf("Warning: CSRF: expected >= 1 finding (missing token), got %d", stats.TotalCSRFFindings)
-		t.Logf("This is a known limitation — CSRF detection may not find all forms in integration test environment")
+		t.Errorf("CSRF: expected >= 1 finding (missing token), got %d", stats.TotalCSRFFindings)
 	} else {
 		t.Logf("CSRF: %d finding(s) — PASS", stats.TotalCSRFFindings)
 	}
@@ -736,9 +725,6 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 
 	// ----------------------------------------------------------------
 	// Path Traversal: >= 1 finding on /fi/ with 'page' param
-	// NOTE: Path traversal detection on live DVWA is a known limitation —
-	// scanner runs tests but currently does not reliably detect LFI in the
-	// integration test environment. Logged as a warning until fixed.
 	// ----------------------------------------------------------------
 	ptOnExpectedPaths := 0
 	if result.PathTraversal != nil {
@@ -750,8 +736,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if ptOnExpectedPaths < 1 {
-		t.Logf("Warning: PathTraversal: expected >= 1 finding on /fi/ with 'page' param, got %d", ptOnExpectedPaths)
-		t.Logf("This is a known limitation — path traversal detection against live DVWA needs further tuning")
+		t.Logf("Warning: PathTraversal: expected >= 1 finding on /fi/ with 'page' param, got %d — P0 scanner bug open", ptOnExpectedPaths)
 	} else {
 		t.Logf("PathTraversal: %d finding(s) on /fi/ — PASS", ptOnExpectedPaths)
 	}
