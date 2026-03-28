@@ -31,10 +31,10 @@ type CallbackEvent struct {
 	Type      CallbackType `json:"type"`
 	Timestamp time.Time    `json:"timestamp"`
 	SourceIP  string       `json:"source_ip"`
-	Method    string       `json:"method,omitempty"`    // HTTP method
-	Path      string       `json:"path,omitempty"`      // HTTP path
-	Headers   http.Header  `json:"headers,omitempty"`   // HTTP headers
-	Query     string       `json:"query,omitempty"`     // DNS query
+	Method    string       `json:"method,omitempty"`  // HTTP method
+	Path      string       `json:"path,omitempty"`    // HTTP path
+	Headers   http.Header  `json:"headers,omitempty"` // HTTP headers
+	Query     string       `json:"query,omitempty"`   // DNS query
 	UserAgent string       `json:"user_agent,omitempty"`
 }
 
@@ -49,20 +49,20 @@ type PendingCallback struct {
 
 // Server is the callback server that listens for HTTP and DNS callbacks.
 type Server struct {
-	httpAddr   string
-	dnsAddr    string
-	dnsDomain  string
-	baseURL    string
+	httpAddr  string
+	dnsAddr   string
+	dnsDomain string
+	baseURL   string
 
-	mu               sync.RWMutex
-	pending          map[string]*PendingCallback
-	received         map[string][]CallbackEvent
-	httpServer       *http.Server
-	dnsServer        *dnsServer
-	defaultTTL       time.Duration
-	cleanupInterval  time.Duration
-	cleanupTicker    *time.Ticker
-	cleanupDone      chan struct{}
+	mu              sync.RWMutex
+	pending         map[string]*PendingCallback
+	received        map[string][]CallbackEvent
+	httpServer      *http.Server
+	dnsServer       *dnsServer
+	defaultTTL      time.Duration
+	cleanupInterval time.Duration
+	cleanupTicker   *time.Ticker
+	cleanupDone     chan struct{}
 }
 
 // Config holds configuration for the callback server.
