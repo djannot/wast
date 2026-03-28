@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/callback"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -21,6 +22,7 @@ type ScanConfig struct {
 	AuthConfig      *auth.AuthConfig
 	RateLimitConfig ratelimit.Config
 	Tracer          trace.Tracer // optional, for MCP tracing
+	CallbackURL     string       // optional, for out-of-band SSRF detection
 }
 
 // IntermediateScanResult represents the combined results of all security scans
@@ -130,6 +132,15 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
 		sstiOpts = append(sstiOpts, WithSSTITracer(cfg.Tracer))
+	}
+
+	// Add callback server if configured (for out-of-band SSRF detection)
+	if cfg.CallbackURL != "" {
+		// Parse callback URL to create callback server configuration
+		callbackServer := createCallbackServer(cfg.CallbackURL)
+		if callbackServer != nil {
+			ssrfOpts = append(ssrfOpts, WithSSRFCallbackServer(callbackServer))
+		}
 	}
 
 	// Create scanners
@@ -545,4 +556,70 @@ func FormatFilteredMessage(filteredCount int) string {
 		return fmt.Sprintf("ℹ️  Verification: %d findings excluded due to failed verification", filteredCount)
 	}
 	return ""
+}
+
+// createCallbackServer creates a callback server from a callback URL.
+// The URL should be in the format: http://callback.example.com:8888
+// This creates a client that connects to an already-running callback server.
+func createCallbackServer(callbackURL string) CallbackServer {
+	// For now, we create a simple remote callback client
+	// In a full implementation, this would connect to the running callback server
+	return &remoteCallbackClient{
+		baseURL: callbackURL,
+	}
+}
+
+// remoteCallbackClient is a simple client that generates callback URLs
+// for a remote callback server. It doesn't actually connect to the server,
+// just generates the URLs that the target application will call.
+type remoteCallbackClient struct {
+	baseURL string
+	server  *callback.Server
+	mu      sync.Mutex
+}
+
+func (c *remoteCallbackClient) GenerateCallbackID() string {
+	// Generate a unique ID for this callback
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Initialize server if not already done
+	if c.server == nil {
+		c.server = callback.NewServer(callback.Config{
+			BaseURL: c.baseURL,
+		})
+	}
+
+	return c.server.GenerateCallbackID()
+}
+
+func (c *remoteCallbackClient) GetHTTPCallbackURL(id string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.server == nil {
+		c.server = callback.NewServer(callback.Config{
+			BaseURL: c.baseURL,
+		})
+	}
+
+	return c.server.GetHTTPCallbackURL(id)
+}
+
+func (c *remoteCallbackClient) GetDNSCallbackDomain(id string) string {
+	// DNS callbacks not supported in remote client mode
+	return ""
+}
+
+func (c *remoteCallbackClient) WaitForCallback(ctx context.Context, id string, timeout time.Duration) (callback.CallbackEvent, bool) {
+	c.mu.Lock()
+	if c.server == nil {
+		c.server = callback.NewServer(callback.Config{
+			BaseURL: c.baseURL,
+		})
+	}
+	server := c.server
+	c.mu.Unlock()
+
+	return server.WaitForCallback(ctx, id, timeout)
 }

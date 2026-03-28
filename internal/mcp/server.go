@@ -498,6 +498,10 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"description": "Rate limit for requests per second (0 for unlimited)",
 				"default":     0,
 			},
+			"callback_url": map[string]interface{}{
+				"type":        "string",
+				"description": "Callback server base URL for out-of-band SSRF detection (e.g., http://callback.example.com:8888)",
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -523,6 +527,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		LoginUserField    string   `json:"login_user_field"`
 		LoginPassField    string   `json:"login_pass_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
+		CallbackURL       string   `json:"callback_url"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -591,7 +596,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback, args.CallbackURL)
 
 	return result, nil
 }

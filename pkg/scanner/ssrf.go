@@ -13,10 +13,19 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/callback"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/telemetry"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// CallbackServer is an interface for out-of-band callback detection.
+type CallbackServer interface {
+	GenerateCallbackID() string
+	GetHTTPCallbackURL(id string) string
+	GetDNSCallbackDomain(id string) string
+	WaitForCallback(ctx context.Context, id string, timeout time.Duration) (callback.CallbackEvent, bool)
+}
 
 // SSRFScanner performs active SSRF vulnerability detection.
 type SSRFScanner struct {
@@ -26,6 +35,7 @@ type SSRFScanner struct {
 	authConfig         *auth.AuthConfig
 	rateLimiter        ratelimit.Limiter
 	tracer             trace.Tracer
+	callbackServer     CallbackServer
 	OnlyProvidedParams bool // If true, only test parameters that exist in the URL (don't invent parameters)
 }
 
@@ -274,6 +284,14 @@ func WithSSRFOnlyProvidedParams(only bool) SSRFOption {
 	}
 }
 
+// WithSSRFCallbackServer sets the callback server for out-of-band detection.
+// When set, the scanner will generate callback URLs and use them to verify SSRF vulnerabilities.
+func WithSSRFCallbackServer(server CallbackServer) SSRFOption {
+	return func(s *SSRFScanner) {
+		s.callbackServer = server
+	}
+}
+
 // NewSSRFScanner creates a new SSRFScanner with the given options.
 func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
 	s := &SSRFScanner{
@@ -502,6 +520,26 @@ func (s *SSRFScanner) Scan(ctx context.Context, targetURL string) *SSRFScanResul
 			default:
 			}
 		}
+
+		// Test with callback payloads if callback server is configured
+		if s.callbackServer != nil {
+			finding := s.testParameterWithCallback(ctx, parsedURL, paramName)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
 	}
 
 	// Calculate final summary
@@ -590,6 +628,26 @@ func (s *SSRFScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 			}
 
 			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params, baseline)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+
+		// Test with callback payloads if callback server is configured
+		if s.callbackServer != nil {
+			finding := s.testParameterWithCallbackPOST(ctx, parsedURL, paramName, params)
 			result.Summary.TotalTests++
 
 			if finding != nil {
@@ -766,6 +824,207 @@ func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 			Confidence:  confidence,
 		}
 		return finding
+	}
+
+	return nil
+}
+
+// testParameterWithCallback tests a parameter using out-of-band callback detection (GET).
+func (s *SSRFScanner) testParameterWithCallback(ctx context.Context, baseURL *url.URL, paramName string) *SSRFFinding {
+	// Generate unique callback ID
+	callbackID := s.callbackServer.GenerateCallbackID()
+
+	// Try both HTTP and DNS callbacks
+	httpURL := s.callbackServer.GetHTTPCallbackURL(callbackID)
+	dnsURL := s.callbackServer.GetDNSCallbackDomain(callbackID)
+
+	// Test HTTP callback first
+	if httpURL != "" {
+		finding := s.testCallbackURL(ctx, baseURL, paramName, callbackID, httpURL, "HTTP")
+		if finding != nil {
+			return finding
+		}
+	}
+
+	// Test DNS callback
+	if dnsURL != "" {
+		// Use DNS URL in different formats
+		dnsPayload := fmt.Sprintf("http://%s", dnsURL)
+		finding := s.testCallbackURL(ctx, baseURL, paramName, callbackID, dnsPayload, "DNS")
+		if finding != nil {
+			return finding
+		}
+	}
+
+	return nil
+}
+
+// testParameterWithCallbackPOST tests a parameter using out-of-band callback detection (POST).
+func (s *SSRFScanner) testParameterWithCallbackPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) *SSRFFinding {
+	// Generate unique callback ID
+	callbackID := s.callbackServer.GenerateCallbackID()
+
+	// Try both HTTP and DNS callbacks
+	httpURL := s.callbackServer.GetHTTPCallbackURL(callbackID)
+	dnsURL := s.callbackServer.GetDNSCallbackDomain(callbackID)
+
+	// Test HTTP callback first
+	if httpURL != "" {
+		finding := s.testCallbackURLPOST(ctx, baseURL, paramName, allParameters, callbackID, httpURL, "HTTP")
+		if finding != nil {
+			return finding
+		}
+	}
+
+	// Test DNS callback
+	if dnsURL != "" {
+		// Use DNS URL in different formats
+		dnsPayload := fmt.Sprintf("http://%s", dnsURL)
+		finding := s.testCallbackURLPOST(ctx, baseURL, paramName, allParameters, callbackID, dnsPayload, "DNS")
+		if finding != nil {
+			return finding
+		}
+	}
+
+	return nil
+}
+
+// testCallbackURL sends a request with callback URL and waits for the callback.
+func (s *SSRFScanner) testCallbackURL(ctx context.Context, baseURL *url.URL, paramName string, callbackID string, callbackURL string, callbackType string) *SSRFFinding {
+	// Create a copy of the URL with the callback payload
+	testURL := *baseURL
+	q := testURL.Query()
+	q.Set(paramName, callbackURL)
+	testURL.RawQuery = q.Encode()
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Apply rate limiting before making the request
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			return nil
+		}
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Wait for callback (5 seconds timeout)
+	event, received := s.callbackServer.WaitForCallback(ctx, callbackID, 5*time.Second)
+
+	if received {
+		// We received a callback! This is definitive proof of SSRF
+		evidence := fmt.Sprintf("Out-of-band %s callback received from %s at %s",
+			callbackType, event.SourceIP, event.Timestamp.Format(time.RFC3339))
+
+		if event.Method != "" {
+			evidence += fmt.Sprintf(" (Method: %s, Path: %s)", event.Method, event.Path)
+		}
+
+		if event.Query != "" {
+			evidence += fmt.Sprintf(" (DNS Query: %s)", event.Query)
+		}
+
+		return &SSRFFinding{
+			URL:         testURL.String(),
+			Parameter:   paramName,
+			Payload:     callbackURL,
+			Evidence:    evidence,
+			Severity:    SeverityHigh,
+			Type:        "callback",
+			Description: fmt.Sprintf("SSRF vulnerability confirmed via out-of-band %s callback - application made a server-side request to attacker-controlled domain", callbackType),
+			Remediation: s.getRemediation(),
+			Confidence:  "high",
+			Verified:    true,
+		}
+	}
+
+	return nil
+}
+
+// testCallbackURLPOST sends a POST request with callback URL and waits for the callback.
+func (s *SSRFScanner) testCallbackURLPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string, callbackID string, callbackURL string, callbackType string) *SSRFFinding {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested
+	formData.Set(paramName, callbackURL)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Apply rate limiting before making the request
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			return nil
+		}
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Wait for callback (5 seconds timeout)
+	event, received := s.callbackServer.WaitForCallback(ctx, callbackID, 5*time.Second)
+
+	if received {
+		// We received a callback! This is definitive proof of SSRF
+		evidence := fmt.Sprintf("Out-of-band %s callback received from %s at %s",
+			callbackType, event.SourceIP, event.Timestamp.Format(time.RFC3339))
+
+		if event.Method != "" {
+			evidence += fmt.Sprintf(" (Method: %s, Path: %s)", event.Method, event.Path)
+		}
+
+		if event.Query != "" {
+			evidence += fmt.Sprintf(" (DNS Query: %s)", event.Query)
+		}
+
+		return &SSRFFinding{
+			URL:         baseURL.String(),
+			Parameter:   paramName,
+			Payload:     callbackURL,
+			Evidence:    evidence,
+			Severity:    SeverityHigh,
+			Type:        "callback",
+			Description: fmt.Sprintf("SSRF vulnerability confirmed via out-of-band %s callback - application made a server-side request to attacker-controlled domain", callbackType),
+			Remediation: s.getRemediation(),
+			Confidence:  "high",
+			Verified:    true,
+		}
 	}
 
 	return nil
