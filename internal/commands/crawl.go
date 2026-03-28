@@ -16,11 +16,16 @@ import (
 // NewCrawlCmd creates and returns the crawl command.
 func NewCrawlCmd(getFormatter func() *output.Formatter, getAuthConfig func() *auth.AuthConfig, getRateLimitConfig func() ratelimit.Config) *cobra.Command {
 	var (
-		depth       int
-		timeout     time.Duration
-		userAgent   string
-		noRobots    bool
-		concurrency int
+		depth              int
+		timeout            time.Duration
+		userAgent          string
+		noRobots           bool
+		concurrency        int
+		headless           bool
+		headlessTimeout    time.Duration
+		waitForSelector    string
+		headlessPoolSize   int
+		headlessDisableImg bool
 	)
 
 	cmd := &cobra.Command{
@@ -53,7 +58,9 @@ Examples:
   wast crawl https://example.com --timeout 60s # Custom timeout
   wast crawl https://example.com --user-agent "MyBot/1.0" # Custom user agent
   wast crawl https://example.com --rate-limit 2 # 2 requests per second
-  wast crawl https://example.com --delay 500   # 500ms delay between requests`,
+  wast crawl https://example.com --delay 500   # 500ms delay between requests
+  wast crawl https://example.com --headless    # Enable headless browser for JS rendering
+  wast crawl https://example.com --headless --wait-for-selector "#content" # Wait for element`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
@@ -111,6 +118,17 @@ Examples:
 				opts = append(opts, crawler.WithRateLimitConfig(rateLimitConfig))
 			}
 
+			// Add headless browser configuration if enabled
+			if headless {
+				headlessConfig := crawler.DefaultHeadlessConfig()
+				headlessConfig.Enabled = true
+				headlessConfig.Timeout = headlessTimeout
+				headlessConfig.WaitForSelector = waitForSelector
+				headlessConfig.PoolSize = headlessPoolSize
+				headlessConfig.DisableImages = headlessDisableImg
+				opts = append(opts, crawler.WithHeadlessConfig(headlessConfig))
+			}
+
 			c := crawler.NewCrawler(opts...)
 
 			// Create context with timeout
@@ -140,6 +158,13 @@ Examples:
 	cmd.Flags().StringVar(&userAgent, "user-agent", "WAST/1.0 (Web Application Security Testing)", "User agent string for requests")
 	cmd.Flags().BoolVar(&noRobots, "no-robots", false, "Ignore robots.txt rules")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for crawling")
+
+	// Headless browser flags
+	cmd.Flags().BoolVar(&headless, "headless", false, "Enable headless browser for JavaScript-rendered content")
+	cmd.Flags().DurationVar(&headlessTimeout, "headless-timeout", 30*time.Second, "Timeout for headless browser page loads")
+	cmd.Flags().StringVar(&waitForSelector, "wait-for-selector", "", "CSS selector to wait for before extracting content (headless mode)")
+	cmd.Flags().IntVar(&headlessPoolSize, "headless-pool-size", 2, "Number of browser instances in headless pool")
+	cmd.Flags().BoolVar(&headlessDisableImg, "headless-disable-images", true, "Disable image loading in headless mode for performance")
 
 	return cmd
 }
