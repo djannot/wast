@@ -26,7 +26,7 @@ WAST is a modern web application security testing tool designed for both AI agen
 
 ### From Source
 
-Requires Go 1.21 or later.
+Requires Go 1.26 or later.
 
 ```bash
 # Clone the repository
@@ -310,7 +310,7 @@ wast/
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.26 or later
 - Make (optional, for using Makefile)
 
 ### Building

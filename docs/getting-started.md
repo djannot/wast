@@ -6,7 +6,7 @@ WAST (Web Application Security Testing) is a modern web application security tes
 
 ### Installation
 
-#### From Source (Requires Go 1.21+)
+#### From Source (Requires Go 1.26+)
 
 ```bash
 # Clone the repository
@@ -230,7 +230,7 @@ wast scan https://app.example.com/dashboard \
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.26 or later
 - Make (optional, for using Makefile)
 
 ### Building
