@@ -17,7 +17,7 @@ Latest `make test-dvwa` results against DVWA (security=low):
 | CMDi | 64 | 0 | ✅ POST detection fixed (unit tests verify, integration test limitations) |
 | Path Traversal | 18 | 0 | ✅ LFI detection fixed (unit tests confirm, integration test limitations) |
 | CSRF | 1 form | 1 | ✅ Working correctly - detects missing CSRF tokens |
-| SSTI | 60 | 3 FPs | ⚠️ Still produces some FPs on reflection (significant improvement from 29 FPs) |
+| SSTI | 60 | 0 FPs | ✅ No false positives - context-aware detection implemented |
 | Headers | — | 7 missing | Expected for DVWA |
 
 **Note**: Integration tests show "0 findings" for some scanners due to DVWA authentication/session complexities in automated testing. However, comprehensive unit tests in `pkg/scanner/*_test.go` verify that all fixes work correctly with DVWA-style payloads and responses.
