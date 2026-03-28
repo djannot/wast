@@ -788,6 +788,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.Headers,
 		intermediateResult.XSS,
 		intermediateResult.SQLi,
+		intermediateResult.NoSQLi,
 		intermediateResult.CSRF,
 		intermediateResult.SSRF,
 		intermediateResult.Redirect,

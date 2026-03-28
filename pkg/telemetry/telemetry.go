@@ -46,6 +46,8 @@ const (
 	SpanNameScanPathTraversal = "wast.scanner.pathtraversal"
 	// SpanNameScanSSTI is the span name for SSTI scanning
 	SpanNameScanSSTI = "wast.scanner.ssti"
+	// SpanNameScanNoSQLi is the span name for NoSQL injection scanning
+	SpanNameScanNoSQLi = "wast.scanner.nosqli"
 	// SpanNameHTTPRequest is the span name for individual HTTP requests
 	SpanNameHTTPRequest = "wast.http.request"
 	// SpanNameCrawl is the span name for crawling operations

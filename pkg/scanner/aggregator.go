@@ -25,6 +25,7 @@ type UnifiedScanResult struct {
 	PassiveOnly   bool                     `json:"passive_only" yaml:"passive_only"`
 	Headers       *HeaderScanResult        `json:"headers,omitempty" yaml:"headers,omitempty"`
 	SQLi          *SQLiScanResult          `json:"sqli,omitempty" yaml:"sqli,omitempty"`
+	NoSQLi        *NoSQLiScanResult        `json:"nosqli,omitempty" yaml:"nosqli,omitempty"`
 	XSS           *XSSScanResult           `json:"xss,omitempty" yaml:"xss,omitempty"`
 	CSRF          *CSRFScanResult          `json:"csrf,omitempty" yaml:"csrf,omitempty"`
 	SSRF          *SSRFScanResult          `json:"ssrf,omitempty" yaml:"ssrf,omitempty"`
@@ -95,13 +96,14 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, ssti *SSTIScanResult, xxe *XXEScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, nosqli *NoSQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, ssti *SSTIScanResult, xxe *XXEScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
 	result := &UnifiedScanResult{
 		Target:        target,
 		PassiveOnly:   passiveOnly,
 		Headers:       headers,
 		XSS:           xss,
 		SQLi:          sqli,
+		NoSQLi:        nosqli,
 		CSRF:          csrf,
 		SSRF:          ssrf,
 		Redirect:      redirect,
@@ -346,6 +348,14 @@ func (u *UnifiedScanResult) calculateRiskScore() {
 			confidenceCount++
 		}
 	}
+	if u.NoSQLi != nil {
+		for _, finding := range u.NoSQLi.Findings {
+			score := u.severityToScore(finding.Severity)
+			injectionScore += score
+			totalConfidence += u.parseConfidenceString(finding.Confidence)
+			confidenceCount++
+		}
+	}
 	breakdown["injection"] = min(injectionScore, 40) // Cap at 40 points
 
 	// Score CSRF vulnerabilities
@@ -530,6 +540,13 @@ func (u *UnifiedScanResult) generateSummary() {
 		}
 	}
 
+	if u.NoSQLi != nil {
+		for _, finding := range u.NoSQLi.Findings {
+			summary.TotalFindings++
+			severityCounts[finding.Severity]++
+		}
+	}
+
 	if u.WebSocket != nil {
 		for _, finding := range u.WebSocket.Findings {
 			summary.TotalFindings++
@@ -609,6 +626,18 @@ func (u *UnifiedScanResult) generatePriorityActions() []string {
 		}
 		if highSeverityXXE > 0 {
 			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity XXE vulnerabilities - disable external entity processing in XML parsers", highSeverityXXE))
+		}
+	}
+
+	if u.NoSQLi != nil && len(u.NoSQLi.Findings) > 0 {
+		highSeverityNoSQLi := 0
+		for _, finding := range u.NoSQLi.Findings {
+			if finding.Severity == SeverityHigh {
+				highSeverityNoSQLi++
+			}
+		}
+		if highSeverityNoSQLi > 0 {
+			actions = append(actions, fmt.Sprintf("CRITICAL: Fix %d high-severity NoSQL injection vulnerabilities - use parameterized queries and validate input against operator injection", highSeverityNoSQLi))
 		}
 	}
 
