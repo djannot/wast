@@ -45,13 +45,14 @@ func (c *DefaultHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 // EndpointTestResult represents the result of testing a single API endpoint.
 type EndpointTestResult struct {
-	Endpoint      EndpointInfo      `json:"endpoint" yaml:"endpoint"`
-	StatusCode    int               `json:"status_code" yaml:"status_code"`
-	ResponseTime  int64             `json:"response_time_ms" yaml:"response_time_ms"`
-	Headers       map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
-	Error         string            `json:"error,omitempty" yaml:"error,omitempty"`
-	Tested        bool              `json:"tested" yaml:"tested"`
-	RateLimitInfo *RateLimitInfo    `json:"rate_limit_info,omitempty" yaml:"rate_limit_info,omitempty"`
+	Endpoint       EndpointInfo            `json:"endpoint" yaml:"endpoint"`
+	StatusCode     int                     `json:"status_code" yaml:"status_code"`
+	ResponseTime   int64                   `json:"response_time_ms" yaml:"response_time_ms"`
+	Headers        map[string]string       `json:"headers,omitempty" yaml:"headers,omitempty"`
+	Error          string                  `json:"error,omitempty" yaml:"error,omitempty"`
+	Tested         bool                    `json:"tested" yaml:"tested"`
+	RateLimitInfo  *RateLimitInfo          `json:"rate_limit_info,omitempty" yaml:"rate_limit_info,omitempty"`
+	SecurityResult *SecurityTestResult     `json:"security_result,omitempty" yaml:"security_result,omitempty"`
 }
 
 // TestResult represents the result of testing all endpoints.
@@ -66,13 +67,15 @@ type TestResult struct {
 
 // TestSummary provides an overview of the test results.
 type TestSummary struct {
-	TotalEndpoints   int `json:"total_endpoints" yaml:"total_endpoints"`
-	TestedEndpoints  int `json:"tested_endpoints" yaml:"tested_endpoints"`
-	SuccessCount     int `json:"success_count" yaml:"success_count"`
-	ClientErrorCount int `json:"client_error_count" yaml:"client_error_count"`
-	ServerErrorCount int `json:"server_error_count" yaml:"server_error_count"`
-	ErrorCount       int `json:"error_count" yaml:"error_count"`
-	RateLimitedCount int `json:"rate_limited_count" yaml:"rate_limited_count"`
+	TotalEndpoints         int `json:"total_endpoints" yaml:"total_endpoints"`
+	TestedEndpoints        int `json:"tested_endpoints" yaml:"tested_endpoints"`
+	SuccessCount           int `json:"success_count" yaml:"success_count"`
+	ClientErrorCount       int `json:"client_error_count" yaml:"client_error_count"`
+	ServerErrorCount       int `json:"server_error_count" yaml:"server_error_count"`
+	ErrorCount             int `json:"error_count" yaml:"error_count"`
+	RateLimitedCount       int `json:"rate_limited_count" yaml:"rate_limited_count"`
+	VulnerabilitiesFound   int `json:"vulnerabilities_found,omitempty" yaml:"vulnerabilities_found,omitempty"`
+	SecurityTestsPerformed int `json:"security_tests_performed,omitempty" yaml:"security_tests_performed,omitempty"`
 }
 
 // String returns a human-readable representation of the test result.
@@ -143,6 +146,8 @@ type Tester struct {
 	dryRun            bool
 	respectRateLimits bool
 	rateLimiter       ratelimit.Limiter
+	securityTesting   bool
+	securityTester    *SecurityTester
 }
 
 // TesterOption is a function that configures a Tester.
@@ -211,11 +216,19 @@ func WithRateLimitConfig(cfg ratelimit.Config) TesterOption {
 	}
 }
 
+// WithSecurityTesting enables comprehensive security testing.
+func WithSecurityTesting(enabled bool) TesterOption {
+	return func(t *Tester) {
+		t.securityTesting = enabled
+	}
+}
+
 // NewTester creates a new Tester with the given options.
 func NewTester(opts ...TesterOption) *Tester {
 	t := &Tester{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
+		userAgent:       "WAST/1.0 (Web Application Security Testing)",
+		timeout:         30 * time.Second,
+		securityTesting: true, // Enable security testing by default
 	}
 
 	for _, opt := range opts {
@@ -225,6 +238,22 @@ func NewTester(opts ...TesterOption) *Tester {
 	// Create default HTTP client if not set
 	if t.client == nil {
 		t.client = NewDefaultHTTPClient(t.timeout)
+	}
+
+	// Initialize security tester if security testing is enabled
+	if t.securityTesting {
+		securityOpts := []SecurityTesterOption{
+			WithSecurityHTTPClient(t.client),
+			WithSecurityUserAgent(t.userAgent),
+			WithSecurityTimeout(t.timeout),
+		}
+		if t.authConfig != nil {
+			securityOpts = append(securityOpts, WithSecurityAuth(t.authConfig))
+		}
+		if t.rateLimiter != nil {
+			securityOpts = append(securityOpts, WithSecurityRateLimiter(t.rateLimiter))
+		}
+		t.securityTester = NewSecurityTester(securityOpts...)
 	}
 
 	return t
@@ -338,6 +367,12 @@ func (t *Tester) TestEndpoint(ctx context.Context, baseURL string, endpoint Endp
 
 	// Detect rate limiting
 	result.RateLimitInfo = t.detectRateLimit(resp.StatusCode, resp.Header)
+
+	// Perform security testing if enabled
+	if t.securityTesting && t.securityTester != nil {
+		securityResult := t.securityTester.TestEndpointSecurity(ctx, baseURL, endpoint)
+		result.SecurityResult = securityResult
+	}
 
 	return result
 }
@@ -495,6 +530,12 @@ func (t *Tester) updateSummary(result *TestResult) {
 			}
 		} else if ep.StatusCode >= 500 {
 			result.Summary.ServerErrorCount++
+		}
+
+		// Count security test results
+		if ep.SecurityResult != nil {
+			result.Summary.SecurityTestsPerformed++
+			result.Summary.VulnerabilitiesFound += len(ep.SecurityResult.Vulnerabilities)
 		}
 	}
 }

@@ -106,7 +106,10 @@ func TestTester_TestAll_Success(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -169,6 +172,7 @@ func TestTester_TestAll_DryRun(t *testing.T) {
 	tester := NewTester(
 		WithHTTPClient(mockClient),
 		WithDryRun(true),
+		WithSecurityTesting(false),
 	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
@@ -227,6 +231,7 @@ func TestTester_TestAll_BaseURLOverride(t *testing.T) {
 	tester := NewTester(
 		WithHTTPClient(mockClient),
 		WithBaseURL("https://staging.example.com"),
+		WithSecurityTesting(false),
 	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
@@ -259,7 +264,10 @@ func TestTester_TestAll_NoBaseURL(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -296,7 +304,10 @@ func TestTester_TestAll_MixedStatusCodes(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -327,7 +338,10 @@ func TestTester_TestAll_RequestError(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -373,6 +387,7 @@ func TestTester_TestEndpoint_WithAuth(t *testing.T) {
 		WithHTTPClient(mockClient),
 		WithAuth(authConfig),
 		WithBaseURL("https://api.example.com"),
+		WithSecurityTesting(false),
 	)
 
 	endpoint := EndpointInfo{Path: "/protected", Method: "GET"}
@@ -407,7 +422,7 @@ func TestTester_TestEndpoint_ExtractsSecurityHeaders(t *testing.T) {
 	}
 	mockClient.AddResponse("https://api.example.com/test", 200, `{}`, headers)
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(WithHTTPClient(mockClient), WithSecurityTesting(false))
 	endpoint := EndpointInfo{Path: "/test", Method: "GET"}
 	ctx := context.Background()
 	result := tester.TestEndpoint(ctx, "https://api.example.com", endpoint)
@@ -437,7 +452,7 @@ func TestTester_TestEndpoint_ResponseTime(t *testing.T) {
 	mockClient := NewMockHTTPClient()
 	mockClient.AddResponse("https://api.example.com/test", 200, `{}`, nil)
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(WithHTTPClient(mockClient), WithSecurityTesting(false))
 	endpoint := EndpointInfo{Path: "/test", Method: "GET"}
 	ctx := context.Background()
 	result := tester.TestEndpoint(ctx, "https://api.example.com", endpoint)
@@ -450,7 +465,7 @@ func TestTester_TestEndpoint_ResponseTime(t *testing.T) {
 
 func TestTester_WithOptions(t *testing.T) {
 	t.Run("default options", func(t *testing.T) {
-		tester := NewTester()
+		tester := NewTester(WithSecurityTesting(false))
 		if tester.userAgent == "" {
 			t.Error("Expected default user agent to be set")
 		}
@@ -466,14 +481,14 @@ func TestTester_WithOptions(t *testing.T) {
 	})
 
 	t.Run("custom user agent", func(t *testing.T) {
-		tester := NewTester(WithUserAgent("CustomTester/1.0"))
+		tester := NewTester(WithUserAgent("CustomTester/1.0"), WithSecurityTesting(false))
 		if tester.userAgent != "CustomTester/1.0" {
 			t.Errorf("Expected custom user agent, got %s", tester.userAgent)
 		}
 	})
 
 	t.Run("custom timeout", func(t *testing.T) {
-		tester := NewTester(WithTimeout(60 * time.Second))
+		tester := NewTester(WithTimeout(60 * time.Second), WithSecurityTesting(false))
 		if tester.timeout != 60*time.Second {
 			t.Errorf("Expected timeout of 60s, got %v", tester.timeout)
 		}
@@ -481,21 +496,21 @@ func TestTester_WithOptions(t *testing.T) {
 
 	t.Run("custom http client", func(t *testing.T) {
 		mock := NewMockHTTPClient()
-		tester := NewTester(WithHTTPClient(mock))
+		tester := NewTester(WithHTTPClient(mock), WithSecurityTesting(false))
 		if tester.client != mock {
 			t.Error("Expected custom HTTP client to be set")
 		}
 	})
 
 	t.Run("base URL override", func(t *testing.T) {
-		tester := NewTester(WithBaseURL("https://staging.example.com"))
+		tester := NewTester(WithBaseURL("https://staging.example.com"), WithSecurityTesting(false))
 		if tester.baseURL != "https://staging.example.com" {
 			t.Errorf("Expected base URL to be set, got %s", tester.baseURL)
 		}
 	})
 
 	t.Run("dry run", func(t *testing.T) {
-		tester := NewTester(WithDryRun(true))
+		tester := NewTester(WithDryRun(true), WithSecurityTesting(false))
 		if !tester.dryRun {
 			t.Error("Expected dry run to be true")
 		}
@@ -503,7 +518,7 @@ func TestTester_WithOptions(t *testing.T) {
 }
 
 func TestTester_buildURL(t *testing.T) {
-	tester := NewTester()
+	tester := NewTester(WithSecurityTesting(false))
 
 	tests := []struct {
 		baseURL  string
@@ -527,7 +542,7 @@ func TestTester_buildURL(t *testing.T) {
 
 func TestTester_resolveBaseURL(t *testing.T) {
 	t.Run("uses override when provided", func(t *testing.T) {
-		tester := NewTester(WithBaseURL("https://staging.example.com"))
+		tester := NewTester(WithBaseURL("https://staging.example.com"), WithSecurityTesting(false))
 		spec := &APISpec{
 			Servers: []ServerInfo{{URL: "https://api.example.com"}},
 		}
@@ -538,7 +553,7 @@ func TestTester_resolveBaseURL(t *testing.T) {
 	})
 
 	t.Run("uses spec server when no override", func(t *testing.T) {
-		tester := NewTester()
+		tester := NewTester(WithSecurityTesting(false))
 		spec := &APISpec{
 			Servers: []ServerInfo{{URL: "https://api.example.com/"}},
 		}
@@ -549,7 +564,7 @@ func TestTester_resolveBaseURL(t *testing.T) {
 	})
 
 	t.Run("returns empty when no URL available", func(t *testing.T) {
-		tester := NewTester()
+		tester := NewTester(WithSecurityTesting(false))
 		spec := &APISpec{
 			Servers: []ServerInfo{},
 		}
@@ -638,7 +653,7 @@ func TestTester_TestAll_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(WithHTTPClient(mockClient), WithSecurityTesting(false))
 
 	// Create a context that we'll cancel
 	ctx, cancel := context.WithCancel(context.Background())
@@ -704,7 +719,10 @@ func TestTester_RateLimitDetection_429Response(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -773,7 +791,10 @@ func TestTester_RateLimitDetection_NoRateLimit(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -811,7 +832,10 @@ func TestTester_RateLimitDetection_WithRateLimitHeadersButNot429(t *testing.T) {
 		},
 	}
 
-	tester := NewTester(WithHTTPClient(mockClient))
+	tester := NewTester(
+		WithHTTPClient(mockClient),
+		WithSecurityTesting(false),
+	)
 	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
@@ -851,7 +875,7 @@ func TestTester_WithRespectRateLimits(t *testing.T) {
 }
 
 func TestTester_parseRetryAfter(t *testing.T) {
-	tester := NewTester()
+	tester := NewTester(WithSecurityTesting(false))
 
 	tests := []struct {
 		name     string
@@ -875,7 +899,7 @@ func TestTester_parseRetryAfter(t *testing.T) {
 }
 
 func TestTester_extractRateLimitHeaders(t *testing.T) {
-	tester := NewTester()
+	tester := NewTester(WithSecurityTesting(false))
 
 	// Use Header.Set() to ensure proper canonicalization
 	headers := make(http.Header)
@@ -918,7 +942,7 @@ func TestTester_extractRateLimitHeaders(t *testing.T) {
 }
 
 func TestTester_detectRateLimit(t *testing.T) {
-	tester := NewTester()
+	tester := NewTester(WithSecurityTesting(false))
 
 	t.Run("429 with headers", func(t *testing.T) {
 		headers := make(http.Header)
