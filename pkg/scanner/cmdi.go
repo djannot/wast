@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -27,6 +28,7 @@ type CMDiScanner struct {
 	rateLimiter    ratelimit.Limiter
 	tracer         trace.Tracer
 	timeBasedDelay time.Duration // Default 5 seconds
+	verbose        bool          // Enable verbose debug logging
 }
 
 // CMDiScanResult represents the result of a command injection vulnerability scan.
@@ -461,6 +463,48 @@ func WithCMDiTimeBasedDelay(d time.Duration) CMDiOption {
 	}
 }
 
+// WithCMDiVerbose enables verbose debug logging for the command injection scanner.
+func WithCMDiVerbose() CMDiOption {
+	return func(s *CMDiScanner) {
+		s.verbose = true
+	}
+}
+
+// submitButtonExactPatterns lists parameter names that are submit-button indicators when
+// matched exactly (case-insensitive). These patterns are also common data-field prefixes
+// (e.g. "search_query", "action_type"), so prefix/suffix expansion is intentionally avoided
+// to prevent false negatives in a security scanner.
+var submitButtonExactPatterns = map[string]bool{
+	"submit": true,
+	"go":     true,
+	"search": true,
+	"action": true,
+	"send":   true,
+}
+
+// submitButtonPrefixPatterns lists patterns that are safe for prefix/suffix expansion because
+// they are unambiguously submit-button names (e.g. "btn_primary", "my_button").
+var submitButtonPrefixPatterns = []string{"btn", "button"}
+
+// isSubmitButton reports whether the given parameter name matches a common submit button pattern.
+// This helps the scanner skip non-data form fields to avoid wasted effort and false positives.
+// Exact matching is used for patterns like "search" and "action" that also appear as data-field
+// prefixes, to avoid false negatives on legitimate injection targets such as "search_query".
+func isSubmitButton(paramName string) bool {
+	lower := strings.ToLower(paramName)
+	// Exact-match only for ambiguous patterns (also common data-field names)
+	if submitButtonExactPatterns[lower] {
+		return true
+	}
+	// Prefix/suffix expansion only for unambiguously submit-button names
+	for _, pattern := range submitButtonPrefixPatterns {
+		if lower == pattern || strings.HasPrefix(lower, pattern+"_") || strings.HasSuffix(lower, "_"+pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // NewCMDiScanner creates a new CMDiScanner with the given options.
 func NewCMDiScanner(opts ...CMDiOption) *CMDiScanner {
 	s := &CMDiScanner{
@@ -624,6 +668,13 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	baselineResponses := make(map[string]*baselineResponse)
 	baselineTiming := make(map[string]time.Duration)
 	for paramName := range params {
+		// Skip submit button parameters — they carry no injectable data
+		if isSubmitButton(paramName) {
+			if s.verbose {
+				log.Printf("[CMDi] ScanPOST: skipping submit-button parameter %q", paramName)
+			}
+			continue
+		}
 		baseline, duration := s.getBaselineWithTimingPOST(ctx, parsedURL, paramName, params)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
@@ -633,6 +684,10 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 
 	// Test each parameter with each payload
 	for paramName := range params {
+		// Skip submit button parameters — they carry no injectable data
+		if isSubmitButton(paramName) {
+			continue
+		}
 		for _, payload := range cmdiPayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
@@ -741,6 +796,13 @@ func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 	// Create form data with ALL parameters
 	formData := url.Values{}
 	for k, v := range allParameters {
+		if k == paramName && v == "" {
+			// Use a benign placeholder when the target parameter has no default value.
+			// An empty string may cause the server to produce no output, making differential
+			// analysis unreliable (baseline body differs from injected body for structural
+			// reasons unrelated to the injection).
+			v = "test"
+		}
 		formData.Set(k, v)
 	}
 
@@ -1153,10 +1215,20 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 
 	// Perform differential analysis: check if command output patterns appear in the
 	// injected response but NOT in the baseline response (to avoid false positives)
+	if s.verbose {
+		log.Printf("[CMDi] testOutputBasedPOST: param=%q payload=%q injected_body_len=%d baseline_body_len=%d",
+			paramName, payload.Payload, len(bodyStr), len(baseline.ContainsKey))
+	}
 	for _, pattern := range cmdOutputPatterns {
-		if pattern.MatchString(bodyStr) {
+		inInjected := pattern.MatchString(bodyStr)
+		inBaseline := pattern.MatchString(baseline.ContainsKey)
+		if s.verbose {
+			log.Printf("[CMDi] testOutputBasedPOST: pattern=%q inInjected=%v inBaseline=%v",
+				pattern.String(), inInjected, inBaseline)
+		}
+		if inInjected {
 			// Pattern found in injected response - now check if it was also in baseline
-			if !pattern.MatchString(baseline.ContainsKey) {
+			if !inBaseline {
 				// Pattern is NEW - this indicates command output from our injection!
 				match := pattern.FindString(bodyStr)
 				finding := &CMDiFinding{

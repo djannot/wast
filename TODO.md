@@ -38,7 +38,7 @@ This should match since DVWA reflects the decoded payload. However, `analyzeCont
 
 ---
 
-## P0: CMDi scanner doesn't detect command injection on live DVWA
+## ~~P0: CMDi scanner doesn't detect command injection on live DVWA~~ FIXED in #254
 
 **Confirmed:** `curl -X POST http://dvwa/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit"` returns `uid=33(www-data)`. Without `Submit=Submit`, DVWA returns nothing — the form is not processed.
 
