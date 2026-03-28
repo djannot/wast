@@ -74,6 +74,13 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## ~~P1: CI integration test assertions are soft (warnings, not failures)~~ ✅ DONE
+## P1: CI integration test assertions are soft (warnings, not failures) — ✅ PARTIALLY DONE
 
-All `t.Logf("Warning: ...")` scanner detection checks in `test/integration/dvwa_test.go` have been converted to `t.Errorf(...)` hard failures. The integration test now gates PRs for XSS, CMDi, SQLi, Path Traversal, and CSRF regressions on DVWA (security=low).
+**Done (PR #259):** `t.Logf("Warning: ...")` assertions converted to `t.Errorf(...)` hard failures for:
+- SQLi: `TestDVWA_SQLi` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
+- CSRF: `TestDVWA_CSRF` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
+- Discovery scan combined check: `TestDVWA_DiscoveryScan` — **HARD FAILURE** (SQLi/CSRF always present)
+
+**Pending (blocked by P0 bugs above):** XSS, CMDi, and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for all three.
+
+**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for XSS, CMDi, and Path Traversal in `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
