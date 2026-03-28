@@ -428,6 +428,18 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		}
 
 	skipVerification:
+		// Set findings counts from aggregated results (before verification filtering).
+		// This ensures stats reflect actual findings regardless of VerifyFindings setting.
+		stats.TotalXSSFindings = len(allXSSFindings)
+		stats.TotalSQLiFindings = len(allSQLiFindings)
+		stats.TotalNoSQLiFindings = len(allNoSQLiFindings)
+		stats.TotalCSRFFindings = len(allCSRFFindings)
+		stats.TotalSSRFFindings = len(allSSRFFindings)
+		stats.TotalRedirectFindings = len(allRedirectFindings)
+		stats.TotalCMDiFindings = len(allCMDiFindings)
+		stats.TotalPathTraversalFindings = len(allPathTraversalFindings)
+		stats.TotalSSTIFindings = len(allSSTIFindings)
+
 		// Create result structures with accumulated test counts
 		xssResult := &XSSScanResult{
 			Target:   cfg.Target,
