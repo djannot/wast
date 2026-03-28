@@ -574,14 +574,14 @@ func TestDVWA_NoFalsePositives(t *testing.T) {
 
 	t.Logf("SSTI scan on index.php: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
-	// We should NOT find SSTI on the index page
+	// We should NOT find SSTI on the index page (clean page with no vulnerabilities)
 	if len(result.Findings) > 0 {
-		t.Logf("Warning: Found %d false positive SSTI findings on clean page:", len(result.Findings))
+		t.Errorf("Found %d false positive SSTI findings on clean page:", len(result.Findings))
 		for _, finding := range result.Findings {
-			t.Logf("  - Parameter '%s': %s", finding.Parameter, finding.Description)
+			t.Logf("  - Parameter '%s': %s (Payload: %s, Evidence: %s)",
+				finding.Parameter, finding.Description, finding.Payload, finding.Evidence)
 		}
-		t.Logf("This is a known limitation - SSTI false positive detection needs further tuning")
-		// Don't fail the test - false positives are being investigated
+		t.Fail()
 	}
 }
 

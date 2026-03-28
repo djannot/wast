@@ -637,14 +637,38 @@ func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, 
 		// Primary detection: expected result appears but payload literal does NOT
 		// This means the template was evaluated, not just reflected
 		if !strings.Contains(body, payload.Payload) {
+			// For short expected results (1-2 digits like "49", "14", "77"),
+			// require the result to appear in a suspicious context
+			// to avoid false positives from naturally occurring numbers
+			if len(payload.ExpectedResult) <= 2 {
+				// Check if the result appears in contexts that suggest template evaluation
+				if !s.hasEvaluationContext(body, payload.ExpectedResult) {
+					return false
+				}
+			}
 			return true
 		}
 
 		// Secondary detection: both payload and result present
-		// Only flag if the expected result count exceeds payload count (evaluation occurred)
+		// Only flag if the expected result count exceeds payload count
 		expectedCount := strings.Count(body, payload.ExpectedResult)
 		payloadCount := strings.Count(body, payload.Payload)
+
 		if expectedCount > payloadCount {
+			// For short expected results, require stricter evidence
+			// to avoid false positives from coincidental numbers
+			if len(payload.ExpectedResult) <= 2 {
+				// Need at least 2 more occurrences for short results
+				if expectedCount >= payloadCount+2 {
+					return true
+				}
+				// OR the result appears in an evaluation context
+				if s.hasEvaluationContext(body, payload.ExpectedResult) {
+					return true
+				}
+				return false
+			}
+			// For longer results, any excess count indicates evaluation
 			return true
 		}
 	}
@@ -652,6 +676,63 @@ func (s *SSTIScanner) detectTemplateInjection(body string, payload sstiPayload, 
 	// Use custom validator if provided
 	if payload.Validator != nil {
 		return payload.Validator(body)
+	}
+
+	return false
+}
+
+// hasEvaluationContext checks if a short expected result appears in a context
+// that suggests template evaluation rather than coincidental occurrence.
+// This helps avoid false positives when common numbers (49, 14, 77) appear naturally in HTML.
+func (s *SSTIScanner) hasEvaluationContext(body, expectedResult string) bool {
+	bodyLower := strings.ToLower(body)
+	expectedLower := strings.ToLower(expectedResult)
+
+	// Look for patterns that suggest the number is a computed result:
+	// - "result: 49", "output: 49", "= 49", ": 49", "is 49", "value 49"
+	// - Numbers in isolation like ">49<" (between tags with no other text)
+	// - Debug/eval contexts like "eval", "render", "template"
+
+	// Pattern 1: Result/output labels and value contexts
+	resultPatterns := []string{
+		"result: " + expectedLower,
+		"result:" + expectedLower,
+		"result " + expectedLower,
+		"output: " + expectedLower,
+		"output:" + expectedLower,
+		"output " + expectedLower,
+		"value: " + expectedLower,
+		"value:" + expectedLower,
+		"value " + expectedLower,
+		"is " + expectedLower,
+		"= " + expectedLower,
+		"=" + expectedLower + " ",
+		">" + expectedLower + "<",
+	}
+
+	for _, pattern := range resultPatterns {
+		if strings.Contains(bodyLower, pattern) {
+			return true
+		}
+	}
+
+	// Pattern 2: The number appears near template-related keywords
+	keywords := []string{"eval", "render", "template", "expression", "calculated", "computed"}
+	for _, keyword := range keywords {
+		if strings.Contains(bodyLower, keyword) {
+			// Check if the expected result is within reasonable proximity (500 chars) of the keyword
+			keywordIdx := strings.Index(bodyLower, keyword)
+			resultIdx := strings.Index(bodyLower, expectedLower)
+			if keywordIdx != -1 && resultIdx != -1 {
+				distance := resultIdx - keywordIdx
+				if distance < 0 {
+					distance = -distance
+				}
+				if distance < 500 {
+					return true
+				}
+			}
+		}
 	}
 
 	return false

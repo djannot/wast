@@ -1175,3 +1175,258 @@ func TestSSTIScanner_ScanPOST_Authentication(t *testing.T) {
 		t.Error("Expected Authorization header to be applied to POST requests")
 	}
 }
+
+// TestDetectTemplateInjection_NaturalNumbers tests that common numbers appearing
+// naturally in HTML don't trigger false positives
+func TestDetectTemplateInjection_NaturalNumbers(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name         string
+		body         string
+		payload      sstiPayload
+		baselineBody string
+		shouldDetect bool
+		description  string
+	}{
+		{
+			name: "Number 49 in navigation count - should NOT detect",
+			body: "<nav>Page 1 of 49</nav><p>You searched for: something</p>",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "<nav>Page 1 of 48</nav><p>You searched for: something</p>",
+			shouldDetect: false,
+			description:  "Common number in navigation - not evaluation context",
+		},
+		{
+			name: "Number 14 in product count - should NOT detect",
+			body: "<div>14 items in stock</div>",
+			payload: sstiPayload{
+				Payload:        "${7+7}",
+				ExpectedResult: "14",
+			},
+			baselineBody: "<div>12 items in stock</div>",
+			shouldDetect: false,
+			description:  "Common number in product count - not evaluation context",
+		},
+		{
+			name: "Number 77 in price - should NOT detect",
+			body: "<span>$77.00</span>",
+			payload: sstiPayload{
+				Payload:        "{{7}}{{7}}",
+				ExpectedResult: "77",
+			},
+			baselineBody: "<span>$65.00</span>",
+			shouldDetect: false,
+			description:  "Common number in price - not evaluation context",
+		},
+		{
+			name: "Number 49 with 'Result:' label - SHOULD detect",
+			body: "<div>Result: 49</div>",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "<div>Result: nothing</div>",
+			shouldDetect: true,
+			description:  "Number with result label - evaluation context",
+		},
+		{
+			name: "Number 49 with 'Output:' label - SHOULD detect",
+			body: "<p>Output: 49</p>",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "<p>Output: nothing</p>",
+			shouldDetect: true,
+			description:  "Number with output label - evaluation context",
+		},
+		{
+			name: "Number 49 in isolation between tags - SHOULD detect",
+			body: "<div>User input:<span>49</span></div>",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "<div>User input:<span></span></div>",
+			shouldDetect: true,
+			description:  "Number isolated between tags - likely evaluated",
+		},
+		{
+			name: "Number 49 near template keyword - SHOULD detect",
+			body: "<div>Template rendered with value 49</div>",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "<div>Template rendered with value nothing</div>",
+			shouldDetect: true,
+			description:  "Number near template keyword - evaluation context",
+		},
+		{
+			name: "Long result string - SHOULD detect",
+			body: "<div>7777777</div>",
+			payload: sstiPayload{
+				Payload:        "{{7*'7'}}",
+				ExpectedResult: "7777777",
+			},
+			baselineBody: "<div>nothing</div>",
+			shouldDetect: true,
+			description:  "Long unique string unlikely to appear naturally",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
+			if result != tt.shouldDetect {
+				t.Errorf("%s: Expected detection=%v, got=%v\nBody: %s\nPayload: %s\nExpected: %s",
+					tt.description, tt.shouldDetect, result, tt.body, tt.payload.Payload, tt.payload.ExpectedResult)
+			}
+		})
+	}
+}
+
+// TestDetectTemplateInjection_MultipleOccurrences tests the logic for when
+// both payload and result appear multiple times
+func TestDetectTemplateInjection_MultipleOccurrences(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name         string
+		body         string
+		payload      sstiPayload
+		baselineBody string
+		shouldDetect bool
+		description  string
+	}{
+		{
+			name: "One payload, one result - should NOT detect",
+			body: "Input: {{7*7}} equals 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: test equals nothing",
+			shouldDetect: false,
+			description:  "Equal occurrences - likely just reflection",
+		},
+		{
+			name: "One payload, two results - should NOT detect",
+			body: "Input: {{7*7}} equals 49 or 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: test equals nothing or nothing",
+			shouldDetect: false,
+			description:  "Only one extra occurrence - could be coincidental",
+		},
+		{
+			name: "One payload, three results - SHOULD detect",
+			body: "Input: {{7*7}} computed as 49 and 49 and 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Input: test computed as nothing and nothing and nothing",
+			shouldDetect: true,
+			description:  "Multiple extra occurrences - evaluation occurred",
+		},
+		{
+			name: "Two payloads, four results - SHOULD detect",
+			body: "Debug: {{7*7}} {{7*7}} = 49 49 49 49",
+			payload: sstiPayload{
+				Payload:        "{{7*7}}",
+				ExpectedResult: "49",
+			},
+			baselineBody: "Debug: test test = nothing nothing nothing nothing",
+			shouldDetect: true,
+			description:  "Result count exceeds payload by 2+",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.detectTemplateInjection(tt.body, tt.payload, tt.baselineBody)
+			if result != tt.shouldDetect {
+				t.Errorf("%s: Expected detection=%v, got=%v\nBody: %s",
+					tt.description, tt.shouldDetect, result, tt.body)
+			}
+		})
+	}
+}
+
+// TestHasEvaluationContext tests the context detection helper function
+func TestHasEvaluationContext(t *testing.T) {
+	scanner := NewSSTIScanner()
+
+	tests := []struct {
+		name     string
+		body     string
+		expected bool
+	}{
+		{
+			name:     "Result label - has context",
+			body:     "The result: 49 was computed",
+			expected: true,
+		},
+		{
+			name:     "Output label - has context",
+			body:     "Output: 49",
+			expected: true,
+		},
+		{
+			name:     "Equals sign - has context",
+			body:     "Expression = 49 evaluated",
+			expected: true,
+		},
+		{
+			name:     "Isolated in tags - has context",
+			body:     "<span>49</span>",
+			expected: true,
+		},
+		{
+			name:     "Near template keyword - has context",
+			body:     "Template evaluated to 49",
+			expected: true,
+		},
+		{
+			name:     "Near render keyword - has context",
+			body:     "Render output: 49",
+			expected: true,
+		},
+		{
+			name:     "In navigation - no context",
+			body:     "Page 1 of 49",
+			expected: false,
+		},
+		{
+			name:     "In product count - no context",
+			body:     "49 products available",
+			expected: false,
+		},
+		{
+			name:     "In price - no context",
+			body:     "$49.99",
+			expected: false,
+		},
+		{
+			name:     "Random text - no context",
+			body:     "Some random text with 49 somewhere",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.hasEvaluationContext(tt.body, "49")
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v for body: %s", tt.expected, result, tt.body)
+			}
+		})
+	}
+}
