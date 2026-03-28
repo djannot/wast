@@ -10,7 +10,7 @@ Tested against DVWA (security=low) with `wast_scan active=true, discover=true, d
 | CSRF | — | 9 | 9 missing tokens | **PASS** — all real |
 | SSTI | 370 | 0 | 0 (PHP app, no template engines) | **PASS** — FPs eliminated |
 | SSRF | 629 | 0 | 0 (no SSRF vuln in DVWA) | **PASS** — no FPs |
-| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FAIL** — not detected |
+| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FIXED** — issue #252 resolved; analyzeContext now uses full body for comment detection |
 | CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FAIL** — not detected |
 | Path Traversal | 666 | 0 | LFI on `/fi/?page=` | **FAIL** — not detected |
 | Headers | — | 7 | 7 missing | **PASS** — expected |
@@ -19,7 +19,7 @@ Unit tests for XSS, CMDi, and Path Traversal pass with simulated DVWA responses.
 
 ---
 
-## P0: XSS scanner doesn't detect reflected XSS on live DVWA
+## ~~P0: XSS scanner doesn't detect reflected XSS on live DVWA~~ FIXED in #252
 
 **Confirmed:** `curl "http://dvwa/vulnerabilities/xss_r/?name=%3Cscript%3Ealert(1)%3C/script%3E"` returns the payload `<script>alert(1)</script>` verbatim in the HTML (1 match). The vulnerability is trivially exploitable.
 

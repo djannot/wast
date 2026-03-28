@@ -3087,3 +3087,90 @@ What's your name?
 	t.Logf("  Confidence: %s", scriptFinding.Confidence)
 	t.Logf("  Evidence: %s", scriptFinding.Evidence)
 }
+
+// TestXSSScanner_AnalyzeContext_DVWAWithHTMLComments is a regression test for issue #252.
+// It simulates the actual DVWA page structure: HTML comments exist in the page header/
+// navigation (well before the reflected payload), and the payload is reflected verbatim
+// outside any comment in the body.
+//
+// Before the fix, the 200-char context window could pick up a lone "<!--" whose matching
+// "-->" fell outside the window, causing the comment-detection heuristic to classify the
+// payload as being inside an unclosed comment and return isExecutable=false.
+func TestXSSScanner_AnalyzeContext_DVWAWithHTMLComments(t *testing.T) {
+	// Build a DVWA-like page with HTML comments in the header, far from the payload.
+	// The comments are fully closed (<!-- ... -->) but their closing "-->" sits more than
+	// 200 characters before the reflected payload, so they fall outside the old context
+	// window and appeared as unclosed to the previous implementation.
+	headerWithComments := `<!DOCTYPE html>
+<html>
+<head>
+<!-- DVWA v1.10 navigation comment -->
+<!-- Security level: low -->
+<title>Vulnerability: Reflected XSS :: DVWA</title>
+</head>
+<body>
+<div id="header">
+<!-- begin nav -->
+<ul>
+<li><a href="/">Home</a></li>
+<li><a href="/vulnerabilities/xss_r/">XSS (Reflected)</a></li>
+</ul>
+<!-- end nav -->
+</div>
+<div id="main_body">
+`
+	// Pad the header so the payload is placed well beyond 200 chars from any comment.
+	padding := strings.Repeat("X", 300)
+	payloadInBody := `<pre>Hello <script>alert(1)</script></pre>`
+	footer := `
+</div>
+</body>
+</html>`
+
+	dvwaBody := headerWithComments + padding + payloadInBody + footer
+
+	scanner := NewXSSScanner()
+	payload := "<script>alert(1)</script>"
+
+	contextType, isExecutable, confidence := scanner.analyzeContext(dvwaBody, payload)
+
+	t.Logf("Context type: %v", contextType)
+	t.Logf("Is executable: %v", isExecutable)
+	t.Logf("Confidence: %s", confidence)
+
+	// Regression assertion: a verbatim <script> outside any comment must be executable.
+	if !isExecutable {
+		// Provide diagnostic information to make failures easy to debug.
+		idx := strings.Index(dvwaBody, payload)
+		t.Logf("Payload index in body: %d", idx)
+		if idx >= 200 {
+			t.Logf("Context window (idx-200 to idx): %q", dvwaBody[idx-200:idx])
+		}
+		t.Errorf("issue #252 regression: analyzeContext returned isExecutable=false for verbatim <script> "+
+			"payload in DVWA-like response with HTML comments in header. "+
+			"context=%v confidence=%s", contextType, confidence)
+	}
+
+	if confidence != "high" {
+		t.Errorf("Expected confidence 'high', got %s", confidence)
+	}
+
+	if contextType != ContextHTMLBody {
+		t.Errorf("Expected ContextHTMLBody, got %v", contextType)
+	}
+}
+
+// TestXSSScanner_AnalyzeContext_PayloadInsideHTMLComment verifies that a payload
+// genuinely inside an unclosed HTML comment is NOT reported as executable.
+func TestXSSScanner_AnalyzeContext_PayloadInsideHTMLComment(t *testing.T) {
+	// The comment is opened immediately before the payload and never closed.
+	body := `<html><body><p>Normal content</p><!-- begin debug section <script>alert(1)</script> still inside comment`
+	payload := "<script>alert(1)</script>"
+
+	scanner := NewXSSScanner()
+	_, isExecutable, _ := scanner.analyzeContext(body, payload)
+
+	if isExecutable {
+		t.Error("Payload inside unclosed HTML comment should NOT be reported as executable")
+	}
+}

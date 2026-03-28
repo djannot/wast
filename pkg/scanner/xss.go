@@ -408,26 +408,17 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	beforePayload := body[start:idx]
 
 	// Early detection: If payload contains executable tags and appears verbatim, it's likely executable
-	// This handles DVWA-style trivial reflected XSS
-	// Note: We already verified the payload is present verbatim (idx != -1), so no need to check again
-	// However, we need to check it's not in a non-executable context (HTML comment, textarea, etc.)
-
-	// Check if payload is inside HTML comment - not executable
-	commentStart := strings.Index(contextSnippet, "<!--")
-	payloadIdx := strings.Index(contextSnippet, payload)
-	if commentStart >= 0 && payloadIdx >= 0 && commentStart < payloadIdx {
-		// Check if comment is closed
-		commentEnd := strings.Index(contextSnippet, "-->")
-		if commentEnd < 0 || commentEnd < commentStart {
-			// Comment is not closed, or closed before it starts - payload is in unclosed comment
-			goto detailedAnalysis
-		}
-		// Comment is closed - check if it closes after the payload
-		if commentEnd > payloadIdx {
-			// Comment closes after payload - payload is inside comment
-			goto detailedAnalysis
-		}
-	}
+	// This handles DVWA-style trivial reflected XSS.
+	//
+	// IMPORTANT: The <script> check runs FIRST, before the HTML comment heuristic.
+	// A verbatim <script>...</script> in the response body is almost always executable.
+	// The comment check below guards against edge cases where the script is inside a comment,
+	// but we must not let a false-positive comment detection suppress a real finding.
+	//
+	// HTML comment check uses body[:idx] (full content before the payload) so that comments
+	// opened and closed outside the 200-char context window are correctly accounted for.
+	// Using only the context window could see a lone "<!--" from a comment that was already
+	// closed hundreds of characters earlier, causing a false "inside comment" classification.
 
 	// Check if payload is inside textarea - not directly executable
 	if strings.Contains(beforePayload, "<textarea") && !strings.Contains(beforePayload, "</textarea>") {
@@ -436,6 +427,18 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	}
 
 	if strings.Contains(payload, "<script") {
+		// Only suppress if the payload is demonstrably inside an unclosed HTML comment.
+		// Use the full body up to the payload position so we don't miss a "-->" that falls
+		// outside the 200-char window.
+		{
+			fullBefore := body[:idx]
+			lcStart := strings.LastIndex(fullBefore, "<!--")
+			lcEnd := strings.LastIndex(fullBefore, "-->")
+			if lcStart >= 0 && lcEnd < lcStart {
+				// There is an unclosed comment before the payload — fall through to detailed analysis.
+				goto detailedAnalysis
+			}
+		}
 		return ContextHTMLBody, true, "high"
 	}
 	// Note: Event handler detection is also done in detailed analysis below.
@@ -450,6 +453,18 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	// iframe with javascript: protocol is also highly suspicious
 	if strings.Contains(payload, "<iframe") && strings.Contains(payload, "javascript:") {
 		return ContextHTMLBody, true, "high"
+	}
+
+	// Check if payload is inside HTML comment - not executable.
+	// Use the full body up to the payload (body[:idx]) so that a comment opened and closed
+	// far before the 200-char window is not mistakenly treated as unclosed.
+	{
+		fullBefore := body[:idx]
+		lcStart := strings.LastIndex(fullBefore, "<!--")
+		lcEnd := strings.LastIndex(fullBefore, "-->")
+		if lcStart >= 0 && lcEnd < lcStart {
+			goto detailedAnalysis
+		}
 	}
 
 detailedAnalysis:
@@ -518,15 +533,15 @@ detailedAnalysis:
 				return ContextHTMLBody, false, "low"
 			}
 
-			// Check if payload is inside an HTML comment
-			// Look for comment start before the payload and comment end after
-			lastCommentStart := strings.LastIndex(beforePayload, "<!--")
-			lastCommentEnd := strings.LastIndex(beforePayload, "-->")
-			if lastCommentStart >= 0 {
-				// Comment start found - check if it's closed before payload
-				if lastCommentEnd < lastCommentStart {
+			// Check if payload is inside an HTML comment.
+			// Use the full body up to the payload position (body[:idx]) so that comments
+			// opened and closed outside the 200-char context window are correctly handled.
+			{
+				fullBefore := body[:idx]
+				lastCommentStart := strings.LastIndex(fullBefore, "<!--")
+				lastCommentEnd := strings.LastIndex(fullBefore, "-->")
+				if lastCommentStart >= 0 && lastCommentEnd < lastCommentStart {
 					// Comment is not closed before payload - payload is inside comment
-					// Skip detection regardless of whether comment closes after
 					goto defaultAnalysis
 				}
 			}
