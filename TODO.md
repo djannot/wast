@@ -74,24 +74,6 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## P1: CI integration test assertions are soft (warnings, not failures)
+## ~~P1: CI integration test assertions are soft (warnings, not failures)~~ ✅ DONE
 
-`TestDVWA_FullDiscoveryScanAssertions` in `test/integration/dvwa_test.go` exists and runs in CI, but **does not gate PRs**. All scanner checks for XSS, CMDi, SQLi, and Path Traversal use `t.Logf("Warning: ...")` instead of `t.Errorf(...)`. The test passes even when scanners detect nothing.
-
-The only hard assertions today are:
-- SSTI must have 0 findings (no false positives) — `t.Errorf` at line 726
-- Headers must have >= 1 missing — `t.Errorf` at line 771
-- No submit-button false positives — `t.Errorf` at line 785
-
-**What needs to change:** Once the P0 detection bugs above are fixed, convert the warnings to hard failures:
-
-```go
-// Change from:
-t.Logf("Warning: XSS: expected >= 1 finding on /xss_r/...")
-// To:
-t.Errorf("XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d", xssOnExpectedPaths)
-```
-
-Do this for: XSS, CMDi, Path Traversal, SQLi, and CSRF. The test should fail the build if any scanner regresses on DVWA.
-
-**Files:** `test/integration/dvwa_test.go` — `TestDVWA_FullDiscoveryScanAssertions()` lines 658-757
+All `t.Logf("Warning: ...")` scanner detection checks in `test/integration/dvwa_test.go` have been converted to `t.Errorf(...)` hard failures. The integration test now gates PRs for XSS, CMDi, SQLi, Path Traversal, and CSRF regressions on DVWA (security=low).
