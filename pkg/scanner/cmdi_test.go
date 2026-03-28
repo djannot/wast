@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -1125,5 +1126,141 @@ uid=33(www-data) gid=33(www-data) groups=33(www-data)`)),
 	return &http.Response{
 		StatusCode: 200,
 		Body:       io.NopCloser(strings.NewReader("OK")),
+	}, nil
+}
+
+// TestIsSubmitButton verifies that the isSubmitButton helper correctly identifies
+// common submit button parameter names.
+func TestIsSubmitButton(t *testing.T) {
+	tests := []struct {
+		name     string
+		param    string
+		expected bool
+	}{
+		{"exact Submit", "Submit", true},
+		{"lowercase submit", "submit", true},
+		{"btn", "btn", true},
+		{"btn_submit", "btn_submit", true},
+		{"button", "button", true},
+		{"go", "go", true},
+		{"search", "search", true},
+		{"action", "action", true},
+		{"send", "send", true},
+		{"ip param", "ip", false},
+		{"cmd param", "cmd", false},
+		{"username", "username", false},
+		{"email", "email", false},
+		{"data_submit prefix", "data_submit", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSubmitButton(tt.param)
+			if got != tt.expected {
+				t.Errorf("isSubmitButton(%q) = %v, want %v", tt.param, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestCMDiScanner_ScanPOST_SkipsSubmitParams verifies that ScanPOST does not inject into
+// submit-button parameters, only into actual data parameters.
+func TestCMDiScanner_ScanPOST_SkipsSubmitParams(t *testing.T) {
+	// Track which parameters payloads are tested against
+	testedParams := make(map[string]bool)
+
+	mockClient := &mockSubmitParamTrackingClient{testedParams: testedParams}
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+
+	params := map[string]string{
+		"ip":     "127.0.0.1",
+		"Submit": "Submit",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://example.com/exec", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Submit should NOT be tested
+	if testedParams["Submit"] {
+		t.Error("Expected Submit parameter to be skipped, but it was tested")
+	}
+
+	// ip SHOULD be tested
+	if !testedParams["ip"] {
+		t.Error("Expected ip parameter to be tested")
+	}
+}
+
+// mockSubmitParamTrackingClient records which parameters receive injected payloads.
+type mockSubmitParamTrackingClient struct {
+	testedParams map[string]bool
+}
+
+func (m *mockSubmitParamTrackingClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost {
+		body, _ := io.ReadAll(req.Body)
+		formData, _ := url.ParseQuery(string(body))
+		// A parameter is "tested" when its value differs from the original values
+		// (i.e. a payload has been injected). We detect this by checking for typical
+		// payload indicators in each field.
+		for k, vals := range formData {
+			v := ""
+			if len(vals) > 0 {
+				v = vals[0]
+			}
+			// If the value contains shell metacharacters it's a payload, not an original value
+			if strings.ContainsAny(v, ";|&`$()") {
+				m.testedParams[k] = true
+			}
+		}
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("Normal response")),
+	}, nil
+}
+
+// TestCMDiScanner_BaselineUsesDefaultForEmptyParam verifies that when a parameter
+// has an empty string value, the baseline request substitutes a benign placeholder
+// so that differential analysis works correctly.
+func TestCMDiScanner_BaselineUsesDefaultForEmptyParam(t *testing.T) {
+	// Record what value the baseline request sends for the "ip" parameter
+	var baselineIPValue string
+	mockClient := &mockBaselineValueCapturingClient{capturedValues: &baselineIPValue}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+
+	// ip has an empty string value — simulates a form with no default
+	params := map[string]string{
+		"ip": "",
+	}
+	scanner.ScanPOST(context.Background(), "http://example.com/exec", params)
+
+	// The baseline should NOT have sent an empty ip value
+	if baselineIPValue == "" {
+		t.Error("Expected baseline to use a non-empty default value for empty parameter, got empty string")
+	}
+}
+
+// mockBaselineValueCapturingClient captures the value of the "ip" parameter on the
+// first (baseline) POST request.
+type mockBaselineValueCapturingClient struct {
+	capturedValues *string
+	callCount      int
+}
+
+func (m *mockBaselineValueCapturingClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && m.callCount == 0 {
+		body, _ := io.ReadAll(req.Body)
+		formData, _ := url.ParseQuery(string(body))
+		if vals, ok := formData["ip"]; ok && len(vals) > 0 {
+			*m.capturedValues = vals[0]
+		}
+		m.callCount++
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("Normal response")),
 	}, nil
 }
