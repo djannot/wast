@@ -764,8 +764,8 @@ func TestGetRuleIDForHeader(t *testing.T) {
 func TestSARIFRulesDefinition(t *testing.T) {
 	rules := buildAllRules()
 
-	if len(rules) != 14 {
-		t.Errorf("Expected 14 rules, got %d", len(rules))
+	if len(rules) != 16 {
+		t.Errorf("Expected 16 rules, got %d", len(rules))
 	}
 
 	// Check that all rule IDs are present
@@ -784,6 +784,8 @@ func TestSARIFRulesDefinition(t *testing.T) {
 		RuleIDCORS,
 		RuleIDLFI,
 		RuleIDSSTI,
+		RuleIDWSInsecure,
+		RuleIDWSOrigin,
 	}
 
 	ruleIDsFound := make(map[string]bool)

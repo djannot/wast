@@ -119,6 +119,8 @@ const (
 	RuleIDCORS         = "WAST-CORS-001"
 	RuleIDLFI          = "WAST-LFI-001"
 	RuleIDSSTI         = "WAST-SSTI-001"
+	RuleIDWSInsecure   = "WAST-WS-001"
+	RuleIDWSOrigin     = "WAST-WS-002"
 )
 
 // CWE references for common vulnerabilities
@@ -130,10 +132,12 @@ const (
 	CWESSRF     = "CWE-918"
 	CWERedirect = "CWE-601"
 	CWEHeaders  = "CWE-693"
-	CWECookie   = "CWE-614"
-	CWECORS     = "CWE-942"
-	CWELFI      = "CWE-22"
-	CWESSTI     = "CWE-94"
+	CWECookie     = "CWE-614"
+	CWECORS       = "CWE-942"
+	CWELFI        = "CWE-22"
+	CWESSTI       = "CWE-94"
+	CWEWSInsecure = "CWE-319"
+	CWEWSOrigin   = "CWE-346"
 )
 
 // outputSARIF outputs data as SARIF 2.1.0 format.
@@ -498,6 +502,40 @@ func buildAllRules() []SARIFRule {
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWESSTI, "security", "ssti", "template-injection", "rce"},
+			},
+		},
+		{
+			ID:   RuleIDWSInsecure,
+			Name: "InsecureWebSocketProtocol",
+			ShortDescription: SARIFMessage{
+				Text: "Insecure WebSocket Protocol (ws://) detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "WebSocket endpoint uses insecure ws:// protocol instead of wss://, allowing traffic interception and manipulation.",
+			},
+			Help: SARIFMessage{
+				Text:     "Use wss:// (WebSocket Secure) instead of ws:// to encrypt WebSocket traffic over TLS.",
+				Markdown: "**Remediation:** Use `wss://` (WebSocket Secure) instead of `ws://` to encrypt WebSocket traffic over TLS.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEWSInsecure, "security", "websocket", "cleartext"},
+			},
+		},
+		{
+			ID:   RuleIDWSOrigin,
+			Name: "MissingWebSocketOriginValidation",
+			ShortDescription: SARIFMessage{
+				Text: "Missing WebSocket Origin header validation",
+			},
+			FullDescription: SARIFMessage{
+				Text: "WebSocket endpoint does not validate Origin header, allowing Cross-Site WebSocket Hijacking (CSWSH) attacks.",
+			},
+			Help: SARIFMessage{
+				Text:     "Implement server-side Origin header validation to only allow connections from trusted origins.",
+				Markdown: "**Remediation:** Implement server-side Origin header validation to only allow connections from trusted origins. Maintain an allowlist of permitted origins.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEWSOrigin, "security", "websocket", "origin-validation"},
 			},
 		},
 	}
@@ -1124,6 +1162,9 @@ func getRuleIndex(ruleID string) int {
 		RuleIDCookie,
 		RuleIDCORS,
 		RuleIDLFI,
+		RuleIDSSTI,
+		RuleIDWSInsecure,
+		RuleIDWSOrigin,
 	}
 
 	for i, r := range rules {
