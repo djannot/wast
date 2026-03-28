@@ -119,6 +119,7 @@ const (
 	RuleIDCORS         = "WAST-CORS-001"
 	RuleIDLFI          = "WAST-LFI-001"
 	RuleIDSSTI         = "WAST-SSTI-001"
+	RuleIDXXE          = "WAST-XXE-001"
 	RuleIDWSInsecure   = "WAST-WS-001"
 	RuleIDWSOrigin     = "WAST-WS-002"
 )
@@ -136,6 +137,7 @@ const (
 	CWECORS       = "CWE-942"
 	CWELFI        = "CWE-22"
 	CWESSTI       = "CWE-94"
+	CWEXXE        = "CWE-611"
 	CWEWSInsecure = "CWE-319"
 	CWEWSOrigin   = "CWE-346"
 )
@@ -241,6 +243,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 	// Process SSTI if present
 	if ssti, ok := data["ssti"].(map[string]interface{}); ok {
 		processSSTIMap(ssti, &run)
+	}
+
+	// Process XXE if present
+	if xxe, ok := data["xxe"].(map[string]interface{}); ok {
+		processXXEMap(xxe, &run)
 	}
 
 	report.Runs = append(report.Runs, run)
@@ -505,6 +512,23 @@ func buildAllRules() []SARIFRule {
 			},
 		},
 		{
+			ID:   RuleIDXXE,
+			Name: "XMLExternalEntityInjection",
+			ShortDescription: SARIFMessage{
+				Text: "XML External Entity (XXE) vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application processes XML input without disabling external entity resolution, allowing attackers to read local files, perform SSRF attacks, cause denial of service, or execute remote code. XXE vulnerabilities are particularly dangerous in SOAP services, XML-RPC, and REST APIs that accept XML payloads.",
+			},
+			Help: SARIFMessage{
+				Text:     "Disable XML external entity processing in your XML parser. Configure the parser to disallow DOCTYPE declarations and external entity references.",
+				Markdown: "**Remediation:** Disable XML external entity and DTD processing in your XML parser. For most parsers, set features like `XMLConstants.FEATURE_SECURE_PROCESSING`, disable `DOCTYPE` declarations, and disable external general/parameter entities. Use simple data formats like JSON when possible instead of XML. If XML is required, validate against a strict XML schema (XSD). Implement allowlisting for acceptable values. Keep XML processing libraries up to date with security patches.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEXXE, "security", "xxe", "xml", "injection", "file-disclosure"},
+			},
+		},
+		{
 			ID:   RuleIDWSInsecure,
 			Name: "InsecureWebSocketProtocol",
 			ShortDescription: SARIFMessage{
@@ -691,6 +715,19 @@ func processSSTIMap(ssti map[string]interface{}, run *SARIFRun) {
 		for _, f := range findings {
 			if finding, ok := f.(map[string]interface{}); ok {
 				result := createSSTIResult(finding)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
+func processXXEMap(xxe map[string]interface{}, run *SARIFRun) {
+	if findings, ok := xxe["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createXXEResult(finding)
 				if result != nil {
 					run.Results = append(run.Results, *result)
 				}
@@ -1117,6 +1154,43 @@ func createSSTIResult(finding map[string]interface{}) *SARIFResult {
 	}
 }
 
+func createXXEResult(finding map[string]interface{}) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	xxeType := getStringValue(finding, "type")
+	severity := getStringValue(finding, "severity")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	evidence := getStringValue(finding, "evidence")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDXXE,
+		RuleIndex: getRuleIndex(RuleIDXXE),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("XML External Entity (XXE) vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**XXE (%s)**\n\nParameter: `%s`\nPayload: `%s`\n\n%s\n\nEvidence: %s\n\nConfidence: %s\n\n**Remediation:** %s", xxeType, parameter, payload, description, evidence, confidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"xxe_type":   xxeType,
+			"confidence": confidence,
+		},
+	}
+}
+
 // Helper functions for severity mapping and rule lookups
 
 func mapSeverityToLevel(severity string) string {
@@ -1163,6 +1237,7 @@ func getRuleIndex(ruleID string) int {
 		RuleIDCORS,
 		RuleIDLFI,
 		RuleIDSSTI,
+		RuleIDXXE,
 		RuleIDWSInsecure,
 		RuleIDWSOrigin,
 	}
