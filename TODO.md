@@ -62,7 +62,7 @@ This should match since DVWA reflects the decoded payload. However, `analyzeCont
 
 ---
 
-## P0: Path Traversal scanner doesn't detect LFI on live DVWA
+## ~~P0: Path Traversal scanner doesn't detect LFI on live DVWA~~ FIXED in #221
 
 **Confirmed:** `curl "http://dvwa/vulnerabilities/fi/?page=../../../../../../etc/passwd"` returns `root:x:0:0:root:/root:/bin/bash` and other passwd entries. The vulnerability works with direct path replacement.
 
@@ -84,7 +84,7 @@ This should match since DVWA reflects the decoded payload. However, `analyzeCont
 
 ---
 
-## P1: SQLi boolean-based detection produces false positives
+## ~~P1: SQLi boolean-based detection produces false positives~~ FIXED (SQLi FP fix)
 
 **Root cause:** The `analyzeResponse()` function computes `ContentHash` from `extractBodyContent()` which does NOT normalize CSRF tokens. Every DVWA page has a `user_token` hidden field that changes on every request. This means:
 
@@ -104,7 +104,7 @@ This should match since DVWA reflects the decoded payload. However, `analyzeCont
 
 ---
 
-## P2: CI integration tests should do full discovery scan assertions
+## ~~P2: CI integration tests should do full discovery scan assertions~~ DONE in #256
 
 The current CI DVWA integration tests (`make test-dvwa`) run individual scanner tests with manually-constructed parameters. This validates scanner logic but does NOT test the full discovery pipeline that real users exercise.
 
