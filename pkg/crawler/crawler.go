@@ -74,6 +74,8 @@ type Crawler struct {
 	concurrency      int
 	tracer           trace.Tracer
 	progressCallback ProgressCallback
+	headlessConfig   *HeadlessConfig
+	headlessBrowser  *HeadlessBrowser
 }
 
 // Option is a function that configures a Crawler.
@@ -158,6 +160,55 @@ func WithProgressCallback(cb ProgressCallback) Option {
 	}
 }
 
+// WithHeadless enables headless browser mode for JavaScript rendering.
+func WithHeadless(enabled bool) Option {
+	return func(cr *Crawler) {
+		if cr.headlessConfig == nil {
+			cr.headlessConfig = DefaultHeadlessConfig()
+		}
+		cr.headlessConfig.Enabled = enabled
+	}
+}
+
+// WithHeadlessConfig sets the complete headless browser configuration.
+func WithHeadlessConfig(config *HeadlessConfig) Option {
+	return func(cr *Crawler) {
+		cr.headlessConfig = config
+	}
+}
+
+// WithHeadlessTimeout sets the timeout for headless browser operations.
+func WithHeadlessTimeout(timeout time.Duration) Option {
+	return func(cr *Crawler) {
+		if cr.headlessConfig == nil {
+			cr.headlessConfig = DefaultHeadlessConfig()
+		}
+		cr.headlessConfig.Timeout = timeout
+	}
+}
+
+// WithWaitForSelector sets a CSS selector to wait for in headless mode.
+func WithWaitForSelector(selector string) Option {
+	return func(cr *Crawler) {
+		if cr.headlessConfig == nil {
+			cr.headlessConfig = DefaultHeadlessConfig()
+		}
+		cr.headlessConfig.WaitForSelector = selector
+	}
+}
+
+// WithHeadlessPoolSize sets the browser pool size for headless mode.
+func WithHeadlessPoolSize(size int) Option {
+	return func(cr *Crawler) {
+		if cr.headlessConfig == nil {
+			cr.headlessConfig = DefaultHeadlessConfig()
+		}
+		if size > 0 {
+			cr.headlessConfig.PoolSize = size
+		}
+	}
+}
+
 // NewCrawler creates a new Crawler with the given options.
 func NewCrawler(opts ...Option) *Crawler {
 	c := &Crawler{
@@ -177,6 +228,21 @@ func NewCrawler(opts ...Option) *Crawler {
 		c.client = NewDefaultHTTPClient(c.timeout)
 	}
 
+	// Initialize headless browser if enabled
+	if c.headlessConfig != nil && c.headlessConfig.Enabled {
+		// Set user agent for headless mode if not already set
+		if c.headlessConfig.UserAgent == "" {
+			c.headlessConfig.UserAgent = c.userAgent
+		}
+
+		var err error
+		c.headlessBrowser, err = NewHeadlessBrowser(c.headlessConfig)
+		if err != nil {
+			// Log error but don't fail - fall back to regular HTTP
+			// This allows graceful degradation if headless setup fails
+		}
+	}
+
 	return c
 }
 
@@ -194,6 +260,13 @@ func (c *Crawler) Crawl(ctx context.Context, targetURL string) *CrawlResult {
 		ctx, span = c.tracer.Start(ctx, "wast.crawl")
 		defer span.End()
 	}
+
+	// Ensure headless browser is cleaned up when done
+	defer func() {
+		if c.headlessBrowser != nil {
+			c.headlessBrowser.Close()
+		}
+	}()
 
 	result := &CrawlResult{
 		Target:        targetURL,
@@ -535,6 +608,8 @@ func (c *Crawler) fetchAndParseSitemapWithDepth(ctx context.Context, sitemapURL 
 }
 
 // fetchPage fetches the content of a URL.
+// If headless mode is enabled, it will attempt to detect JavaScript-rendered content
+// and use the headless browser when necessary, falling back to regular HTTP otherwise.
 func (c *Crawler) fetchPage(ctx context.Context, targetURL string) (string, error) {
 	// Apply rate limiting before making the request
 	if c.rateLimiter != nil {
@@ -543,6 +618,31 @@ func (c *Crawler) fetchPage(ctx context.Context, targetURL string) (string, erro
 		}
 	}
 
+	// Try regular HTTP fetch first
+	content, err := c.fetchPageHTTP(ctx, targetURL)
+	if err != nil {
+		return "", err
+	}
+
+	// If headless mode is enabled, check if we should use it
+	if c.headlessConfig != nil && c.headlessConfig.Enabled && c.headlessBrowser != nil {
+		// Detect if the page uses JavaScript rendering
+		if DetectJavaScriptRendering(content) {
+			// Try headless browser
+			headlessContent, headlessErr := c.headlessBrowser.FetchPage(ctx, targetURL)
+			if headlessErr == nil {
+				// Successfully fetched with headless browser
+				return headlessContent, nil
+			}
+			// Fall back to regular HTTP content if headless fails
+		}
+	}
+
+	return content, nil
+}
+
+// fetchPageHTTP fetches the content of a URL using regular HTTP.
+func (c *Crawler) fetchPageHTTP(ctx context.Context, targetURL string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return "", err
