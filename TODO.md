@@ -1,137 +1,136 @@
 # WAST - TODO
 
-## Current Status
+## Live DVWA Retest Results (2026-03-28)
 
-✅ **All critical scanner issues (P0/P1) have been resolved**
+Tested against DVWA (security=low) with `wast_scan active=true, discover=true, depth=3`.
 
-All major false positive and false negative issues documented below have been fixed and validated with comprehensive unit tests. Integration tests pass but may show warnings due to DVWA session/authentication complexities in automated testing - the scanner logic itself has been verified through extensive unit testing.
+| Scanner | Tests | Findings | Expected | Verdict |
+|---------|-------|----------|----------|---------|
+| SQLi | 395 | 12 | SQLi on `/sqli/`, `/brute/` | Mixed — real positives on `/brute/`, `/fi/`, `/exec/` but also FPs on `/csrf/`, `doc`, `captcha` |
+| CSRF | — | 9 | 9 missing tokens | **PASS** — all real |
+| SSTI | 370 | 0 | 0 (PHP app, no template engines) | **PASS** — FPs eliminated |
+| SSRF | 629 | 0 | 0 (no SSRF vuln in DVWA) | **PASS** — no FPs |
+| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FAIL** — not detected |
+| CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FAIL** — not detected |
+| Path Traversal | 666 | 0 | LFI on `/fi/?page=` | **FAIL** — not detected |
+| Headers | — | 7 | 7 missing | **PASS** — expected |
 
-### Integration Test Results (2026-03-28)
+Unit tests for XSS, CMDi, and Path Traversal pass with simulated DVWA responses. The detection logic works in isolation but fails against the live DVWA instance. Root causes are documented below.
 
-Latest `make test-dvwa` results against DVWA (security=low):
+---
 
-| Scanner | Tests | Findings | Status |
-|---------|-------|----------|--------|
-| SQLi | 13 | 0 | ✅ FP fixes validated (unit tests verify detection works, integration test limitations due to DVWA session handling) |
-| XSS | 7 | 0 | ✅ Detection fixed (unit tests confirm, integration test limitations) |
-| CMDi | 64 | 0 | ✅ POST detection fixed (unit tests verify, integration test limitations) |
-| Path Traversal | 18 | 0 | ✅ LFI detection fixed (unit tests confirm, integration test limitations) |
-| CSRF | 1 form | 1 | ✅ Working correctly - detects missing CSRF tokens |
-| SSTI | 60 | 0 FPs | ✅ No false positives - context-aware detection implemented |
-| Headers | — | 7 missing | Expected for DVWA |
+## P0: XSS scanner doesn't detect reflected XSS on live DVWA
 
-**Note**: Integration tests show "0 findings" for some scanners due to DVWA authentication/session complexities in automated testing. However, comprehensive unit tests in `pkg/scanner/*_test.go` verify that all fixes work correctly with DVWA-style payloads and responses.
+**Confirmed:** `curl "http://dvwa/vulnerabilities/xss_r/?name=%3Cscript%3Ealert(1)%3C/script%3E"` returns the payload `<script>alert(1)</script>` verbatim in the HTML (1 match). The vulnerability is trivially exploitable.
 
-## ✅ P0: SSTI scanner produces massive false positives - RESOLVED
+**Root cause:** The `testParameter()` function in `xss.go` builds the test URL using `q.Encode()`, which URL-encodes `<` to `%3C`, `>` to `%3E`, etc. The payload is sent URL-encoded in the query string. DVWA decodes it and reflects `<script>alert(1)</script>` in the HTML body.
 
-**Impact:** 29 SSTI findings reported across 6+ template engines (Jinja2, Freemarker, Thymeleaf, Velocity, ERB, Smarty) on a plain PHP app that uses none of them. Every parameter that reflects input is flagged.
+The detection at line ~609 does:
+```go
+payloadFound := strings.Contains(bodyStr, payload.Payload)  // looks for <script>alert(1)</script>
+```
 
-**Root cause:** The detection logic checks if the payload string appears in the response, but does not verify that the template expression was actually **evaluated**. For example, sending `{{7*7}}` and finding `{{7*7}}` in the response is reflection, not injection. The scanner should check for `49` (the computed result) in the response instead.
+This should match since DVWA reflects the decoded payload. However, `analyzeContext()` then analyzes the surrounding HTML context. The likely failure is in context analysis — the function may be misclassifying the context (e.g., thinking the payload is inside an HTML comment, attribute, or non-executable context) and returning `isExecutable=false`.
 
-**Fix implemented:** Updated `detectTemplateInjection()` to require:
-1. Expected result (e.g., `49`) appears in response AND payload literal (e.g., `{{7*7}}`) does NOT appear (pure evaluation)
-2. If both appear, expected result count must exceed payload count (evaluation occurred)
-3. Baseline comparison prevents flagging numbers naturally present in pages
-4. Added comprehensive unit tests for false positive and true positive scenarios
+**Fix approach:** Add debug logging to `analyzeContext()` to trace exactly what context it detects. The early detection at line ~438 (`if strings.Contains(payload, "<script") { return ContextHTMLBody, true, "high" }`) should catch this case — if it's not firing, something before it is returning early.
 
-**Files:** `pkg/scanner/ssti.go`, `pkg/scanner/ssti_test.go`
+**Files:** `pkg/scanner/xss.go` — `testParameter()`, `analyzeContext()`
 
-## ✅ P0: XSS scanner doesn't detect reflected XSS - RESOLVED
+---
 
-**Impact:** DVWA `/vulnerabilities/xss_r/?name=<script>alert(1)</script>` reflects the payload verbatim in the response HTML. 259 tests run, 0 findings.
+## P0: CMDi scanner doesn't detect command injection on live DVWA
 
-**Root cause:** The `testParameter()` detection logic was not properly checking whether injected payloads appear unescaped in the response body. Multiple issues needed to be addressed:
-1. Early detection for verbatim script tags was added (lines 438-453 in `analyzeContext()`)
-2. HTML comment detection was fixed to avoid false negatives
-3. URL-encoded vs unencoded payload handling was corrected
-4. Context analysis was enhanced to properly detect executable contexts
+**Confirmed:** `curl -X POST http://dvwa/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit"` returns `uid=33(www-data)`. Without `Submit=Submit`, DVWA returns nothing — the form is not processed.
 
-**Fix implemented:** Updated `analyzeContext()` and `testParameter()` to:
-1. Add early detection for verbatim script tags and event handlers (returns high confidence)
-2. Properly check if payload is inside HTML comments or textarea (skip early detection)
-3. Fix URL-encoded payload detection to only skip if ONLY the encoded version is found
-4. Ensure payload position is checked (not just presence in the response)
-5. Added comprehensive DVWA-style unit tests including `TestXSSScanner_Issue182_DVWAReflectedXSS`, `TestXSSScanner_DVWA_EndToEnd`, and multiple fixture tests
+**Root cause:** The discovery pipeline extracts form fields including `Submit=Submit` (the crawler does capture `<input type="submit">`). The `ScanPOST()` method receives the parameters and sends them. However, the detection fails due to **baseline comparison logic**:
 
-**Files:** `pkg/scanner/xss.go` (specifically `testParameter()` and `analyzeContext()`), `pkg/scanner/xss_test.go`
+1. The scanner sends a baseline request with the original `ip` value
+2. The scanner sends payloads like `127.0.0.1; id`
+3. It checks for patterns like `uid=[0-9]+` in the response
+4. BUT — the baseline comparison in `testOutputBasedPOST()` checks if the pattern ALSO appears in baseline
+5. DVWA's page HTML contains `www-data` in the page header/footer (logged-in user), so the line-anchored `^www-data$` pattern may match in baseline
+6. The `uid=` pattern should NOT appear in baseline, but if the baseline request fails (e.g., `ip=""` causes no output), the differential may not work correctly
 
-**Resolved in commits:** #166, #174, #176, #178, #180, #183, #211
+**Additional issue:** The scanner tests each parameter independently. When testing the `ip` parameter, it keeps `Submit=Submit` as-is. But when testing the `Submit` parameter, it injects payloads into `Submit` while keeping `ip` as-is — this is wasted effort and the SQLi scanner is also doing this (explaining the false SQLi on `/exec/` `ip` param).
 
-## ✅ P0: CMDi scanner doesn't detect command injection via POST - RESOLVED
+**Fix approach:**
+1. Add debug logging to `testOutputBasedPOST()` to trace baseline vs injected responses
+2. Verify that baseline is using a valid value for `ip` (e.g., `127.0.0.1`) not empty string
+3. Consider marking `submit`-type parameters as non-testable for injection scanners (CMDi, SQLi, XSS) — only the data parameters should be injected
 
-**Impact:** DVWA `/vulnerabilities/exec/` accepts POST param `ip` and passes it to `shell_exec()`. 1,184 tests run, 0 findings.
+**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testOutputBasedPOST()`, `getBaselineWithTimingPOST()`
 
-**Root cause:** The CMDi output-based detection was failing due to differential analysis rejecting findings when generic patterns (like `www-data`) appeared in both baseline and injected responses. DVWA's HTML page structure includes the username in headers/footers, causing the simple `www-data` pattern to match in baseline responses and trigger false negative detection.
+---
 
-**Fix implemented:**
-1. Removed the generic `regexp.MustCompile(\`www-data\`)` pattern (line 108) that could match anywhere in the response, including in HTML page structure
-2. Relied on more specific patterns that are unique to command output:
-   - `uid=[0-9]+`, `gid=[0-9]+`, `groups=[0-9]+` - Specific to `id` command output
-   - Line-anchored username pattern `(?m)^(root|...|www-data|...)$` - Requires username on its own line (as `whoami` outputs)
-3. Updated integration test to include the `Submit` parameter that DVWA's form requires
-4. Added comprehensive unit tests:
-   - `TestCMDiScanner_DVWALikeExecPOST` - Simulates DVWA exec endpoint behavior
-   - `TestCMDiScanner_DVWALikeExecPOST_WithHTMLPageStructure` - Verifies detection works even when HTML contains username in page structure
-5. Updated integration test expectations to require findings instead of just logging warnings
+## P0: Path Traversal scanner doesn't detect LFI on live DVWA
 
-**How it works:** The differential analysis now uses specific patterns (`uid=`, `gid=`, `groups=`) that appear in command output but not in typical HTML page structure, avoiding false negatives while maintaining high detection accuracy.
+**Confirmed:** `curl "http://dvwa/vulnerabilities/fi/?page=../../../../../../etc/passwd"` returns `root:x:0:0:root:/root:/bin/bash` and other passwd entries. The vulnerability works with direct path replacement.
 
-**Files:** `pkg/scanner/cmdi.go`, `pkg/scanner/cmdi_test.go`, `test/integration/dvwa_test.go`
+**Root cause:** The `testPayloadVariant()` function manually constructs `RawQuery` to avoid URL-encoding slashes. However, there are two failure modes:
 
-## ✅ P1: Path traversal scanner misses LFI - RESOLVED
+1. **Wrapper payload mismatch:** When the parameter has an existing value (`page=include.php`), the scanner tries `page=include.php/../../../etc/passwd`. This assumes `include.php` exists as a real directory entry — it doesn't. The correct payload is direct replacement: `page=../../../../../../etc/passwd`. The wrapper logic should be secondary, not primary.
 
-**Impact:** DVWA `/vulnerabilities/fi/?page=../../etc/passwd` returns file contents. 666 tests run, 0 findings.
+2. **Depth mismatch:** The hardcoded payloads use 3-6 `../` sequences. DVWA's file inclusion operates from a specific directory depth. If none of the preset depths match the DVWA container's filesystem layout, all payloads fail. The scanner should try more depth variations or auto-detect the correct depth.
 
-**Root cause:** The scanner was URL-encoding path separators (`/` became `%2F`) using `q.Encode()`, but DVWA's PHP `include()` function requires literal `../` sequences. Additionally, DVWA's parameter structure (`page=include.php`) required wrapper payloads like `include.php/../../../etc/passwd`.
+3. **Signature detection:** `containsPasswdSignature()` checks for patterns like `root:x:0:0:`. Verify this actually matches the Docker container's `/etc/passwd` format (Alpine vs Debian base images may differ).
 
-**Fix implemented:**
-1. Modified `testParameter()` to use a new `testPayloadVariant()` helper function that tests multiple payload strategies
-2. Added support for raw (unencoded) payloads by manually constructing `RawQuery` without encoding path separators
-3. Implemented wrapper payload support - when a parameter has an existing value, the scanner prepends the payload (e.g., `include.php/../../../etc/passwd`)
-4. Maintained URL-encoded payload testing as a fallback for servers that decode before processing
-5. Added comprehensive unit tests:
-   - `TestPathTraversalScanner_DVWA_LFI` - Simulates DVWA's LFI vulnerability behavior
-   - `TestPathTraversalScanner_RawVsEncodedPayloads` - Verifies both encoding strategies work
-   - `TestPathTraversalScanner_WrapperPayloads` - Tests wrapper payload detection
-6. Updated integration test `TestDVWA_PathTraversal` to require at least 1 finding on the `page` parameter
+**Fix approach:**
+1. Test direct replacement FIRST (without wrapper), trying multiple depths
+2. Only try wrapper payloads as a fallback
+3. Add the DVWA-specific depth (`../../../../../../etc/passwd` = 6 levels) if not already present
+4. Log payload and response for debugging
 
-**How it works:** The scanner now tries three strategies per payload:
-1. Direct replacement with raw (unencoded) slashes - critical for PHP `include()` and similar functions
-2. Wrapper payloads that prepend to existing parameter values - handles DVWA's `page=include.php` case
-3. URL-encoded version as fallback - for servers with double-decoding or different parsing
+**Files:** `pkg/scanner/pathtraversal.go` — `testParameter()`, `testPayloadVariant()`
 
-**Files modified:** `pkg/scanner/pathtraversal.go`, `pkg/scanner/pathtraversal_test.go`, `test/integration/dvwa_test.go`
+---
 
-## ✅ P1: SQLi false positives on non-injectable parameters - RESOLVED
+## P1: SQLi boolean-based detection produces false positives
 
-**Impact:** SQLi scanner reports boolean-based injection on `Upload` button, `seclev_submit`, and `security` dropdown — these are not actually injectable. The differential analysis is being fooled by DVWA's dynamic content (e.g., CSRF tokens changing between requests cause content hash differences).
+**Root cause:** The `analyzeResponse()` function computes `ContentHash` from `extractBodyContent()` which does NOT normalize CSRF tokens. Every DVWA page has a `user_token` hidden field that changes on every request. This means:
 
-**Fix implemented:**
-1. Added `isNonDataParameter()` function to filter out submit buttons (`submit`, `button`, `btn`, `send`, `go`, `action`), DVWA-specific non-data fields (`seclev_submit`, `Upload`, `security`, `phpids`), and common non-data fields (CSRF tokens, session IDs)
-2. Implemented `normalizeResponseContent()` to strip CSRF tokens, nonces, timestamps, and other dynamic content from responses before comparison
-3. Updated both `Scan()` and `ScanPOST()` functions to use parameter filtering
-4. Updated `computeContentHash()`, `countWords()`, and `extractDataContent()` to use content normalization
-5. Added comprehensive unit tests for parameter filtering and content normalization
-6. Added integration test `TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons()` to verify no false positives on DVWA
+1. Baseline request: `user_token=ABC` → ContentHash X
+2. True payload request: `user_token=DEF` → ContentHash Y
+3. False payload request: `user_token=GHI` → ContentHash Z
 
-**Files modified:** `pkg/scanner/sqli.go`, `pkg/scanner/sqli_test.go`, `test/integration/dvwa_test.go`
+`contentHashDiffers` is **always true** because the CSRF token changes. Combined with a word count difference of ~4 words (from the different token values), this exceeds the `minWordCountDifference=2` threshold, triggering a false positive.
 
-## ✅ P2: Add DVWA integration tests to CI - RESOLVED
+**The asymmetry:** `extractDataContent()` calls `normalizeResponseContent()` (which strips tokens), but `extractBodyContent()` (used for ContentHash) does NOT. The normalization exists but isn't applied to the right function.
 
-**Impact:** All scanner improvements are currently validated manually against a local DVWA instance. Regressions can slip in undetected.
+**Affected findings:** SQLi reported on `Change` button (`/csrf/`), `doc` param, `captcha` Change button — all non-injectable params where the only response difference is the CSRF token.
 
-**Fix implemented:**
-1. Created `docker-compose.test.yml` that spins up DVWA with MySQL
-2. Created integration test suite in `test/integration/dvwa_test.go` that:
-   - Starts DVWA container, waits for it to be ready, initializes the database
-   - Logs in with admin/password and sets security=low
-   - Tests individual scanners (XSS, SQLi, CMDi, Path Traversal, CSRF) against their respective vulnerable endpoints
-   - Tests full discovery scan workflow
-   - Asserts no false positives on clean pages (SSTI scanner)
-3. Added `make test-dvwa` target to run the integration tests
-4. Added CI job `integration-dvwa` in `.github/workflows/ci.yml` that runs DVWA tests in Docker
-5. Each scanner test validates detection of at least its primary DVWA vulnerability
+**Fix:** Apply `normalizeResponseContent()` to the input of `extractBodyContent()` before computing ContentHash, or compute ContentHash from the already-normalized `extractDataContent()` output.
 
-**Note:** CMDi and Path Traversal tests are documented as known limitations (per existing TODO.md P0/P1 issues), so they log warnings instead of failing when no vulnerabilities are detected.
+**Files:** `pkg/scanner/sqli.go` — `analyzeResponse()`, `extractBodyContent()` vs `extractDataContent()`
 
-**Files:** `docker-compose.test.yml`, `test/integration/dvwa_test.go`, `Makefile`, `.github/workflows/ci.yml`, `TODO.md`
+---
+
+## P2: CI integration tests should do full discovery scan assertions
+
+The current CI DVWA integration tests (`make test-dvwa`) run individual scanner tests with manually-constructed parameters. This validates scanner logic but does NOT test the full discovery pipeline that real users exercise.
+
+**What's needed:** A CI test that does exactly what the manual retest does:
+
+1. Start DVWA container (`docker-compose.test.yml`)
+2. Wait for DVWA to be ready
+3. Initialize database (POST to `setup.php` with CSRF token)
+4. Login (POST to `login.php` with `admin/password` + CSRF token)
+5. Set security=low (POST to `security.php`)
+6. Run `wast_scan` with `active=true, discover=true, depth=3` and session cookies
+7. Assert expected findings:
+   - SQLi: >= 1 finding on `/brute/` or `/fi/` or `/sqli/` `id` param
+   - XSS: >= 1 finding on `/xss_r/` `name` param
+   - CMDi: >= 1 finding on `/exec/` `ip` param
+   - CSRF: >= 7 forms with missing tokens
+   - SSTI: 0 findings (no false positives)
+   - Path Traversal: >= 1 finding on `/fi/` `page` param
+8. Assert no false positives on submit buttons
+
+This test should be the **gate for merging** — if any scanner regresses on DVWA, the PR is blocked.
+
+**Implementation:** Add a `TestDVWA_FullDiscoveryScan` test in `test/integration/dvwa_test.go` that:
+- Uses the Go scanner API directly (not CLI) to run the full discovery scan
+- Passes cookies programmatically
+- Parses the result and asserts on each scanner's findings
+- Runs as part of `make test-dvwa` in CI
+
+**Files:** `test/integration/dvwa_test.go`, `.github/workflows/ci.yml`
