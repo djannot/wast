@@ -305,6 +305,89 @@ func (s *SSTIScanner) Scan(ctx context.Context, targetURL string) *SSTIScanResul
 	return result
 }
 
+// ScanPOST performs an SSTI vulnerability scan on the given target URL using POST method.
+// This method tests POST endpoints for SSTI vulnerabilities by submitting form data.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout control
+//   - targetURL: The base URL to scan (without query parameters)
+//   - parameters: Map of form parameters to test. If empty, uses common parameter names
+//     (q, search, query, input, name, template) with empty default values.
+//
+// Returns:
+//   - An SSTIScanResult containing all findings, summary statistics, and any errors.
+//     The result is never nil, even if errors occur.
+//
+// This method is typically called by the discovery module when scanning POST forms.
+func (s *SSTIScanner) ScanPOST(ctx context.Context, targetURL string, parameters map[string]string) *SSTIScanResult {
+	// Create tracing span if tracer is available
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, telemetry.SpanNameScanSSTI)
+		defer span.End()
+	}
+
+	result := &SSTIScanResult{
+		Target:   targetURL,
+		Findings: make([]SSTIFinding, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// Parse the target URL
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Invalid URL: %s", err.Error()))
+		return result
+	}
+
+	// Use provided parameters or fallback to common parameter names
+	params := parameters
+	if len(params) == 0 {
+		params = make(map[string]string)
+		params["q"] = ""
+		params["search"] = ""
+		params["query"] = ""
+		params["input"] = ""
+		params["name"] = ""
+		params["template"] = ""
+	}
+
+	// Test each parameter with each payload
+	for paramName := range params {
+		for _, payload := range sstiPayloads {
+			// Apply rate limiting before making the request
+			if s.rateLimiter != nil {
+				if err := s.rateLimiter.Wait(ctx); err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+					return result
+				}
+			}
+
+			finding := s.testParameterPOST(ctx, parsedURL, paramName, payload, params)
+			result.Summary.TotalTests++
+
+			if finding != nil {
+				result.Findings = append(result.Findings, *finding)
+				result.Summary.VulnerabilitiesFound++
+			}
+
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				result.Errors = append(result.Errors, "Scan cancelled")
+				s.calculateSummary(result)
+				return result
+			default:
+			}
+		}
+	}
+
+	// Calculate final summary
+	s.calculateSummary(result)
+
+	return result
+}
+
 // getBaselineResponse fetches a baseline response with a benign value to detect false positives.
 func (s *SSTIScanner) getBaselineResponse(ctx context.Context, baseURL *url.URL, paramName string) string {
 	// Create a copy of the URL with a benign baseline value
@@ -321,6 +404,52 @@ func (s *SSTIScanner) getBaselineResponse(ctx context.Context, baseURL *url.URL,
 
 	req.Header.Set("User-Agent", s.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	// Only read successful responses
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return ""
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	return string(body)
+}
+
+// getBaselineResponsePOST fetches a baseline response with a benign value to detect false positives for POST requests.
+func (s *SSTIScanner) getBaselineResponsePOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) string {
+	// Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested with a benign baseline value
+	formData.Set(paramName, "WAST_BASELINE_12345")
+
+	// Create the baseline request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return ""
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	// Apply authentication configuration
 	if s.authConfig != nil {
@@ -405,6 +534,81 @@ func (s *SSTIScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 		// Vulnerability found!
 		finding := &SSTIFinding{
 			URL:            testURL.String(),
+			Parameter:      paramName,
+			Payload:        payload.Payload,
+			Evidence:       s.extractEvidence(bodyStr, payload.ExpectedResult, payload.Payload),
+			Severity:       payload.Severity,
+			TemplateEngine: payload.TemplateEngine,
+			Description:    payload.Description,
+			Remediation:    s.getRemediation(),
+			Confidence:     confidence,
+		}
+		return finding
+	}
+
+	return nil
+}
+
+// testParameterPOST tests a single parameter for SSTI vulnerability using POST.
+func (s *SSTIScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sstiPayload, allParameters map[string]string) *SSTIFinding {
+	// Step 1: Get baseline response with a benign value
+	baselineBody := s.getBaselineResponsePOST(ctx, baseURL, paramName, allParameters)
+
+	// Step 2: Create form data with ALL parameters
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	// Override the parameter being tested with the test payload
+	formData.Set(paramName, payload.Payload)
+
+	// Create the request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Apply authentication configuration
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	// Send the request
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Handle rate limiting (HTTP 429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil
+	}
+
+	// Only check successful responses
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return nil
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	bodyStr := string(body)
+
+	// Step 3: Compare with baseline - only flag if result appears in payload response but NOT in baseline
+	if s.detectTemplateInjection(bodyStr, payload, baselineBody) {
+		confidence := s.calculateConfidence(bodyStr, payload)
+
+		// Vulnerability found!
+		finding := &SSTIFinding{
+			URL:            baseURL.String(),
 			Parameter:      paramName,
 			Payload:        payload.Payload,
 			Evidence:       s.extractEvidence(bodyStr, payload.ExpectedResult, payload.Payload),
