@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -217,16 +216,29 @@ func (s *SecurityTester) testBOLA(ctx context.Context, fullURL string, endpoint 
 			statusCode := resp.StatusCode
 			resp.Body.Close()
 
-			// If we get 200 without auth, it's a BOLA vulnerability
+			// If we get 200 without auth, it may be a BOLA vulnerability
 			if statusCode == http.StatusOK {
+				// Determine confidence based on endpoint security requirements
+				confidence := "medium"
+				description := fmt.Sprintf("Broken Object Level Authorization detected - endpoint accessible without proper authorization for parameter '%s'", param.Name)
+
+				if len(endpoint.Security) > 0 {
+					// Endpoint explicitly requires authentication, so this is high confidence
+					confidence = "high"
+				} else {
+					// No explicit security requirement - could be a public endpoint
+					confidence = "low"
+					description = fmt.Sprintf("Potential BOLA - endpoint accessible without authentication for parameter '%s'. Note: May be a legitimate public endpoint if no security is required.", param.Name)
+				}
+
 				vulns = append(vulns, SecurityVulnerability{
 					Type:        "bola",
 					Severity:    "high",
 					Parameter:   param.Name,
 					Evidence:    fmt.Sprintf("Endpoint returned HTTP %d without authentication", statusCode),
-					Description: fmt.Sprintf("Broken Object Level Authorization detected - endpoint accessible without proper authorization for parameter '%s'", param.Name),
-					Remediation: "Implement proper authorization checks to ensure users can only access their own resources. Verify object ownership before returning data.",
-					Confidence:  "high",
+					Description: description,
+					Remediation: "Implement proper authorization checks to ensure users can only access their own resources. Verify object ownership before returning data. If this is a public endpoint, consider documenting it as such.",
+					Confidence:  confidence,
 				})
 			}
 
@@ -396,9 +408,9 @@ func (s *SecurityTester) testMassAssignment(ctx context.Context, fullURL string,
 					Severity:    "high",
 					Parameter:   field,
 					Evidence:    fmt.Sprintf("Extra field '%s' was accepted and reflected in response", field),
-					Description: fmt.Sprintf("Mass assignment vulnerability detected - sensitive field '%s' can be modified by user input", field),
-					Remediation: "Use a whitelist approach to explicitly define which fields can be updated. Never allow direct binding of user input to internal model fields. Use Data Transfer Objects (DTOs) or similar patterns.",
-					Confidence:  "medium",
+					Description: fmt.Sprintf("Potential mass assignment vulnerability - sensitive field '%s' appears in response with test value. Note: Field may be accepted but not stored, or may be transformed. Manual verification required.", field),
+					Remediation: "Use a whitelist approach to explicitly define which fields can be updated. Never allow direct binding of user input to internal model fields. Use Data Transfer Objects (DTOs) or similar patterns. Verify that the field was actually persisted by checking database/storage.",
+					Confidence:  "low",
 				})
 			}
 		}
@@ -502,28 +514,4 @@ func (s *SecurityTester) analyzeJWTInResponse(ctx context.Context, fullURL strin
 	}
 
 	return analysis
-}
-
-// extractPathParameterValue extracts the value of a path parameter from a URL.
-func extractPathParameterValue(urlStr, paramName string) string {
-	// Try to extract from template syntax
-	re := regexp.MustCompile(`\{` + paramName + `\}|:` + paramName)
-	if re.MatchString(urlStr) {
-		return ""
-	}
-
-	// Try to extract numeric ID
-	re = regexp.MustCompile(`/(\d+)(?:/|$)`)
-	matches := re.FindStringSubmatch(urlStr)
-	if len(matches) > 1 {
-		return matches[1]
-	}
-
-	return ""
-}
-
-// isNumeric checks if a string is numeric.
-func isNumeric(s string) bool {
-	_, err := strconv.Atoi(s)
-	return err == nil
 }

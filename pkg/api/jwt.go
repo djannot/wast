@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -138,11 +139,18 @@ func decodeJWTPart(part string) (map[string]interface{}, error) {
 }
 
 // ExtractJWTFromHeaders extracts JWT tokens from common HTTP headers.
+// Header matching is case-insensitive per RFC 7230.
 func ExtractJWTFromHeaders(headers map[string]string) []string {
 	tokens := make([]string, 0)
 
+	// Normalize header keys to canonical form for case-insensitive matching
+	normalizedHeaders := make(map[string]string)
+	for k, v := range headers {
+		normalizedHeaders[http.CanonicalHeaderKey(k)] = v
+	}
+
 	// Check Authorization header
-	if auth, ok := headers["Authorization"]; ok {
+	if auth, ok := normalizedHeaders["Authorization"]; ok {
 		if strings.HasPrefix(auth, "Bearer ") {
 			token := strings.TrimPrefix(auth, "Bearer ")
 			if looksLikeJWT(token) {
@@ -152,9 +160,9 @@ func ExtractJWTFromHeaders(headers map[string]string) []string {
 	}
 
 	// Check common JWT header names
-	jwtHeaders := []string{"X-Auth-Token", "X-JWT-Token", "X-Access-Token"}
+	jwtHeaders := []string{"X-Auth-Token", "X-Jwt-Token", "X-Access-Token"}
 	for _, headerName := range jwtHeaders {
-		if token, ok := headers[headerName]; ok && looksLikeJWT(token) {
+		if token, ok := normalizedHeaders[headerName]; ok && looksLikeJWT(token) {
 			tokens = append(tokens, token)
 		}
 	}
