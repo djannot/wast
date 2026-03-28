@@ -162,6 +162,7 @@ wast scan https://example.com --output sarif > scan.sarif && code scan.sarif
 |-------------------|---------|---------------|
 | Cross-Site Scripting (XSS) | WAST-XSS-001 | CWE-79 |
 | SQL Injection | WAST-SQLI-001 | CWE-89 |
+| NoSQL Injection | WAST-NOSQLI-001 | CWE-943 |
 | Cross-Site Request Forgery (CSRF) | WAST-CSRF-001 | CWE-352 |
 | Missing HSTS Header | WAST-HDR-001 | CWE-693 |
 | Missing CSP Header | WAST-HDR-002 | CWE-693 |
