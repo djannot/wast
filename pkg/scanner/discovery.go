@@ -194,6 +194,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	sqliOpts := []SQLiOption{
 		WithSQLiTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	nosqliOpts := []NoSQLiOption{
+		WithNoSQLiTimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 	csrfOpts := []CSRFOption{
 		WithCSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
@@ -219,6 +222,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		headerOpts = append(headerOpts, WithAuth(cfg.AuthConfig))
 		xssOpts = append(xssOpts, WithXSSAuth(cfg.AuthConfig))
 		sqliOpts = append(sqliOpts, WithSQLiAuth(cfg.AuthConfig))
+		nosqliOpts = append(nosqliOpts, WithNoSQLiAuth(cfg.AuthConfig))
 		csrfOpts = append(csrfOpts, WithCSRFAuth(cfg.AuthConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
 		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
@@ -232,6 +236,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		headerOpts = append(headerOpts, WithRateLimitConfig(cfg.RateLimitConfig))
 		xssOpts = append(xssOpts, WithXSSRateLimitConfig(cfg.RateLimitConfig))
 		sqliOpts = append(sqliOpts, WithSQLiRateLimitConfig(cfg.RateLimitConfig))
+		nosqliOpts = append(nosqliOpts, WithNoSQLiRateLimitConfig(cfg.RateLimitConfig))
 		csrfOpts = append(csrfOpts, WithCSRFRateLimitConfig(cfg.RateLimitConfig))
 		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
 		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
@@ -245,6 +250,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		headerOpts = append(headerOpts, WithTracer(cfg.Tracer))
 		xssOpts = append(xssOpts, WithXSSTracer(cfg.Tracer))
 		sqliOpts = append(sqliOpts, WithSQLiTracer(cfg.Tracer))
+		nosqliOpts = append(nosqliOpts, WithNoSQLiTracer(cfg.Tracer))
 		csrfOpts = append(csrfOpts, WithCSRFTracer(cfg.Tracer))
 		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
 		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
@@ -279,6 +285,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	if !cfg.SafeMode {
 		xssScanner := NewXSSScanner(xssOpts...)
 		sqliScanner := NewSQLiScanner(sqliOpts...)
+		nosqliScanner := NewNoSQLiScanner(nosqliOpts...)
 		csrfScanner := NewCSRFScanner(csrfOpts...)
 		ssrfScanner := NewSSRFScanner(ssrfOpts...)
 		redirectScanner := NewRedirectScanner(redirectOpts...)
@@ -289,6 +296,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		// Aggregate findings from all targets
 		allXSSFindings := make([]XSSFinding, 0)
 		allSQLiFindings := make([]SQLiFinding, 0)
+		allNoSQLiFindings := make([]NoSQLiFinding, 0)
 		allCSRFFindings := make([]CSRFFinding, 0)
 		allSSRFFindings := make([]SSRFFinding, 0)
 		allRedirectFindings := make([]RedirectFinding, 0)
@@ -323,6 +331,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					// Scan this target with its discovered parameters
 					xssResult := scanTargetForXSS(workerCtx, xssScanner, target)
 					sqliResult := scanTargetForSQLi(workerCtx, sqliScanner, target)
+					nosqliResult := scanTargetForNoSQLi(workerCtx, nosqliScanner, target)
 					csrfResult := scanTargetForCSRF(workerCtx, csrfScanner, target)
 					ssrfResult := scanTargetForSSRF(workerCtx, ssrfScanner, target)
 					redirectResult := scanTargetForRedirect(workerCtx, redirectScanner, target)
@@ -336,6 +345,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					}
 					for i := range sqliResult.Findings {
 						sqliResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sqliResult.Findings[i].Evidence)
+					}
+					for i := range nosqliResult.Findings {
+						nosqliResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, nosqliResult.Findings[i].Evidence)
 					}
 					for i := range csrfResult.Findings {
 						csrfResult.Findings[i].FormAction = target.URL
@@ -360,6 +372,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					mu.Lock()
 					allXSSFindings = append(allXSSFindings, xssResult.Findings...)
 					allSQLiFindings = append(allSQLiFindings, sqliResult.Findings...)
+					allNoSQLiFindings = append(allNoSQLiFindings, nosqliResult.Findings...)
 					allCSRFFindings = append(allCSRFFindings, csrfResult.Findings...)
 					allSSRFFindings = append(allSSRFFindings, ssrfResult.Findings...)
 					allRedirectFindings = append(allRedirectFindings, redirectResult.Findings...)
@@ -370,6 +383,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					// Accumulate test counts from each scanner's summary
 					stats.TotalXSSTests += xssResult.Summary.TotalTests
 					stats.TotalSQLiTests += sqliResult.Summary.TotalTests
+					stats.TotalNoSQLiTests += nosqliResult.Summary.TotalTests
 					stats.TotalCSRFTests += csrfResult.Summary.TotalFormsTested
 					stats.TotalSSRFTests += ssrfResult.Summary.TotalTests
 					stats.TotalRedirectTests += redirectResult.Summary.TotalTests
@@ -431,6 +445,16 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Summary: SQLiSummary{
 				TotalTests:           stats.TotalSQLiTests,
 				VulnerabilitiesFound: len(allSQLiFindings),
+			},
+			Errors: []string{},
+		}
+
+		nosqliResult := &NoSQLiScanResult{
+			Target:   cfg.Target,
+			Findings: allNoSQLiFindings,
+			Summary: NoSQLiSummary{
+				TotalTests:           stats.TotalNoSQLiTests,
+				VulnerabilitiesFound: len(allNoSQLiFindings),
 			},
 			Errors: []string{},
 		}
@@ -506,6 +530,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			// Track findings before verification
 			stats.TotalXSSFindings = len(xssResult.Findings)
 			stats.TotalSQLiFindings = len(sqliResult.Findings)
+			stats.TotalNoSQLiFindings = len(nosqliResult.Findings)
 			stats.TotalCSRFFindings = len(csrfResult.Findings)
 			stats.TotalSSRFFindings = len(ssrfResult.Findings)
 			stats.TotalRedirectFindings = len(redirectResult.Findings)
@@ -542,6 +567,22 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 						sqliResult.Findings[i].Confidence = "medium"
 					} else if !result.Verified {
 						sqliResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
+			// Verify NoSQLi findings
+			for i := range nosqliResult.Findings {
+				result, err := nosqliScanner.VerifyFinding(ctx, &nosqliResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					nosqliResult.Findings[i].Verified = result.Verified
+					nosqliResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						nosqliResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						nosqliResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						nosqliResult.Findings[i].Confidence = "low"
 					}
 				}
 			}
@@ -653,6 +694,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			sqliResult.Findings = verifiedSQLiFindings
 			sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
 
+			verifiedNoSQLiFindings := make([]NoSQLiFinding, 0)
+			for _, finding := range nosqliResult.Findings {
+				if finding.Verified {
+					verifiedNoSQLiFindings = append(verifiedNoSQLiFindings, finding)
+				}
+			}
+			nosqliResult.Findings = verifiedNoSQLiFindings
+			nosqliResult.Summary.VulnerabilitiesFound = len(verifiedNoSQLiFindings)
+
 			verifiedCSRFFindings := make([]CSRFFinding, 0)
 			for _, finding := range csrfResult.Findings {
 				if finding.Verified {
@@ -710,6 +760,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 
 		intermediateResult.XSS = xssResult
 		intermediateResult.SQLi = sqliResult
+		intermediateResult.NoSQLi = nosqliResult
 		intermediateResult.CSRF = csrfResult
 		intermediateResult.SSRF = ssrfResult
 		intermediateResult.Redirect = redirectResult
@@ -848,6 +899,17 @@ func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target Discovere
 
 // scanTargetForSQLi scans a single discovered target for SQL injection vulnerabilities.
 func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) *SQLiScanResult {
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+	}
+	// Default to GET
+	targetURL := buildURLWithParams(target)
+	return scanner.Scan(ctx, targetURL)
+}
+
+// scanTargetForNoSQLi scans a single discovered target for NoSQL injection vulnerabilities.
+func scanTargetForNoSQLi(ctx context.Context, scanner *NoSQLiScanner, target DiscoveredTarget) *NoSQLiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
 		return scanner.ScanPOST(ctx, target.URL, target.Parameters)

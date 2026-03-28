@@ -265,6 +265,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			stats.TotalXSSFindings = len(xssResult.Findings)
 			stats.TotalSQLiFindings = len(sqliResult.Findings)
 			stats.TotalNoSQLiFindings = len(nosqliResult.Findings)
+			stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
 			stats.TotalCSRFFindings = len(csrfResult.Findings)
 			stats.TotalSSRFFindings = len(ssrfResult.Findings)
 			stats.TotalRedirectFindings = len(redirectResult.Findings)

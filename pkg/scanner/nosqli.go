@@ -360,6 +360,12 @@ func (s *NoSQLiScanner) Scan(ctx context.Context, targetURL string) *NoSQLiScanR
 				}
 			}
 
+			// Skip array-pollution payloads here; they are handled by a dedicated loop below
+			// that constructs the correct URL format (e.g., param[$ne]=1).
+			if payload.Type == "array-pollution" {
+				continue
+			}
+
 			result.Summary.TotalTests++
 
 			var finding *NoSQLiFinding
@@ -471,6 +477,11 @@ func (s *NoSQLiScanner) ScanPOST(ctx context.Context, targetURL string, paramete
 					result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
 					return result
 				}
+			}
+
+			// Skip array-pollution payloads in this loop; they are not applicable to POST body params.
+			if payload.Type == "array-pollution" {
+				continue
 			}
 
 			result.Summary.TotalTests++
@@ -893,13 +904,11 @@ func (s *NoSQLiScanner) testArrayPollution(ctx context.Context, baseURL *url.URL
 
 	testURL := *baseURL
 	existingQuery := testURL.RawQuery
-	pollutedParam := paramName + operatorPart
 	if existingQuery != "" {
 		testURL.RawQuery = existingQuery + "&" + url.QueryEscape(paramName) + operatorPart
 	} else {
 		testURL.RawQuery = url.QueryEscape(paramName) + operatorPart
 	}
-	_ = pollutedParam
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
 	if err != nil {
@@ -973,16 +982,10 @@ func (s *NoSQLiScanner) isSignificantResponseChange(baseline *baselineResponse, 
 		return false
 	}
 
-	// Status code change (e.g., 401 -> 200 indicates auth bypass)
+	// Status code change is suspicious.
+	// A change from 4xx to 2xx strongly suggests authentication bypass.
 	if baseline.StatusCode != statusCode {
-		// A change from 4xx to 2xx strongly suggests authentication bypass
-		if baseline.StatusCode >= 400 && statusCode >= 200 && statusCode < 300 {
-			return true
-		}
-		// Any status code change is suspicious
-		if baseline.StatusCode != statusCode {
-			return true
-		}
+		return true
 	}
 
 	// Large body length change (more than 30% difference)

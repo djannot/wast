@@ -107,6 +107,7 @@ type SARIFInvocation struct {
 const (
 	RuleIDXSS          = "WAST-XSS-001"
 	RuleIDSQLi         = "WAST-SQLI-001"
+	RuleIDNoSQLi       = "WAST-NOSQLI-001"
 	RuleIDCMDi         = "WAST-CMDI-001"
 	RuleIDCSRF         = "WAST-CSRF-001"
 	RuleIDSSRF         = "WAST-SSRF-001"
@@ -128,6 +129,7 @@ const (
 const (
 	CWEXSS        = "CWE-79"
 	CWESQLi       = "CWE-89"
+	CWENoSQLi     = "CWE-943"
 	CWECMDi       = "CWE-78"
 	CWECSRF       = "CWE-352"
 	CWESSRF       = "CWE-918"
@@ -213,6 +215,11 @@ func convertMapToSARIF(data map[string]interface{}, report *SARIFReport) (*SARIF
 	// Process SQLi if present
 	if sqli, ok := data["sqli"].(map[string]interface{}); ok {
 		processSQLiMap(sqli, &run)
+	}
+
+	// Process NoSQLi if present
+	if nosqli, ok := data["nosqli"].(map[string]interface{}); ok {
+		processNoSQLiMap(nosqli, &run)
 	}
 
 	// Process CSRF if present
@@ -305,6 +312,23 @@ func buildAllRules() []SARIFRule {
 			},
 			Properties: map[string]interface{}{
 				"tags": []string{CWESQLi, "security", "sqli", "injection"},
+			},
+		},
+		{
+			ID:   RuleIDNoSQLi,
+			Name: "NoSQLInjection",
+			ShortDescription: SARIFMessage{
+				Text: "NoSQL Injection vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The application constructs NoSQL queries using unsanitized user input, allowing attackers to manipulate database queries via operator injection, JavaScript injection, or array parameter pollution.",
+			},
+			Help: SARIFMessage{
+				Text:     "Validate and sanitize all user input before using it in NoSQL queries. Use parameterized queries or ODM/ORM abstractions that prevent operator injection. Disable JavaScript execution in MongoDB ($where, $function) if not required. Apply strict schema validation to reject unexpected operators.",
+				Markdown: "**Remediation:** Validate and sanitize all user input before using it in NoSQL queries. Use parameterized queries or ODM/ORM abstractions that prevent operator injection. Disable JavaScript execution in MongoDB (`$where`, `$function`) if not required. Apply strict schema validation (e.g., JSON Schema) to reject unexpected operators.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWENoSQLi, "security", "nosqli", "injection", "nosql"},
 			},
 		},
 		{
@@ -645,6 +669,21 @@ func processSQLiMap(sqli map[string]interface{}, run *SARIFRun) {
 	}
 }
 
+func processNoSQLiMap(nosqli map[string]interface{}, run *SARIFRun) {
+	target := getStringValue(nosqli, "target")
+
+	if findings, ok := nosqli["findings"].([]interface{}); ok {
+		for _, f := range findings {
+			if finding, ok := f.(map[string]interface{}); ok {
+				result := createNoSQLiResult(finding, target)
+				if result != nil {
+					run.Results = append(run.Results, *result)
+				}
+			}
+		}
+	}
+}
+
 func processCSRFMap(csrf map[string]interface{}, run *SARIFRun) {
 	if findings, ok := csrf["findings"].([]interface{}); ok {
 		for _, f := range findings {
@@ -923,6 +962,43 @@ func createSQLiResult(finding map[string]interface{}, target string) *SARIFResul
 			"parameter":  parameter,
 			"payload":    payload,
 			"type":       sqliType,
+			"confidence": confidence,
+		},
+	}
+}
+
+func createNoSQLiResult(finding map[string]interface{}, target string) *SARIFResult {
+	url := getStringValue(finding, "url")
+	parameter := getStringValue(finding, "parameter")
+	payload := getStringValue(finding, "payload")
+	evidence := getStringValue(finding, "evidence")
+	severity := getStringValue(finding, "severity")
+	nosqliType := getStringValue(finding, "type")
+	description := getStringValue(finding, "description")
+	remediation := getStringValue(finding, "remediation")
+	confidence := getStringValue(finding, "confidence")
+
+	return &SARIFResult{
+		RuleID:    RuleIDNoSQLi,
+		RuleIndex: getRuleIndex(RuleIDNoSQLi),
+		Level:     mapSeverityToLevel(severity),
+		Message: SARIFMessage{
+			Text:     fmt.Sprintf("NoSQL Injection vulnerability in parameter '%s': %s", parameter, description),
+			Markdown: fmt.Sprintf("**NoSQL Injection (%s)**\n\nParameter: `%s`\n\n%s\n\n**Evidence:** `%s`\n\n**Remediation:** %s", nosqliType, parameter, description, evidence, remediation),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: url,
+					},
+				},
+			},
+		},
+		Properties: map[string]interface{}{
+			"parameter":  parameter,
+			"payload":    payload,
+			"type":       nosqliType,
 			"confidence": confidence,
 		},
 	}
@@ -1225,6 +1301,7 @@ func getRuleIndex(ruleID string) int {
 	rules := []string{
 		RuleIDXSS,
 		RuleIDSQLi,
+		RuleIDNoSQLi,
 		RuleIDCMDi,
 		RuleIDCSRF,
 		RuleIDSSRF,

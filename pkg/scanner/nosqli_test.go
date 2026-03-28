@@ -42,6 +42,16 @@ func (m *mockNoSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+// handlerNoSQLiHTTPClient is a mock HTTP client that delegates to a handler function.
+// This avoids URL-encoding mismatch issues with the string-map based mock.
+type handlerNoSQLiHTTPClient struct {
+	handler func(req *http.Request) (*http.Response, error)
+}
+
+func (h *handlerNoSQLiHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	return h.handler(req)
+}
+
 func TestNewNoSQLiScanner(t *testing.T) {
 	scanner := NewNoSQLiScanner()
 
@@ -121,23 +131,25 @@ func TestNoSQLiScanner_ErrorBasedDetection_MongoDB(t *testing.T) {
 }
 
 func TestNoSQLiScanner_OperatorInjection_AuthBypass(t *testing.T) {
-	// Simulate a vulnerable login endpoint that allows auth bypass with $ne
-	mockClient := &mockNoSQLiHTTPClient{
-		responses: map[string]*mockNoSQLiResponse{
-			// Baseline: 401 Unauthorized
-			`http://example.com/login?username=test`: {
-				statusCode: 401,
-				body:       "Invalid credentials",
-			},
+	// Simulate a vulnerable login endpoint that allows NoSQL operator injection auth bypass.
+	// The handler returns 401 for the baseline request and 200 whenever the username
+	// parameter contains a "$" character (i.e., any NoSQL operator payload).
+	mockClient := &handlerNoSQLiHTTPClient{
+		handler: func(req *http.Request) (*http.Response, error) {
+			usernameParam := req.URL.Query().Get("username")
+			if strings.Contains(usernameParam, "$") {
+				// Injection payload detected — simulate auth bypass
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader("Welcome, admin! Dashboard loaded.")),
+				}, nil
+			}
+			// Baseline / safe value — 401 Unauthorized
+			return &http.Response{
+				StatusCode: 401,
+				Body:       io.NopCloser(strings.NewReader("Invalid credentials")),
+			}, nil
 		},
-	}
-
-	// The $ne payload URL - when injected, returns 200 (auth bypass)
-	nePayload := `{"$ne": ""}`
-	neURL := `http://example.com/login?username=` + nePayload
-	mockClient.responses[neURL] = &mockNoSQLiResponse{
-		statusCode: 200,
-		body:       "Welcome, admin! Dashboard loaded.",
 	}
 
 	scanner := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
@@ -147,7 +159,7 @@ func TestNoSQLiScanner_OperatorInjection_AuthBypass(t *testing.T) {
 		t.Error("Expected tests to be run")
 	}
 
-	// Should detect auth bypass via status code change (401 -> 200)
+	// The scanner must detect the auth bypass via differential analysis (401 -> 200).
 	found := false
 	for _, f := range result.Findings {
 		if f.Type == "operator-injection" && f.Parameter == "username" {
@@ -163,9 +175,7 @@ func TestNoSQLiScanner_OperatorInjection_AuthBypass(t *testing.T) {
 	}
 
 	if !found {
-		// This test is checking the differential analysis - may not always trigger in unit test
-		// because URL encoding may differ. Just check that tests ran.
-		t.Log("No operator injection finding detected via differential analysis (expected in some test environments)")
+		t.Errorf("Expected NoSQL operator injection auth-bypass finding for parameter 'username', but none was detected. Findings: %+v", result.Findings)
 	}
 }
 
