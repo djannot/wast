@@ -339,7 +339,11 @@ func TestDNSServerLifecycle(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Verify the server is running (conn should be set)
-	if dnsServer.conn == nil {
+	dnsServer.mu.RLock()
+	conn := dnsServer.conn
+	dnsServer.mu.RUnlock()
+
+	if conn == nil {
 		t.Fatal("expected DNS server connection to be established")
 	}
 
@@ -669,16 +673,16 @@ func TestCleanupLoopCleanupDone(t *testing.T) {
 func buildDNSPacket(domain string) []byte {
 	// DNS header (12 bytes)
 	header := make([]byte, 12)
-	header[0] = 0x00 // Transaction ID (high byte)
-	header[1] = 0x01 // Transaction ID (low byte)
-	header[2] = 0x01 // Flags: RD=1 (recursion desired)
-	header[3] = 0x00 // Flags
-	header[4] = 0x00 // QDCOUNT (high byte)
-	header[5] = 0x01 // QDCOUNT (low byte) - 1 question
-	header[6] = 0x00 // ANCOUNT (high byte)
-	header[7] = 0x00 // ANCOUNT (low byte)
-	header[8] = 0x00 // NSCOUNT (high byte)
-	header[9] = 0x00 // NSCOUNT (low byte)
+	header[0] = 0x00  // Transaction ID (high byte)
+	header[1] = 0x01  // Transaction ID (low byte)
+	header[2] = 0x01  // Flags: RD=1 (recursion desired)
+	header[3] = 0x00  // Flags
+	header[4] = 0x00  // QDCOUNT (high byte)
+	header[5] = 0x01  // QDCOUNT (low byte) - 1 question
+	header[6] = 0x00  // ANCOUNT (high byte)
+	header[7] = 0x00  // ANCOUNT (low byte)
+	header[8] = 0x00  // NSCOUNT (high byte)
+	header[9] = 0x00  // NSCOUNT (low byte)
 	header[10] = 0x00 // ARCOUNT (high byte)
 	header[11] = 0x00 // ARCOUNT (low byte)
 
@@ -735,11 +739,19 @@ func TestDNSServerIntegration(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Get the actual port the DNS server is listening on
-	if server.dnsServer == nil || server.dnsServer.conn == nil {
+	if server.dnsServer == nil {
 		t.Fatal("DNS server not started")
 	}
 
-	addr := server.dnsServer.conn.LocalAddr().(*net.UDPAddr)
+	server.dnsServer.mu.RLock()
+	conn := server.dnsServer.conn
+	server.dnsServer.mu.RUnlock()
+
+	if conn == nil {
+		t.Fatal("DNS server connection not established")
+	}
+
+	addr := conn.LocalAddr().(*net.UDPAddr)
 
 	// Register a callback we expect to receive
 	callbackID := "test123"

@@ -390,6 +390,7 @@ type dnsServer struct {
 	addr     string
 	domain   string
 	callback *Server
+	mu       sync.RWMutex
 	conn     *net.UDPConn
 }
 
@@ -413,7 +414,10 @@ func (s *dnsServer) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %w", err)
 	}
+
+	s.mu.Lock()
 	s.conn = conn
+	s.mu.Unlock()
 
 	buf := make([]byte, 512)
 	for {
@@ -429,6 +433,9 @@ func (s *dnsServer) Start() error {
 
 // Stop stops the DNS server.
 func (s *dnsServer) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.conn != nil {
 		return s.conn.Close()
 	}
@@ -488,5 +495,11 @@ func (s *dnsServer) sendDNSResponse(query []byte, addr *net.UDPAddr) {
 	response[2] = 0x81 // QR=1, OPCODE=0, AA=0, TC=0, RD=1
 	response[3] = 0x83 // RA=1, Z=0, RCODE=3 (NXDOMAIN)
 
-	s.conn.WriteToUDP(response, addr)
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+
+	if conn != nil {
+		conn.WriteToUDP(response, addr)
+	}
 }
