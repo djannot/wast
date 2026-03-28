@@ -82,6 +82,35 @@ type RateLimitInfo struct {
 	RateLimitHeaders  map[string]string `json:"rate_limit_headers,omitempty" yaml:"rate_limit_headers,omitempty"`
 }
 
+// SecurityVulnerability represents a security vulnerability found during API testing.
+type SecurityVulnerability struct {
+	Type        string `json:"type" yaml:"type"`           // "sqli", "bola", "idor", "mass_assignment", etc.
+	Severity    string `json:"severity" yaml:"severity"`   // "high", "medium", "low"
+	Parameter   string `json:"parameter" yaml:"parameter"` // The parameter that is vulnerable
+	Payload     string `json:"payload,omitempty" yaml:"payload,omitempty"`
+	Evidence    string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Description string `json:"description" yaml:"description"`
+	Remediation string `json:"remediation" yaml:"remediation"`
+	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
+}
+
+// SecurityTestResult represents the results of security testing for an endpoint.
+type SecurityTestResult struct {
+	Endpoint        EndpointInfo            `json:"endpoint" yaml:"endpoint"`
+	Vulnerabilities []SecurityVulnerability `json:"vulnerabilities,omitempty" yaml:"vulnerabilities,omitempty"`
+	JWTAnalysis     *JWTAnalysis            `json:"jwt_analysis,omitempty" yaml:"jwt_analysis,omitempty"`
+	AuthTests       []AuthTestResult        `json:"auth_tests,omitempty" yaml:"auth_tests,omitempty"`
+	Tested          bool                    `json:"tested" yaml:"tested"`
+}
+
+// AuthTestResult represents the result of an authorization test.
+type AuthTestResult struct {
+	TestType    string `json:"test_type" yaml:"test_type"` // "bypass", "bola", "idor"
+	Success     bool   `json:"success" yaml:"success"`     // true if vulnerability found
+	StatusCode  int    `json:"status_code" yaml:"status_code"`
+	Description string `json:"description" yaml:"description"`
+}
+
 // String returns a human-readable representation of the API specification.
 func (s *APISpec) String() string {
 	var sb strings.Builder
