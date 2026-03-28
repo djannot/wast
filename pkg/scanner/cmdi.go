@@ -464,23 +464,40 @@ func WithCMDiTimeBasedDelay(d time.Duration) CMDiOption {
 }
 
 // WithCMDiVerbose enables verbose debug logging for the command injection scanner.
-func WithCMDiVerbose(verbose bool) CMDiOption {
+func WithCMDiVerbose() CMDiOption {
 	return func(s *CMDiScanner) {
-		s.verbose = verbose
+		s.verbose = true
 	}
 }
 
-// submitButtonPatterns lists common submit button parameter name patterns (case-insensitive).
-// These parameters carry no injectable data and should be skipped during injection testing.
-var submitButtonPatterns = []string{
-	"submit", "btn", "btn_submit", "button", "go", "search", "action", "send",
+// submitButtonExactPatterns lists parameter names that are submit-button indicators when
+// matched exactly (case-insensitive). These patterns are also common data-field prefixes
+// (e.g. "search_query", "action_type"), so prefix/suffix expansion is intentionally avoided
+// to prevent false negatives in a security scanner.
+var submitButtonExactPatterns = map[string]bool{
+	"submit": true,
+	"go":     true,
+	"search": true,
+	"action": true,
+	"send":   true,
 }
+
+// submitButtonPrefixPatterns lists patterns that are safe for prefix/suffix expansion because
+// they are unambiguously submit-button names (e.g. "btn_primary", "my_button").
+var submitButtonPrefixPatterns = []string{"btn", "button"}
 
 // isSubmitButton reports whether the given parameter name matches a common submit button pattern.
 // This helps the scanner skip non-data form fields to avoid wasted effort and false positives.
+// Exact matching is used for patterns like "search" and "action" that also appear as data-field
+// prefixes, to avoid false negatives on legitimate injection targets such as "search_query".
 func isSubmitButton(paramName string) bool {
 	lower := strings.ToLower(paramName)
-	for _, pattern := range submitButtonPatterns {
+	// Exact-match only for ambiguous patterns (also common data-field names)
+	if submitButtonExactPatterns[lower] {
+		return true
+	}
+	// Prefix/suffix expansion only for unambiguously submit-button names
+	for _, pattern := range submitButtonPrefixPatterns {
 		if lower == pattern || strings.HasPrefix(lower, pattern+"_") || strings.HasSuffix(lower, "_"+pattern) {
 			return true
 		}

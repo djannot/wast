@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1137,20 +1138,29 @@ func TestIsSubmitButton(t *testing.T) {
 		param    string
 		expected bool
 	}{
+		// Exact-match patterns (case-insensitive)
 		{"exact Submit", "Submit", true},
 		{"lowercase submit", "submit", true},
-		{"btn", "btn", true},
-		{"btn_submit", "btn_submit", true},
-		{"button", "button", true},
 		{"go", "go", true},
 		{"search", "search", true},
 		{"action", "action", true},
 		{"send", "send", true},
+		// Prefix/suffix expansion patterns (btn, button)
+		{"btn", "btn", true},
+		{"btn_submit", "btn_submit", true},
+		{"btn_primary should be submit", "btn_primary", true},
+		{"button", "button", true},
+		{"my_button should be submit", "my_button", true},
+		// Ambiguous patterns: exact-match only, prefix/suffix must NOT match
+		{"search_query should NOT be submit", "search_query", false},
+		{"action_type should NOT be submit", "action_type", false},
+		{"go_to should NOT be submit", "go_to", false},
+		{"data_submit should NOT be submit", "data_submit", false},
+		// Non-submit data field params
 		{"ip param", "ip", false},
 		{"cmd param", "cmd", false},
 		{"username", "username", false},
 		{"email", "email", false},
-		{"data_submit prefix", "data_submit", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1194,6 +1204,7 @@ func TestCMDiScanner_ScanPOST_SkipsSubmitParams(t *testing.T) {
 
 // mockSubmitParamTrackingClient records which parameters receive injected payloads.
 type mockSubmitParamTrackingClient struct {
+	mu           sync.Mutex
 	testedParams map[string]bool
 }
 
@@ -1211,7 +1222,9 @@ func (m *mockSubmitParamTrackingClient) Do(req *http.Request) (*http.Response, e
 			}
 			// If the value contains shell metacharacters it's a payload, not an original value
 			if strings.ContainsAny(v, ";|&`$()") {
+				m.mu.Lock()
 				m.testedParams[k] = true
+				m.mu.Unlock()
 			}
 		}
 	}
