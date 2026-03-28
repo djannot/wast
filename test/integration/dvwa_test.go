@@ -585,6 +585,195 @@ func TestDVWA_NoFalsePositives(t *testing.T) {
 	}
 }
 
+// TestDVWA_FullDiscoveryScanAssertions runs a full discovery scan against DVWA and asserts
+// hard minimum finding counts for every scanner category. This test is the CI regression gate:
+// if any scanner stops detecting a known-vulnerable class, this test fails.
+func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping DVWA full discovery scan assertions in short mode")
+	}
+
+	client := loginToDVWA(t)
+	authConfig := getAuthConfigFromClient(client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+
+	cfg := scanner.DiscoveryScanConfig{
+		ScanConfig: scanner.ScanConfig{
+			Target:     dvwaURL,
+			Timeout:    240,
+			AuthConfig: authConfig,
+		},
+		CrawlDepth:      3,
+		Concurrency:     3,
+		ScanConcurrency: 3,
+		Discover:        true,
+	}
+
+	result, stats := scanner.ExecuteDiscoveryScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Discovery scan returned nil result")
+	}
+	if stats == nil {
+		t.Fatal("Discovery scan returned nil stats")
+	}
+
+	// Log overall summary for debugging
+	t.Logf("=== Full Discovery Scan Results ===")
+	t.Logf("Total findings: %d", result.Summary.TotalFindings)
+	t.Logf("XSS findings: %d (tests: %d)", stats.TotalXSSFindings, stats.TotalXSSTests)
+	t.Logf("SQLi findings: %d (tests: %d)", stats.TotalSQLiFindings, stats.TotalSQLiTests)
+	t.Logf("CMDi findings: %d (tests: %d)", stats.TotalCMDiFindings, stats.TotalCMDiTests)
+	t.Logf("Path Traversal findings: %d (tests: %d)", stats.TotalPathTraversalFindings, stats.TotalPathTraversalTests)
+	t.Logf("CSRF findings: %d", stats.TotalCSRFFindings)
+	t.Logf("SSTI findings: %d (tests: %d)", stats.TotalSSTIFindings, stats.TotalSSTITests)
+	t.Logf("Headers findings: %d", func() int {
+		if result.Headers != nil {
+			return len(result.Headers.Headers)
+		}
+		return 0
+	}())
+
+	// ----------------------------------------------------------------
+	// SQLi: >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param
+	// ----------------------------------------------------------------
+	sqliOnExpectedPaths := 0
+	if result.SQLi != nil {
+		for _, f := range result.SQLi.Findings {
+			path := f.URL
+			param := strings.ToLower(f.Parameter)
+			if param == "id" && (strings.Contains(path, "/brute/") ||
+				strings.Contains(path, "/fi/") ||
+				strings.Contains(path, "/sqli/")) {
+				sqliOnExpectedPaths++
+				t.Logf("SQLi found: url=%s param=%s type=%s", f.URL, f.Parameter, f.Type)
+			}
+		}
+	}
+	if sqliOnExpectedPaths < 1 {
+		t.Errorf("SQLi: expected >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param, got %d", sqliOnExpectedPaths)
+	}
+
+	// ----------------------------------------------------------------
+	// XSS: >= 1 finding on /xss_r/ with 'name' param
+	// ----------------------------------------------------------------
+	xssOnExpectedPaths := 0
+	if result.XSS != nil {
+		for _, f := range result.XSS.Findings {
+			if strings.Contains(f.URL, "/xss_r/") && strings.ToLower(f.Parameter) == "name" {
+				xssOnExpectedPaths++
+				t.Logf("XSS found: url=%s param=%s confidence=%s", f.URL, f.Parameter, f.Confidence)
+			}
+		}
+	}
+	if xssOnExpectedPaths < 1 {
+		t.Errorf("XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d", xssOnExpectedPaths)
+	}
+
+	// ----------------------------------------------------------------
+	// CMDi: >= 1 finding on /exec/ with 'ip' param
+	// ----------------------------------------------------------------
+	cmdiOnExpectedPaths := 0
+	if result.CMDi != nil {
+		for _, f := range result.CMDi.Findings {
+			if strings.Contains(f.URL, "/exec/") && strings.ToLower(f.Parameter) == "ip" {
+				cmdiOnExpectedPaths++
+				t.Logf("CMDi found: url=%s param=%s confidence=%s", f.URL, f.Parameter, f.Confidence)
+			}
+		}
+	}
+	if cmdiOnExpectedPaths < 1 {
+		t.Errorf("CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d", cmdiOnExpectedPaths)
+	}
+
+	// ----------------------------------------------------------------
+	// CSRF: >= 7 forms with missing tokens
+	// ----------------------------------------------------------------
+	if stats.TotalCSRFFindings < 7 {
+		t.Errorf("CSRF: expected >= 7 findings (missing tokens), got %d", stats.TotalCSRFFindings)
+	} else {
+		t.Logf("CSRF: %d findings (>= 7 required) — PASS", stats.TotalCSRFFindings)
+	}
+
+	// ----------------------------------------------------------------
+	// SSTI: 0 findings (no false positives on PHP app)
+	// ----------------------------------------------------------------
+	if stats.TotalSSTIFindings != 0 {
+		t.Errorf("SSTI: expected 0 findings (no template engines in DVWA), got %d", stats.TotalSSTIFindings)
+		if result.SSTI != nil {
+			for _, f := range result.SSTI.Findings {
+				t.Logf("  SSTI false positive: url=%s param=%s payload=%s evidence=%s",
+					f.URL, f.Parameter, f.Payload, f.Evidence)
+			}
+		}
+	} else {
+		t.Logf("SSTI: 0 findings — PASS")
+	}
+
+	// ----------------------------------------------------------------
+	// Path Traversal: >= 1 finding on /fi/ with 'page' param
+	// ----------------------------------------------------------------
+	ptOnExpectedPaths := 0
+	if result.PathTraversal != nil {
+		for _, f := range result.PathTraversal.Findings {
+			if strings.Contains(f.URL, "/fi/") && strings.ToLower(f.Parameter) == "page" {
+				ptOnExpectedPaths++
+				t.Logf("PathTraversal found: url=%s param=%s confidence=%s", f.URL, f.Parameter, f.Confidence)
+			}
+		}
+	}
+	if ptOnExpectedPaths < 1 {
+		t.Errorf("PathTraversal: expected >= 1 finding on /fi/ with 'page' param, got %d", ptOnExpectedPaths)
+	}
+
+	// ----------------------------------------------------------------
+	// Headers: >= 1 missing security header
+	// ----------------------------------------------------------------
+	missingHeaders := 0
+	if result.Headers != nil {
+		for _, h := range result.Headers.Headers {
+			if !h.Present {
+				missingHeaders++
+			}
+		}
+	}
+	if missingHeaders < 1 {
+		t.Errorf("Headers: expected >= 1 missing security header, got %d", missingHeaders)
+	} else {
+		t.Logf("Headers: %d missing security headers — PASS", missingHeaders)
+	}
+
+	// ----------------------------------------------------------------
+	// No submit-button false positives (SQLi/CMDi/XSS on submit params)
+	// ----------------------------------------------------------------
+	submitParams := map[string]bool{
+		"submit": true, "upload": true, "login": true, "seclev_submit": true,
+	}
+	if result.SQLi != nil {
+		for _, f := range result.SQLi.Findings {
+			if submitParams[strings.ToLower(f.Parameter)] {
+				t.Errorf("SQLi false positive on submit-type param '%s' at %s", f.Parameter, f.URL)
+			}
+		}
+	}
+	if result.CMDi != nil {
+		for _, f := range result.CMDi.Findings {
+			if submitParams[strings.ToLower(f.Parameter)] {
+				t.Errorf("CMDi false positive on submit-type param '%s' at %s", f.Parameter, f.URL)
+			}
+		}
+	}
+	if result.XSS != nil {
+		for _, f := range result.XSS.Findings {
+			if submitParams[strings.ToLower(f.Parameter)] {
+				t.Errorf("XSS false positive on submit-type param '%s' at %s", f.Parameter, f.URL)
+			}
+		}
+	}
+}
+
 // TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons verifies SQLi scanner doesn't flag submit buttons
 func TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons(t *testing.T) {
 	if testing.Short() {
