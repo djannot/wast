@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +71,18 @@ func loadFromFile(path string) ([]byte, error) {
 
 // loadFromURL loads data from a URL.
 func loadFromURL(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Allow up to 10 redirects
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch URL %s: %w", url, err)
 	}
