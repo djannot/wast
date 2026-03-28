@@ -12,17 +12,17 @@ import (
 
 // JWTAnalysis represents the result of JWT token analysis.
 type JWTAnalysis struct {
-	Token              string            `json:"token" yaml:"token"`
-	Header             map[string]interface{} `json:"header" yaml:"header"`
-	Payload            map[string]interface{} `json:"payload" yaml:"payload"`
-	Algorithm          string            `json:"algorithm" yaml:"algorithm"`
-	IsExpired          bool              `json:"is_expired" yaml:"is_expired"`
-	ExpiresAt          string            `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
-	IssuedAt           string            `json:"issued_at,omitempty" yaml:"issued_at,omitempty"`
-	NotBefore          string            `json:"not_before,omitempty" yaml:"not_before,omitempty"`
-	Vulnerabilities    []string          `json:"vulnerabilities,omitempty" yaml:"vulnerabilities,omitempty"`
-	Warnings           []string          `json:"warnings,omitempty" yaml:"warnings,omitempty"`
-	Valid              bool              `json:"valid" yaml:"valid"`
+	Token           string                 `json:"token" yaml:"token"`
+	Header          map[string]interface{} `json:"header" yaml:"header"`
+	Payload         map[string]interface{} `json:"payload" yaml:"payload"`
+	Algorithm       string                 `json:"algorithm" yaml:"algorithm"`
+	IsExpired       bool                   `json:"is_expired" yaml:"is_expired"`
+	ExpiresAt       string                 `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	IssuedAt        string                 `json:"issued_at,omitempty" yaml:"issued_at,omitempty"`
+	NotBefore       string                 `json:"not_before,omitempty" yaml:"not_before,omitempty"`
+	Vulnerabilities []string               `json:"vulnerabilities,omitempty" yaml:"vulnerabilities,omitempty"`
+	Warnings        []string               `json:"warnings,omitempty" yaml:"warnings,omitempty"`
+	Valid           bool                   `json:"valid" yaml:"valid"`
 }
 
 // AnalyzeJWT analyzes a JWT token without verifying the signature.

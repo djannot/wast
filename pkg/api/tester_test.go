@@ -488,7 +488,7 @@ func TestTester_WithOptions(t *testing.T) {
 	})
 
 	t.Run("custom timeout", func(t *testing.T) {
-		tester := NewTester(WithTimeout(60 * time.Second), WithSecurityTesting(false))
+		tester := NewTester(WithTimeout(60*time.Second), WithSecurityTesting(false))
 		if tester.timeout != 60*time.Second {
 			t.Errorf("Expected timeout of 60s, got %v", tester.timeout)
 		}

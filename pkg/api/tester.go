@@ -45,14 +45,14 @@ func (c *DefaultHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 // EndpointTestResult represents the result of testing a single API endpoint.
 type EndpointTestResult struct {
-	Endpoint       EndpointInfo            `json:"endpoint" yaml:"endpoint"`
-	StatusCode     int                     `json:"status_code" yaml:"status_code"`
-	ResponseTime   int64                   `json:"response_time_ms" yaml:"response_time_ms"`
-	Headers        map[string]string       `json:"headers,omitempty" yaml:"headers,omitempty"`
-	Error          string                  `json:"error,omitempty" yaml:"error,omitempty"`
-	Tested         bool                    `json:"tested" yaml:"tested"`
-	RateLimitInfo  *RateLimitInfo          `json:"rate_limit_info,omitempty" yaml:"rate_limit_info,omitempty"`
-	SecurityResult *SecurityTestResult     `json:"security_result,omitempty" yaml:"security_result,omitempty"`
+	Endpoint       EndpointInfo        `json:"endpoint" yaml:"endpoint"`
+	StatusCode     int                 `json:"status_code" yaml:"status_code"`
+	ResponseTime   int64               `json:"response_time_ms" yaml:"response_time_ms"`
+	Headers        map[string]string   `json:"headers,omitempty" yaml:"headers,omitempty"`
+	Error          string              `json:"error,omitempty" yaml:"error,omitempty"`
+	Tested         bool                `json:"tested" yaml:"tested"`
+	RateLimitInfo  *RateLimitInfo      `json:"rate_limit_info,omitempty" yaml:"rate_limit_info,omitempty"`
+	SecurityResult *SecurityTestResult `json:"security_result,omitempty" yaml:"security_result,omitempty"`
 }
 
 // TestResult represents the result of testing all endpoints.

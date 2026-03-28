@@ -84,14 +84,14 @@ type RateLimitInfo struct {
 
 // SecurityVulnerability represents a security vulnerability found during API testing.
 type SecurityVulnerability struct {
-	Type        string `json:"type" yaml:"type"`               // "sqli", "bola", "idor", "mass_assignment", etc.
-	Severity    string `json:"severity" yaml:"severity"`       // "high", "medium", "low"
-	Parameter   string `json:"parameter" yaml:"parameter"`     // The parameter that is vulnerable
+	Type        string `json:"type" yaml:"type"`           // "sqli", "bola", "idor", "mass_assignment", etc.
+	Severity    string `json:"severity" yaml:"severity"`   // "high", "medium", "low"
+	Parameter   string `json:"parameter" yaml:"parameter"` // The parameter that is vulnerable
 	Payload     string `json:"payload,omitempty" yaml:"payload,omitempty"`
 	Evidence    string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 	Description string `json:"description" yaml:"description"`
 	Remediation string `json:"remediation" yaml:"remediation"`
-	Confidence  string `json:"confidence" yaml:"confidence"`   // "high", "medium", "low"
+	Confidence  string `json:"confidence" yaml:"confidence"` // "high", "medium", "low"
 }
 
 // SecurityTestResult represents the results of security testing for an endpoint.
