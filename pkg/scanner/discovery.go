@@ -928,8 +928,11 @@ func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScann
 
 // scanTargetForSSTI scans a single discovered target for SSTI vulnerabilities.
 func scanTargetForSSTI(ctx context.Context, scanner *SSTIScanner, target DiscoveredTarget) *SSTIScanResult {
-	// SSTI scanner only supports GET requests via Scan method
-	// Build URL with parameters for both GET and POST methods
+	// Route based on HTTP method
+	if strings.EqualFold(target.Method, "POST") {
+		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+	}
+	// Default to GET
 	targetURL := buildURLWithParams(target)
 	return scanner.Scan(ctx, targetURL)
 }

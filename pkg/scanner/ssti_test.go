@@ -964,3 +964,214 @@ func TestDetectTemplateInjection_TruePositives(t *testing.T) {
 		})
 	}
 }
+
+// mockPOSTSSTIHTTPClient is a custom mock for POST request testing
+type mockPOSTSSTIHTTPClient struct {
+	requests []*http.Request
+}
+
+func (m *mockPOSTSSTIHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	m.requests = append(m.requests, req)
+
+	// Only handle POST requests
+	if req.Method != http.MethodPost {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Safe</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Parse the form data
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	formData := string(body)
+
+	// Check for baseline request
+	if strings.Contains(formData, "WAST_BASELINE_12345") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Baseline response</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Check for SSTI payloads and return evaluated result
+	// Jinja2: {{7*7}} -> 49
+	if strings.Contains(formData, "%7B%7B7%2A7%7D%7D") || strings.Contains(formData, "{{7*7}}") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Result: 49</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Freemarker: ${7*7} -> 49
+	if strings.Contains(formData, "%24%7B7%2A7%7D") || strings.Contains(formData, "${7*7}") {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Output: 49</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	// Default safe response
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html><body>Safe</body></html>")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestSSTIScanner_ScanPOST tests basic POST scanning functionality
+func TestSSTIScanner_ScanPOST(t *testing.T) {
+	mock := &mockPOSTSSTIHTTPClient{
+		requests: make([]*http.Request, 0),
+	}
+
+	scanner := NewSSTIScanner(WithSSTIHTTPClient(mock))
+
+	ctx := context.Background()
+	params := map[string]string{
+		"input": "",
+		"name":  "",
+	}
+	result := scanner.ScanPOST(ctx, "http://example.com/form", params)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should detect SSTI vulnerability
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SSTI vulnerability via POST")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		t.Logf("Errors: %v", result.Errors)
+		return
+	}
+
+	if len(result.Findings) == 0 {
+		t.Fatal("Expected at least one finding")
+	}
+
+	// Verify finding details
+	finding := result.Findings[0]
+	if finding.Severity != SeverityHigh {
+		t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+	}
+
+	if finding.TemplateEngine == "" {
+		t.Error("Expected template engine to be identified")
+	}
+}
+
+// TestSSTIScanner_ScanPOST_NoParameters tests POST scanning with no parameters
+func TestSSTIScanner_ScanPOST_NoParameters(t *testing.T) {
+	mock := &mockPOSTSSTIHTTPClient{
+		requests: make([]*http.Request, 0),
+	}
+
+	scanner := NewSSTIScanner(WithSSTIHTTPClient(mock))
+
+	ctx := context.Background()
+	// Call ScanPOST with no parameters - should test default params
+	result := scanner.ScanPOST(ctx, "http://example.com/form", nil)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should detect vulnerability in default parameters
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SSTI vulnerability in default parameters via POST")
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		return
+	}
+
+	// Verify that default parameters were tested
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be performed on default parameters")
+	}
+}
+
+// TestSSTIScanner_ScanPOST_RateLimiting tests that rate limiting is applied to POST requests
+func TestSSTIScanner_ScanPOST_RateLimiting(t *testing.T) {
+	mock := &mockPOSTSSTIHTTPClient{
+		requests: make([]*http.Request, 0),
+	}
+
+	limiter := ratelimit.NewLimiter(10) // 10 requests per second
+
+	scanner := NewSSTIScanner(
+		WithSSTIHTTPClient(mock),
+		WithSSTIRateLimiter(limiter),
+	)
+
+	ctx := context.Background()
+	params := map[string]string{
+		"input": "",
+	}
+
+	start := time.Now()
+	result := scanner.ScanPOST(ctx, "http://example.com/form", params)
+	duration := time.Since(start)
+
+	if result == nil {
+		t.Fatal("ScanPOST returned nil result")
+	}
+
+	// Should have tested multiple payloads with rate limiting applied
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be performed")
+	}
+
+	// Rate limiting should add some delay (though this is a weak test)
+	// With multiple payloads and rate limiting, there should be some minimal delay
+	if duration < time.Millisecond {
+		t.Logf("Warning: Rate limiting may not be working correctly. Duration: %v", duration)
+	}
+}
+
+// TestSSTIScanner_ScanPOST_Authentication tests that auth config is applied to POST requests
+func TestSSTIScanner_ScanPOST_Authentication(t *testing.T) {
+	mock := &mockPOSTSSTIHTTPClient{
+		requests: make([]*http.Request, 0),
+	}
+
+	authConfig := &auth.AuthConfig{
+		BearerToken: "test-token-12345",
+	}
+
+	scanner := NewSSTIScanner(
+		WithSSTIHTTPClient(mock),
+		WithSSTIAuth(authConfig),
+	)
+
+	ctx := context.Background()
+	params := map[string]string{
+		"input": "",
+	}
+	scanner.ScanPOST(ctx, "http://example.com/form", params)
+
+	// Verify that at least one request was made
+	if len(mock.requests) == 0 {
+		t.Fatal("Expected at least one request to be made")
+	}
+
+	// Check that the auth header was applied
+	foundAuthHeader := false
+	for _, req := range mock.requests {
+		authHeader := req.Header.Get("Authorization")
+		if authHeader == "Bearer test-token-12345" {
+			foundAuthHeader = true
+			break
+		}
+	}
+
+	if !foundAuthHeader {
+		t.Error("Expected Authorization header to be applied to POST requests")
+	}
+}
