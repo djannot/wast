@@ -125,13 +125,13 @@ const (
 
 // CWE references for common vulnerabilities
 const (
-	CWEXSS      = "CWE-79"
-	CWESQLi     = "CWE-89"
-	CWECMDi     = "CWE-78"
-	CWECSRF     = "CWE-352"
-	CWESSRF     = "CWE-918"
-	CWERedirect = "CWE-601"
-	CWEHeaders  = "CWE-693"
+	CWEXSS        = "CWE-79"
+	CWESQLi       = "CWE-89"
+	CWECMDi       = "CWE-78"
+	CWECSRF       = "CWE-352"
+	CWESSRF       = "CWE-918"
+	CWERedirect   = "CWE-601"
+	CWEHeaders    = "CWE-693"
 	CWECookie     = "CWE-614"
 	CWECORS       = "CWE-942"
 	CWELFI        = "CWE-22"
