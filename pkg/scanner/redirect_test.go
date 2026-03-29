@@ -776,6 +776,61 @@ func TestRedirectScanner_ExtractTargetFromPayload(t *testing.T) {
 	}
 }
 
+// TestRedirectScanner_NoFalsePositive_DOMXSSPage verifies that a page which reads URL
+// parameters via document.location.href (DOM XSS style) does NOT produce a false
+// positive open redirect finding for the javascript: payload type.
+// The word "javascript" appears on virtually every web page and must not be used as a
+// body-match target on its own.
+func TestRedirectScanner_NoFalsePositive_DOMXSSPage(t *testing.T) {
+	mock := newMockRedirectHTTPClient()
+
+	// Simulate a DOM XSS page that reads the URL parameter via document.location.href
+	// and writes it back to the DOM — but does NOT perform an open redirect.
+	// The body intentionally contains "javascript" (from the <script> tag and code) and
+	// "location.href" (from the parameter-reading logic), which are the two conditions
+	// that previously triggered the false positive.
+	domXSSPage := `<html>
+<head><title>DOM XSS test</title></head>
+<body>
+<select name="default">
+<script type="text/javascript">
+if (document.location.href.indexOf("default=") >= 0) {
+    var lang = document.location.href.substring(document.location.href.indexOf("default=")+8);
+    document.write("<option value='" + lang + "'>" + decodeURIComponent(lang) + "</option>");
+    document.write("<option value='' disabled='disabled'>----</option>");
+}
+document.write("<option value='English'>English</option>");
+</script>
+</select>
+</body>
+</html>`
+
+	// The scanner will test ?default=javascript:alert(document.domain)
+	// The static HTML response does NOT contain the payload in a redirect context.
+	mock.responses["https://example.com/xss_d?default=javascript%3Aalert%28document.domain%29"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(domXSSPage)),
+		Header:     make(http.Header),
+	}
+
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/xss_d?default=English")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// No open redirect findings should be reported — any finding here is a false positive.
+	for _, f := range result.Findings {
+		if f.Type == "javascript" {
+			t.Errorf("False positive: javascript: payload incorrectly flagged as open redirect "+
+				"on DOM XSS page (param=%s evidence=%s)", f.Parameter, f.Evidence)
+		}
+	}
+}
+
 func TestNewNoRedirectHTTPClient(t *testing.T) {
 	client := NewNoRedirectHTTPClient(30 * time.Second)
 

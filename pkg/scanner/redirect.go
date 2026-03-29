@@ -671,9 +671,19 @@ func (s *RedirectScanner) isPartialRedirectMatch(location string, payload redire
 
 // containsPayloadInBody checks if the response body contains our payload.
 func (s *RedirectScanner) containsPayloadInBody(body string, payload redirectPayload) bool {
-	// Check if the payload or target domain appears in the body
+	// Check if the payload appears in the body
 	if strings.Contains(body, payload.Payload) {
 		return true
+	}
+
+	// For javascript: payloads, "javascript" is too generic a target to match on
+	// (it appears on virtually every web page via <script type="text/javascript"> tags,
+	// JavaScript comments, or DOM XSS pages that read window.location to extract URL
+	// parameters). Matching on just "javascript" would produce false positives on any
+	// page that uses client-side scripting. Only the full payload string match above is
+	// used for this payload type to avoid false positives.
+	if payload.Target == "javascript" {
+		return false
 	}
 
 	if strings.Contains(body, payload.Target) {
