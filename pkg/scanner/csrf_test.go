@@ -244,13 +244,17 @@ func TestCSRFScanner_Scan_FormWithCSRFToken(t *testing.T) {
 	}
 }
 
-func TestCSRFScanner_Scan_GetFormIgnored(t *testing.T) {
+func TestCSRFScanner_Scan_GetFormWithoutToken_IsFlagged(t *testing.T) {
+	// GET forms that perform state-changing operations (e.g., password change)
+	// are also CSRF-vulnerable, so the scanner should flag them when they
+	// lack a CSRF token. DVWA's /vulnerabilities/csrf/ is a real-world example.
 	htmlContent := `
 		<html>
 		<body>
-			<form action="/search" method="GET">
-				<input type="text" name="q" />
-				<button type="submit">Search</button>
+			<form action="/change-password" method="GET">
+				<input type="password" name="password_new" />
+				<input type="password" name="password_conf" />
+				<button type="submit">Change</button>
 			</form>
 		</body>
 		</html>
@@ -272,16 +276,19 @@ func TestCSRFScanner_Scan_GetFormIgnored(t *testing.T) {
 		t.Fatal("Scan returned nil result")
 	}
 
-	// GET forms should be counted but not flagged as vulnerable
-	if result.Summary.VulnerableForms != 0 {
-		t.Errorf("Expected 0 vulnerable forms for GET method, got %d", result.Summary.VulnerableForms)
+	// GET forms without a CSRF token should be flagged as vulnerable
+	if result.Summary.VulnerableForms != 1 {
+		t.Errorf("Expected 1 vulnerable form for GET form without token, got %d", result.Summary.VulnerableForms)
 	}
 
-	// Should have no missing_token findings for GET forms
+	foundMissingToken := false
 	for _, finding := range result.Findings {
 		if finding.Type == "missing_token" {
-			t.Error("GET forms should not generate missing_token findings")
+			foundMissingToken = true
 		}
+	}
+	if !foundMissingToken {
+		t.Error("Expected missing_token finding for GET form without CSRF token")
 	}
 }
 
@@ -323,9 +330,10 @@ func TestCSRFScanner_Scan_MultipleForms(t *testing.T) {
 		t.Fatal("Scan returned nil result")
 	}
 
-	// Should find 2 vulnerable forms (/login and /delete), but not /search (GET) or /update (has token)
-	if result.Summary.VulnerableForms != 2 {
-		t.Errorf("Expected 2 vulnerable forms, got %d", result.Summary.VulnerableForms)
+	// Should find 3 vulnerable forms (/search GET, /login and /delete), but not /update (has token).
+	// GET forms without tokens are also flagged since GET can be used for state-changing operations.
+	if result.Summary.VulnerableForms != 3 {
+		t.Errorf("Expected 3 vulnerable forms, got %d", result.Summary.VulnerableForms)
 	}
 
 	// Check specific findings
@@ -342,8 +350,8 @@ func TestCSRFScanner_Scan_MultipleForms(t *testing.T) {
 	if !vulnerableActions["/delete"] {
 		t.Error("Expected /delete form to be flagged as vulnerable")
 	}
-	if vulnerableActions["/search"] {
-		t.Error("GET form /search should not be flagged as vulnerable")
+	if !vulnerableActions["/search"] {
+		t.Error("Expected GET form /search (no token) to be flagged as vulnerable")
 	}
 	if vulnerableActions["/update"] {
 		t.Error("Form /update with CSRF token should not be flagged as vulnerable")
