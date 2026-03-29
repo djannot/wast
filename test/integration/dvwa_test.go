@@ -189,19 +189,33 @@ func loginToDVWA(t *testing.T) *http.Client {
 		Timeout: 30 * time.Second,
 	}
 
-	// Get login page to get any initial cookies (session cookie is created here,
-	// with security=low already present in the jar)
+	// Get login page to get initial cookies and user_token CSRF value.
+	// The session cookie is created here with security=low already in the jar.
 	resp, err := client.Get(dvwaURL + "/login.php")
 	if err != nil {
 		t.Fatalf("Failed to access login page: %v", err)
 	}
+	loginBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// Submit login form
+	// Extract user_token from the login page (DVWA requires it for CSRF protection).
+	// Re-use the same two-pass regexes defined below; duplicate them here to keep
+	// the code self-contained (they are compiled once before the security loop).
+	loginInputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	loginValueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	loginToken := ""
+	if inputTag := loginInputTagRe.Find(loginBody); inputTag != nil {
+		if valueMatch := loginValueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+			loginToken = string(valueMatch[1])
+		}
+	}
+
+	// Submit login form. Include user_token so DVWA's CSRF check passes.
 	formData := url.Values{
-		"username": {dvwaUser},
-		"password": {dvwaPassword},
-		"Login":    {"Login"},
+		"username":   {dvwaUser},
+		"password":   {dvwaPassword},
+		"Login":      {"Login"},
+		"user_token": {loginToken},
 	}
 
 	resp, err = client.PostForm(dvwaURL+"/login.php", formData)
