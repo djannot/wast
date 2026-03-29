@@ -810,6 +810,24 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	}
 
 	// ----------------------------------------------------------------
+	// NoSQLi: 0 findings (DVWA uses MySQL, not MongoDB — any finding is a false positive)
+	// Fixed in PR #274: confirmation requests eliminate routing-param false positives.
+	// ----------------------------------------------------------------
+	nosqliTotal := 0
+	if result.NoSQLi != nil {
+		nosqliTotal = len(result.NoSQLi.Findings)
+		for _, f := range result.NoSQLi.Findings {
+			t.Logf("  NoSQLi false positive: url=%s param=%s payload=%s evidence=%s",
+				f.URL, f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+	if nosqliTotal != 0 {
+		t.Errorf("NoSQLi: expected 0 findings on MySQL DVWA app, got %d (false positives)", nosqliTotal)
+	} else {
+		t.Logf("NoSQLi: 0 findings — PASS")
+	}
+
+	// ----------------------------------------------------------------
 	// Path Traversal: log findings on /fi/ with 'page' param
 	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
 	// so PathTraversal detection via discovery scan is unreliable on live DVWA.
@@ -987,6 +1005,49 @@ func TestDVWA_SQLi_NoFalsePositivesOnCSRFPage(t *testing.T) {
 		if falsePositiveParams[paramLower] {
 			t.Errorf("False positive: SQLi reported on non-injectable param '%s' at %s — evidence: %s",
 				finding.Parameter, finding.URL, finding.Evidence)
+		}
+	}
+}
+
+// TestDVWA_NoSQLi_NoFalsePositives verifies that the NoSQLi scanner produces zero findings on
+// DVWA, a MySQL-backed app with no MongoDB backend. The 'doc' param is a page-router that
+// loads different HTML pages for different values; it previously triggered 14 false positives
+// due to the naive 30%-body-length-change threshold in isSignificantResponseChange().
+//
+// Fix: confirmation requests (PR #274) — after detecting a significant body-length change,
+// the scanner now re-sends a benign neutral value to verify the parameter naturally varies;
+// if it does, the finding is suppressed.
+func TestDVWA_NoSQLi_NoFalsePositives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping DVWA integration test in short mode")
+	}
+
+	client := loginToDVWA(t)
+
+	nosqliScanner := scanner.NewNoSQLiScanner(
+		scanner.WithNoSQLiHTTPClient(client),
+		scanner.WithNoSQLiTimeout(60*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+
+	// Scan the DVWA help/about page which uses the ?doc= parameter to load different pages.
+	// This param previously produced 14 false positives.
+	targetURL := dvwaURL + "/vulnerabilities/csrf/?password_new=test&password_conf=test&Change=Change"
+	result := nosqliScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("NoSQLi scan returned nil result")
+	}
+
+	t.Logf("NoSQLi scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+
+	// DVWA runs MySQL, not MongoDB. Any NoSQLi finding here is a false positive.
+	if len(result.Findings) != 0 {
+		t.Errorf("NoSQLi false positives detected on MySQL DVWA app: got %d finding(s), expected 0", len(result.Findings))
+		for _, f := range result.Findings {
+			t.Logf("  false positive: param=%s payload=%s evidence=%s", f.Parameter, f.Payload, f.Evidence)
 		}
 	}
 }
