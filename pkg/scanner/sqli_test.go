@@ -2867,6 +2867,36 @@ func TestNormalizeResponseContent(t *testing.T) {
 			</body></html>`,
 			contains: []string{"timestamp="},
 		},
+		{
+			name: "DVWA user_token with single-quoted attributes (lowercase hex)",
+			input: `<html><body>
+				<form method='post'>
+				<input type='hidden' name='user_token' value='abc123def456abc1' />
+				<input type='text' name='username'>
+				</form>
+			</body></html>`,
+			contains: []string{"user_token", "abc123def456abc1"},
+		},
+		{
+			name: "DVWA user_token with single-quoted attributes (mixed-case hex)",
+			input: `<html><body>
+				<form method='post'>
+				<input type='hidden' name='user_token' value='ABC123DEF456ABC1' />
+				<input type='text' name='password'>
+				</form>
+			</body></html>`,
+			contains: []string{"user_token", "ABC123DEF456ABC1"},
+		},
+		{
+			name: "DVWA user_token with 32-char mixed-case hex (real token length)",
+			input: `<html><body>
+				<form action='/vulnerabilities/csrf/' method='POST'>
+				<input type='hidden' name='user_token' value='1a2B3c4D5e6F7a8B9c0D1e2F3a4B5c6D' />
+				<input type='submit' name='Change' value='Change'>
+				</form>
+			</body></html>`,
+			contains: []string{"user_token", "1a2B3c4D5e6F7a8B9c0D1e2F3a4B5c6D"},
+		},
 	}
 
 	for _, tt := range tests {

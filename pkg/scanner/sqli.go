@@ -64,7 +64,7 @@ var dynamicContentPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)[?&](timestamp|ts|time|_t)=[0-9]{10,}`),
 
 	// Common token patterns in hidden inputs
-	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-f]{16,}['"][^>]*>`),
+	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-fA-F]{16,}['"][^>]*>`),
 }
 
 // SQLiScanner performs active SQL injection vulnerability detection.
@@ -894,7 +894,7 @@ func isNonDataParameter(paramName string) bool {
 	paramLower := strings.ToLower(paramName)
 
 	// Submit button patterns
-	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action"}
+	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action", "change"}
 	for _, pattern := range submitPatterns {
 		if strings.Contains(paramLower, pattern) {
 			return true

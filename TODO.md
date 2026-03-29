@@ -23,7 +23,7 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 2 FPs (`Change` on `/csrf/`, `ip` on `/exec/`) | **FAIL** |
+| SQLi | 0 findings on non-injectable params | 0 FPs | **PASS** (PR #282) |
 | All others | 0 false positives | 0 | **PASS** |
 
 ---
