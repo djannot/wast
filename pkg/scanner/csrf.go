@@ -235,9 +235,9 @@ func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResul
 
 	// Analyze each form for CSRF vulnerabilities
 	for _, form := range forms {
-		// Only check state-changing methods (POST, PUT, DELETE, PATCH)
+		// Skip non-form request methods
 		method := strings.ToUpper(form.Method)
-		if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		if method == "HEAD" || method == "OPTIONS" {
 			continue
 		}
 
