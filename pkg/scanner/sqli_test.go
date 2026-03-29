@@ -2465,6 +2465,93 @@ func TestSQLiScanner_DVWAFixtures_ThresholdCalibration(t *testing.T) {
 	}
 }
 
+// TestSQLiScanner_DVWAFixtures_NumericParam tests boolean-based SQLi detection
+// for a numeric-valued parameter (e.g. id=1) where the false payload still returns
+// the baseline row rather than an empty result.
+//
+// Real DVWA behaviour with id=1:
+//   - baseline  (id=1)               → 1 user row  (admin)
+//   - true      (id=1' OR '1'='1)    → 5 user rows (all users)
+//   - false     (id=1' OR '1'='2)    → 1 user row  (admin, same count as baseline)
+//
+// The false response is NOT empty — the WHERE clause still matches user 1.
+// Detection must rely on the 3-way baseline comparison (true >> baseline ≥ false).
+func TestSQLiScanner_DVWAFixtures_NumericParam(t *testing.T) {
+	baselineHTML, err := os.ReadFile("testdata/dvwa_sqli_baseline.html")
+	if err != nil {
+		t.Fatalf("Failed to load baseline fixture: %v", err)
+	}
+
+	truePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_numeric_true_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load numeric true payload fixture: %v", err)
+	}
+
+	falsePayloadHTML, err := os.ReadFile("testdata/dvwa_sqli_numeric_false_payload.html")
+	if err != nil {
+		t.Fatalf("Failed to load numeric false payload fixture: %v", err)
+	}
+
+	// Confirm the fixture characteristics before running the scanner.
+	_, _, _, baselineData, baselineDataWords, _ := analyzeResponse(string(baselineHTML))
+	_, _, _, trueData, trueDataWords, _ := analyzeResponse(string(truePayloadHTML))
+	_, _, _, falseData, falseDataWords, _ := analyzeResponse(string(falsePayloadHTML))
+
+	t.Logf("Baseline: dataWords=%d, data=%q", baselineDataWords, baselineData)
+	t.Logf("True:     dataWords=%d, data=%q", trueDataWords, trueData)
+	t.Logf("False:    dataWords=%d, data=%q", falseDataWords, falseData)
+
+	// The false payload returns the same number of rows as the baseline —
+	// true/false diff must still be significant for detection.
+	if trueDataWords <= falseDataWords {
+		t.Errorf("Fixture sanity: true (%d) should have more data words than false (%d)", trueDataWords, falseDataWords)
+	}
+
+	mock := newMockSQLiHTTPClient()
+
+	// Baseline request (id=1) returns 1 row.
+	mock.responses["http://dvwa.local/vulnerabilities/sqli/?id=1"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(string(baselineHTML))),
+		Header:     make(http.Header),
+	}
+
+	// Differential: true payload (contains 1'='1) → 5 rows; false (1'='2) → 1 row.
+	mock.differentialResponse = true
+	mock.trueResponse = string(truePayloadHTML)
+	mock.falseResponse = string(falsePayloadHTML)
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "http://dvwa.local/vulnerabilities/sqli/?id=1")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Failed to detect boolean-based SQLi on numeric id parameter (true: %d words, baseline: %d words, false: %d words)",
+			trueDataWords, baselineDataWords, falseDataWords)
+		t.Logf("Total tests: %d", result.Summary.TotalTests)
+		return
+	}
+
+	t.Logf("Detected %d vulnerabilities on numeric id parameter", result.Summary.VulnerabilitiesFound)
+
+	// At least one finding should reference the 3-way baseline comparison.
+	foundBaselineEvidence := false
+	for _, finding := range result.Findings {
+		t.Logf("Finding: payload=%q confidence=%s evidence=%s", finding.Payload, finding.Confidence, finding.Evidence)
+		if strings.Contains(finding.Evidence, "baseline") {
+			foundBaselineEvidence = true
+		}
+	}
+	if !foundBaselineEvidence {
+		t.Errorf("3-way baseline evidence not found in any finding; expected 'baseline' in evidence string — verify the 3-way check block in testBooleanBased is still present and executing")
+	}
+}
+
 // TestSQLiScanner_DVWAFixtures_ErrorBased tests error-based SQLi detection
 // Note: DVWA at security=low typically doesn't expose SQL errors, so this test
 // documents that error-based detection is NOT expected to work on DVWA.
