@@ -80,14 +80,18 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## ~~P1: CI integration test assertions are soft (warnings, not failures)~~ ✅ DONE (PR #270)
+## P1: CI integration test assertions are soft (warnings, not failures) — PARTIALLY DONE
 
-All `t.Logf("Warning: ...")` soft assertions have been converted to `t.Errorf(...)` hard failures:
+Hard failures (`t.Errorf`) are in place for:
+- **PR #259:** SQLi (false-positive count), CSRF, SSTI, Headers, submit-button false-positives.
+- **PR #262:** XSS `name` param check (individual scan test — hardened).
+- **PR #264:** CMDi `ip` param check (individual scan test — hardened).
+- **PR #267:** Path Traversal `page` param check (individual scan test — hardened).
 
-- **PR #259:** SQLi, CSRF, and discovery scan combined check hardened.
-- **PR #262:** XSS hardened (`TestDVWA_XSS`, `TestDVWA_FullDiscoveryScanAssertions`).
-- **PR #264:** CMDi hardened (`TestDVWA_CommandInjection`, `TestDVWA_FullDiscoveryScanAssertions`).
-- **PR #267:** Path Traversal hardened (`TestDVWA_PathTraversal`, `TestDVWA_FullDiscoveryScanAssertions`).
-- **PR #270:** Remaining 11 soft warnings hardened — SQLi, XSS, CMDi, and Path Traversal across `TestDVWA_SQLi`, `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`. All "P0 scanner bug open" / "detection unreliable" comments removed.
+Soft warnings (`t.Logf("Warning: ...")`) remain for scanner types whose detection is still unreliable on live DVWA Docker:
+- **SQLi** (`TestDVWA_SQLi`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case.
+- **XSS** (`TestDVWA_XSS`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
+- **CMDi** (`TestDVWA_CommandInjection`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
+- **Path Traversal** (`TestDVWA_PathTraversal`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
 
-All scanner categories now cause hard CI failures on regression.
+These assertions should be hardened once the live-DVWA detection is confirmed stable in CI.
