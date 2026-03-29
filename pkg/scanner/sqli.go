@@ -886,8 +886,8 @@ func isNonDataParameter(paramName string) bool {
 		}
 	}
 
-	// DVWA-specific non-data fields
-	dvwaPatterns := []string{"seclev_submit", "upload", "security", "phpids"}
+	// DVWA-specific non-data fields (submit buttons and action selectors in the DVWA app)
+	dvwaPatterns := []string{"seclev_submit", "upload", "security", "phpids", "login"}
 	for _, pattern := range dvwaPatterns {
 		if paramLower == pattern {
 			return true
