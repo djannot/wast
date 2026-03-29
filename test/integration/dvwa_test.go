@@ -5,11 +5,13 @@ package integration
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +108,16 @@ func waitForDVWA() error {
 
 // initializeDVWA sets up the DVWA database
 func initializeDVWA() error {
+	// Use a cookie jar so the PHP session (PHPSESSID) is preserved between the
+	// GET and the POST. Without this the session is lost and DVWA's CSRF check
+	// (checkToken) rejects the POST, leaving the database uncreated.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create cookie jar: %w", err)
+	}
+
 	client := &http.Client{
+		Jar:     jar,
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return nil // Follow redirects
@@ -116,23 +127,39 @@ func initializeDVWA() error {
 	// Create the database by visiting setup.php with the create action
 	setupURL := dvwaURL + "/setup.php"
 
-	// First, visit setup.php to get any cookies
+	// GET setup.php — this sets the PHPSESSID cookie in our jar and generates
+	// the CSRF session_token that we must echo back as user_token on the POST.
 	resp, err := client.Get(setupURL)
 	if err != nil {
 		return fmt.Errorf("failed to access setup page: %w", err)
 	}
+	setupBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("failed to read setup page body: %w", err)
+	}
 
-	// Now POST to create the database
+	// Extract the CSRF token from the hidden user_token input field.
+	inputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	valueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	setupToken := ""
+	if inputTag := inputTagRe.Find(setupBody); inputTag != nil {
+		if valueMatch := valueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+			setupToken = string(valueMatch[1])
+		}
+	}
+
+	// POST to create the database, including the CSRF token so checkToken passes.
 	formData := url.Values{
-		"create_db": {"Create / Reset Database"},
+		"create_db":  {"Create / Reset Database"},
+		"user_token": {setupToken},
 	}
 
 	resp, err = client.PostForm(setupURL, formData)
 	if err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
 	// Wait a bit for database to initialize
 	time.Sleep(5 * time.Second)
@@ -171,55 +198,122 @@ func loginToDVWA(t *testing.T) *http.Client {
 		t.Fatalf("Failed to create cookie jar: %v", err)
 	}
 
+	// Set security=low BEFORE first request so DVWA initialises the PHP session
+	// with "low" security. DVWA reads the security cookie on session creation;
+	// setting it afterwards leaves the session at the default "impossible" level.
+	parsedURL, err := url.Parse(dvwaURL)
+	if err != nil {
+		t.Fatalf("Failed to parse DVWA URL: %v", err)
+	}
+	jar.SetCookies(parsedURL, []*http.Cookie{
+		{Name: "security", Value: "low", Path: "/"},
+	})
+
 	client := &http.Client{
 		Jar:     jar,
 		Timeout: 30 * time.Second,
 	}
 
-	// Get login page to get any initial cookies
+	// Get login page to get initial cookies and user_token CSRF value.
+	// The session cookie is created here with security=low already in the jar.
 	resp, err := client.Get(dvwaURL + "/login.php")
 	if err != nil {
 		t.Fatalf("Failed to access login page: %v", err)
 	}
+	loginBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// Submit login form
+	// Extract user_token from the login page (DVWA requires it for CSRF protection).
+	// Re-use the same two-pass regexes defined below; duplicate them here to keep
+	// the code self-contained (they are compiled once before the security loop).
+	loginInputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	loginValueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	loginToken := ""
+	if inputTag := loginInputTagRe.Find(loginBody); inputTag != nil {
+		if valueMatch := loginValueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+			loginToken = string(valueMatch[1])
+		}
+	}
+
+	// Submit login form. Include user_token so DVWA's CSRF check passes.
 	formData := url.Values{
-		"username": {dvwaUser},
-		"password": {dvwaPassword},
-		"Login":    {"Login"},
+		"username":   {dvwaUser},
+		"password":   {dvwaPassword},
+		"Login":      {"Login"},
+		"user_token": {loginToken},
 	}
 
 	resp, err = client.PostForm(dvwaURL+"/login.php", formData)
 	if err != nil {
 		t.Fatalf("Failed to login: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	// Set security level to low
-	parsedURL, _ := url.Parse(dvwaURL)
-	cookies := jar.Cookies(parsedURL)
-
-	// Add security cookie
-	securityCookie := &http.Cookie{
-		Name:  "security",
-		Value: "low",
-		Path:  "/",
-	}
-	cookies = append(cookies, securityCookie)
-	jar.SetCookies(parsedURL, cookies)
-
-	// Also set via the security page
+	// Confirm security level via the security page (requires user_token CSRF).
+	// First GET security.php to retrieve the token, then POST with it.
+	// Retry up to 3 times in case the first attempt fails.
 	securityURL := dvwaURL + "/security.php"
-	formData = url.Values{
-		"security":      {"low"},
-		"seclev_submit": {"Submit"},
-	}
-	resp, err = client.PostForm(securityURL, formData)
-	if err != nil {
-		t.Logf("Warning: Failed to set security level via form: %v", err)
-	} else {
+
+	// Regexes for robust token extraction regardless of attribute ordering or quote style.
+	// Pass 1: find the <input> element whose name attribute is "user_token".
+	inputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	// Pass 2: extract the value attribute from that element.
+	valueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	// Regex to verify that "low" is the selected option on security.php after the POST.
+	lowSelectedRe := regexp.MustCompile(`(?i)<option[^>]+value=["']?low["']?[^>]*selected|<option[^>]+selected[^>]*value=["']?low["']?`)
+
+	securitySet := false
+	for attempt := 1; attempt <= 3 && !securitySet; attempt++ {
+		resp, err = client.Get(securityURL)
+		if err != nil {
+			t.Logf("Warning: Failed to GET security page (attempt %d): %v", attempt, err)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
+		// Two-pass extraction handles any attribute ordering (e.g. type before value).
+		userToken := ""
+		if inputTag := inputTagRe.Find(body); inputTag != nil {
+			if valueMatch := valueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+				userToken = string(valueMatch[1])
+			}
+		}
+		if userToken == "" {
+			t.Logf("Warning: Could not extract user_token from security page (attempt %d)", attempt)
+		}
+
+		formData = url.Values{
+			"security":      {"low"},
+			"seclev_submit": {"Submit"},
+			"user_token":    {userToken},
+		}
+		resp, err = client.PostForm(securityURL, formData)
+		if err != nil {
+			t.Logf("Warning: Failed to POST security level (attempt %d): %v", attempt, err)
+			continue
+		}
+		resp.Body.Close()
+
+		// Verify the level was actually accepted by reading security.php again.
+		resp, err = client.Get(securityURL)
+		if err != nil {
+			t.Logf("Warning: Failed to verify security level (attempt %d): %v", attempt, err)
+			continue
+		}
+		verifyBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if lowSelectedRe.Match(verifyBody) {
+			securitySet = true
+			t.Logf("DVWA security level confirmed as 'low' (attempt %d)", attempt)
+		} else {
+			t.Logf("Warning: Security level verification failed (attempt %d), retrying...", attempt)
+		}
+	}
+
+	if !securitySet {
+		t.Fatalf("Failed to set DVWA security level to 'low' after 3 attempts; scanner tests require low security")
 	}
 
 	return client
@@ -281,8 +375,7 @@ func TestDVWA_SQLi(t *testing.T) {
 	// We expect at least one SQLi finding on the 'id' parameter.
 	// All P0 SQLi scanner bugs are fixed (boolean-based blind detection, FP fixes PR #268).
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No SQLi findings on /vulnerabilities/sqli/ — detection unreliable on live DVWA")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No SQLi findings on /vulnerabilities/sqli/ — expected at least 1 (tests: %d)", result.Summary.TotalTests)
 	} else {
 		// Verify we found injection on the 'id' parameter
 		foundIDParam := false
@@ -293,7 +386,7 @@ func TestDVWA_SQLi(t *testing.T) {
 			}
 		}
 		if !foundIDParam {
-			t.Logf("Warning: Expected to find SQLi on 'id' parameter, but didn't")
+			t.Errorf("Expected to find SQLi on 'id' parameter, but didn't (found %d findings on other parameters)", len(result.Findings))
 		}
 	}
 }
@@ -328,8 +421,7 @@ func TestDVWA_XSS(t *testing.T) {
 	// XSS P0 scanner bug fixed in PR #262 (analyzeContext HTML comment detection).
 	// Detection is now reliable on live DVWA.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No XSS findings on /vulnerabilities/xss_r/ — P0 scanner bug open, detection unreliable on live DVWA")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No XSS findings on /vulnerabilities/xss_r/ — expected at least 1 (tests: %d)", result.Summary.TotalTests)
 	} else {
 		// Verify we found XSS on the 'name' parameter
 		foundNameParam := false
@@ -340,7 +432,7 @@ func TestDVWA_XSS(t *testing.T) {
 			}
 		}
 		if !foundNameParam {
-			t.Logf("Warning: Expected to find XSS on 'name' parameter, but didn't (found %d findings on other parameters)", len(result.Findings))
+			t.Errorf("Expected to find XSS on 'name' parameter, but didn't (found %d findings on other parameters)", len(result.Findings))
 		}
 	}
 }
@@ -388,8 +480,7 @@ func TestDVWA_CommandInjection(t *testing.T) {
 	// We expect at least one command injection finding on the 'ip' parameter.
 	// CMDi P0 scanner bug fixed in PR #264 (prepended payload variants). Detection is now reliable.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No CMDi findings on /vulnerabilities/exec/ — DVWA container shell execution may be unavailable")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No CMDi findings on /vulnerabilities/exec/ — expected at least 1 (tests: %d)", result.Summary.TotalTests)
 	} else {
 		// Verify we found injection on the 'ip' parameter
 		foundIPParam := false
@@ -400,7 +491,7 @@ func TestDVWA_CommandInjection(t *testing.T) {
 			}
 		}
 		if !foundIPParam {
-			t.Logf("Warning: Expected to find command injection on 'ip' parameter, but didn't (found: %d findings on other params)", len(result.Findings))
+			t.Errorf("Expected to find command injection on 'ip' parameter, but didn't (found: %d findings on other params)", len(result.Findings))
 		}
 	}
 }
@@ -435,8 +526,7 @@ func TestDVWA_PathTraversal(t *testing.T) {
 	// We expect at least one path traversal finding on the 'page' parameter.
 	// Path Traversal P0 scanner bug fixed in PR #267. Detection is now reliable.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No path traversal findings on /vulnerabilities/fi/ — P0 scanner bug open, detection unreliable on live DVWA")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No path traversal findings on /vulnerabilities/fi/ — expected at least 1 (tests: %d)", result.Summary.TotalTests)
 	} else {
 		for _, finding := range result.Findings {
 			t.Logf("Found Path Traversal on parameter '%s' with confidence: %s", finding.Parameter, finding.Confidence)
@@ -632,30 +722,29 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	}())
 
 	// ----------------------------------------------------------------
-	// SQLi: >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param
-	// All P0 SQLi scanner bugs are fixed (PR #268). Detection is now reliable.
+	// SQLi: >= 1 finding anywhere in the discovery scan
+	// The discovery scan may not always hit /sqli/ with 'id' param due to
+	// crawl ordering and form extraction, but should find at least one SQLi
+	// vulnerability across all discovered targets.
 	// ----------------------------------------------------------------
-	sqliOnExpectedPaths := 0
+	sqliTotal := 0
 	if result.SQLi != nil {
+		sqliTotal = len(result.SQLi.Findings)
 		for _, f := range result.SQLi.Findings {
-			path := f.URL
-			param := strings.ToLower(f.Parameter)
-			if param == "id" && (strings.Contains(path, "/brute/") ||
-				strings.Contains(path, "/fi/") ||
-				strings.Contains(path, "/sqli/")) {
-				sqliOnExpectedPaths++
-				t.Logf("SQLi found: url=%s param=%s type=%s", f.URL, f.Parameter, f.Type)
-			}
+			t.Logf("SQLi found: url=%s param=%s type=%s", f.URL, f.Parameter, f.Type)
 		}
 	}
-	if sqliOnExpectedPaths < 1 {
-		t.Logf("Warning: SQLi: expected >= 1 finding on /brute/, /fi/, or /sqli/ with 'id' param, got %d — detection unreliable on live DVWA", sqliOnExpectedPaths)
+	if sqliTotal < 1 {
+		t.Errorf("SQLi: expected >= 1 finding in discovery scan, got %d", sqliTotal)
 	} else {
-		t.Logf("SQLi: %d finding(s) on expected paths — PASS", sqliOnExpectedPaths)
+		t.Logf("SQLi: %d finding(s) — PASS", sqliTotal)
 	}
 
 	// ----------------------------------------------------------------
-	// XSS: >= 1 finding on /xss_r/ with 'name' param
+	// XSS: log findings on /xss_r/ with 'name' param
+	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
+	// so XSS detection via discovery scan is unreliable on live DVWA. Individual
+	// TestDVWA_XSS test already hardens this assertion.
 	// ----------------------------------------------------------------
 	xssOnExpectedPaths := 0
 	if result.XSS != nil {
@@ -667,13 +756,16 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if xssOnExpectedPaths < 1 {
-		t.Logf("Warning: XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d — P0 scanner bug open, detection unreliable on live DVWA", xssOnExpectedPaths)
+		t.Logf("Warning: XSS: 0 findings on /xss_r/ with 'name' param — detection unreliable in discovery scan context")
 	} else {
 		t.Logf("XSS: %d finding(s) on /xss_r/ — PASS", xssOnExpectedPaths)
 	}
 
 	// ----------------------------------------------------------------
-	// CMDi: >= 1 finding on /exec/ with 'ip' param
+	// CMDi: log findings on /exec/ with 'ip' param
+	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
+	// so CMDi detection via discovery scan is unreliable on live DVWA. Individual
+	// TestDVWA_CommandInjection test already hardens this assertion.
 	// ----------------------------------------------------------------
 	cmdiOnExpectedPaths := 0
 	if result.CMDi != nil {
@@ -685,7 +777,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if cmdiOnExpectedPaths < 1 {
-		t.Logf("Warning: CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d — DVWA container shell execution may be unavailable", cmdiOnExpectedPaths)
+		t.Logf("Warning: CMDi: 0 findings on /exec/ with 'ip' param — detection unreliable in discovery scan context")
 	} else {
 		t.Logf("CMDi: %d finding(s) on /exec/ — PASS", cmdiOnExpectedPaths)
 	}
@@ -718,7 +810,10 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	}
 
 	// ----------------------------------------------------------------
-	// Path Traversal: >= 1 finding on /fi/ with 'page' param
+	// Path Traversal: log findings on /fi/ with 'page' param
+	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
+	// so PathTraversal detection via discovery scan is unreliable on live DVWA.
+	// Individual TestDVWA_PathTraversal test already hardens this assertion.
 	// ----------------------------------------------------------------
 	ptOnExpectedPaths := 0
 	if result.PathTraversal != nil {
@@ -730,7 +825,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if ptOnExpectedPaths < 1 {
-		t.Logf("Warning: PathTraversal: expected >= 1 finding on /fi/ with 'page' param, got %d — P0 scanner bug open, detection unreliable on live DVWA", ptOnExpectedPaths)
+		t.Logf("Warning: PathTraversal: 0 findings on /fi/ with 'page' param — detection unreliable in discovery scan context")
 	} else {
 		t.Logf("PathTraversal: %d finding(s) on /fi/ — PASS", ptOnExpectedPaths)
 	}
