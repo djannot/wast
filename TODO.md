@@ -15,95 +15,61 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 | CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
 | SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
 | SSRF | 0 findings | 0 | **PASS** |
-| NoSQLi | 0 false positives on non-MongoDB app | 0 FPs | **PASS** (PR #274) |
+| NoSQLi | 0 false positives on non-MongoDB app | 0 | **PASS** |
+| XXE | 0 false positives (no XXE in DVWA) | 0 | **PASS** |
 | Headers | >= 5 missing security headers | 7 | **PASS** |
 
 ### False positive targets
 
-| Scanner | Target | Current | Gap |
-|---------|--------|---------|-----|
-| SQLi | 0 findings on `Change`, `doc`, `Login`, submit buttons | 4 FPs | CSRF token normalization not fully effective |
-| NoSQLi | 0 findings on DVWA (MySQL app) | 0 FPs | **PASS** (PR #274) |
-| SSTI | 0 findings | 0 | **PASS** |
-| SSRF | 0 findings | 0 | **PASS** |
-
-### When all targets are met
-
-**Fix:** Replaced with `isInsideHTMLComment()` — a left-to-right state machine that properly skips content inside `<script>` and `<style>` blocks and only counts `<!--`/`-->` as HTML comment boundaries in regular HTML body content.
-
-**Files:** `pkg/scanner/xss.go` — added `isInsideHTMLComment()`, replaced three `strings.LastIndex` calls in `analyzeContext()`
-
-**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
+| Scanner | Target | Current | Status |
+|---------|--------|---------|--------|
+| SQLi | 0 findings on non-injectable params | 2 FPs (`Change` on `/csrf/`, `ip` on `/exec/`) | **FAIL** |
+| All others | 0 false positives | 0 | **PASS** |
 
 ---
 
-## ~~P0: CMDi — not detecting command injection on live DVWA~~ ✅ FIXED (PR #264)
+## Remaining work
 
-**Root cause (resolved):** Two issues, both fixed:
+### XSS: `analyzeContext()` rejects a valid reflected payload
 
-1. **Empty baseline value / missing prefix:** The discovery pipeline extracts the form with `ip=""` (empty default value). Payloads like `; id` were sent as direct replacements, giving `ip=; id`. Many real-world apps (including DVWA) require a valid prefix (e.g. `127.0.0.1`) before the shell separator. The scanner now also tries prepended variants: `127.0.0.1;sleep 5`, `test;sleep 5`, etc., via `buildPrependedPayloads()`. When the original value is non-empty, it is prepended to the payload as well.
+The payload `<script>alert(1)</script>` is reflected verbatim in `/xss_r/` (confirmed via curl). The scanner finds it in the response (`payloadFound=true`) but `analyzeContext()` returns `isExecutable=false`.
 
-2. **Submit button injection waste:** Already fixed via `isSubmitButton()` — the `Submit` parameter is now correctly skipped during scanning.
+**What to do:** The early detection path (`if strings.Contains(payload, "<script")`) should return `ContextHTMLBody, true, "high"` before any comment/attribute checks. Either that path isn't reached, or a check before it returns early. Add a debug test that calls `analyzeContext()` with the real DVWA `/xss_r/` response body and the `<script>alert(1)</script>` payload, and trace which branch rejects it. Fix that branch.
 
-**Fix:** Added `buildPrependedPayloads(originalValue, payload string) []string` helper in `pkg/scanner/cmdi.go`. All 6 test functions (`testErrorBased`, `testOutputBased`, `testTimeBased` and their POST variants) now iterate over prepended payload variants.
+**Files:** `pkg/scanner/xss.go` — `analyzeContext()`
 
-**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for CMDi in `TestDVWA_CommandInjection` and `TestDVWA_FullDiscoveryScanAssertions`.
+### CMDi: detection logic doesn't match on live DVWA output
 
----
+The `ip` param on `/exec/` is confirmed injectable via curl (`127.0.0.1;id` → `uid=33`). The scanner runs 1,120 tests but finds nothing.
 
-## ~~P0: Path Traversal — not detecting LFI on live DVWA~~ ✅ FIXED (PR #267)
+**What to do:** The scanner has prepended payload support (`buildPrependedPayloads`), but something in the request/response flow still prevents detection. Write a debug test that:
+1. Sends `POST /vulnerabilities/exec/` with `ip=127.0.0.1;id&Submit=Submit` using a real DVWA session
+2. Prints the response body
+3. Runs the CMDi output detection patterns against it
+4. Identifies which step fails: is the payload not sent correctly? Is the response not containing the pattern? Or is the baseline comparison suppressing the finding?
 
-Unit tests pass with simulated DVWA responses but the live scan finds nothing.
+The most likely cause is that `ip` starts with empty value `""` from form discovery, and prepended payloads may still not produce the right format. Check what `buildPrependedPayloads("", "; id")` actually generates.
 
-**Root cause (resolved):** Three issues, all fixed:
+**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `buildPrependedPayloads()`, `testOutputBasedPOST()`
 
-1. **Non-deterministic `RawQuery` construction:** `testPayloadVariant()` iterated over `url.Values` (a `map[string][]string`) with Go's non-deterministic map iteration order when building the manual query string. For multi-parameter URLs this produced an unpredictable parameter order. Fixed by sorting keys before building the query string.
+### Path Traversal: payloads not reaching PHP's `include()` correctly
 
-2. **POST form encoding destroys path separators:** `testParameterPOST()` used `formData.Encode()` which encodes `/` as `%2F`. PHP's `include()` needs literal `../` sequences. Fixed by replacing `formData.Encode()` with a new `buildPathTraversalFormBody()` helper that preserves `/` and `\` characters while still encoding other special characters.
+The `page` param on `/fi/` is confirmed injectable via curl (`page=../../../../../../etc/passwd` → `root:x:0:0:`). The scanner runs 666 tests but finds nothing.
 
-3. **Direct replacement (Test 1) correctly tried first:** The direct replacement (`page=../../../../../../etc/passwd`) is already tried first in `testParameter()`. The GET path preserves literal slashes via manual `RawQuery` construction, which is now also stabilised with sorted keys.
+**What to do:** Write a debug test that:
+1. Sends `GET /vulnerabilities/fi/?page=../../../../../../etc/passwd` using a real DVWA session (raw slashes, no encoding)
+2. Prints the response body and checks for `root:x:0:0:`
+3. Then does the same request using the scanner's `testPayloadVariant()` URL construction
+4. Compares the two — if the scanner's URL has encoded slashes (`%2F`) that's the bug
 
-**Files:** `pkg/scanner/pathtraversal.go` — added `"sort"` import, sorted keys in `testPayloadVariant()`, added `buildPathTraversalFormBody()` helper, refactored `testParameterPOST()` to use it.
+The `RawQuery` construction was fixed (sorted keys, manual encoding), but Go's `http.Client` may still re-encode the URL when sending the request. If so, the fix is to use `req.URL.Opaque` or `req.URL.RawPath` to prevent re-encoding.
 
-**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
+**Files:** `pkg/scanner/pathtraversal.go` — `testPayloadVariant()`
 
----
+### SQLi: 2 remaining false positives from CSRF token noise
 
-## ~~P1: SQLi — boolean-based false positives from CSRF tokens~~ ✅ FIXED (PR #268)
+`Change` on `/csrf/` and `ip` on `/exec/` are flagged as boolean-based SQLi. Both are caused by CSRF token changes between requests making `contentHashDiffers=true` + word count diff of 4 words.
 
-**Root cause (resolved):** `ContentHash` was computed from `extractBodyContent()` which did NOT normalize CSRF tokens. DVWA's `user_token` hidden field changes every request, so `contentHashDiffers` was always `true`. Combined with small word count diffs (~4 words from different token values), this exceeded the `minWordCountDifference=2` threshold.
+**What to do:** `normalizeResponseContent()` should strip `user_token` hidden fields. Either it's not being called before `extractBodyContent()` in all code paths, or the regex doesn't match DVWA's token format. Check that the normalization regex matches `<input type='hidden' name='user_token' value='...' />` (note: single quotes, not double quotes — DVWA uses single quotes in its HTML).
 
-`extractDataContent()` already normalized via `normalizeResponseContent()`, but `extractBodyContent()` (used for ContentHash) did not. The normalization existed but wasn't applied to the right function.
-
-**Affected:** `Change` on `/csrf/`, `doc` param, `Login` button — all non-injectable (now no longer false-positived).
-
-**Fix:** `analyzeResponse()` now calls `normalizeResponseContent()` before `extractBodyContent()` so both `ContentHash` and `WordCount` are computed from normalized HTML.
-
-**Files:** `pkg/scanner/sqli.go` — `analyzeResponse()`, `pkg/scanner/sqli_test.go` — added `TestAnalyzeResponse_CSRFTokenNormalization`, `test/integration/dvwa_test.go` — added `TestDVWA_SQLi_NoFalsePositivesOnCSRFPage`
-
----
-
-## ~~P1: CI integration test assertions are soft (warnings, not failures)~~ ✅ FIXED (PR #272)
-
-All integration test assertions are now hard `t.Errorf` failures. No soft `t.Logf("Warning: ...")` remain for scanner-result assertions.
-
-Hard failures (`t.Errorf`) are in place for:
-- **PR #259:** SQLi (false-positive count), CSRF, SSTI, Headers, submit-button false-positives.
-- **PR #262:** XSS `name` param check (individual scan test).
-- **PR #264:** CMDi `ip` param check (individual scan test).
-- **PR #267:** Path Traversal `page` param check (individual scan test).
-- **PR #272:** SQLi, XSS, CMDi, Path Traversal 0-finding cases in `TestDVWA_SQLi`, `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
-
-All blocking scanner bugs are resolved (PRs #262, #264, #267, #268), so CI will now correctly fail on any regression.
-
----
-
-## ~~P0: NoSQLi — 14 false positives on MySQL DVWA (non-MongoDB app)~~ ✅ FIXED (PR #274)
-
-**Root cause (resolved):** `isSignificantResponseChange()` used a naive 30% body-length-difference threshold. Parameters like `doc` that legitimately load different page content (e.g., `?doc=readme` vs `?doc=changelog`) naturally produce large response-size variations, triggering false findings.
-
-**Fix:** Added confirmation requests to all three differential-analysis call sites (`testWithBaseline`, `testWithBaselinePOST`, `testArrayPollution`). After detecting a significant response change from an injected payload, the scanner now sends a second benign request using a neutral value (`nosqlicheckxyz123`). If the benign value also produces a significant change from baseline, the parameter is a routing/content-selector param and the finding is suppressed. Only when the benign confirmation stays close to baseline is the finding reported.
-
-**Added helpers:** `confirmVarianceIsInjection()` (GET) and `confirmVarianceIsInjectionPOST()` (POST) in `pkg/scanner/nosqli.go`.
-
-**Files:** `pkg/scanner/nosqli.go` — three differential-analysis sites updated; two new confirmation helpers. `pkg/scanner/nosqli_test.go` — three new tests. `test/integration/dvwa_test.go` — added `TestDVWA_NoSQLi_NoFalsePositives`; added NoSQLi assertion to `TestDVWA_FullDiscoveryScanAssertions`.
+**Files:** `pkg/scanner/sqli.go` — `normalizeResponseContent()`, `analyzeResponse()`
