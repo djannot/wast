@@ -20,10 +20,11 @@ type ProgressCallback func(completed int, total int, phase string)
 
 // DiscoveredTarget represents a discovered endpoint to scan.
 type DiscoveredTarget struct {
-	URL        string            // The URL to scan
-	Method     string            // HTTP method (GET, POST, etc.)
-	Parameters map[string]string // Parameters to test (field name -> default value)
-	Source     string            // Where this target was discovered (e.g., "form on /page", "link query params")
+	URL         string            // The URL to scan
+	Method      string            // HTTP method (GET, POST, etc.)
+	Parameters  map[string]string // Parameters to test as injection targets (field name -> default value)
+	FixedParams map[string]string // Non-testable form fields (e.g. submit buttons) included in POST body as-is
+	Source      string            // Where this target was discovered (e.g., "form on /page", "link query params")
 }
 
 // DiscoveryScanConfig extends ScanConfig with discovery-specific options.
@@ -126,20 +127,25 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 			continue
 		}
 
-		// Build parameters from form fields
+		// Build parameters from form fields.
+		// params holds testable injection targets; fixedParams holds form fields
+		// that must be included in every POST body (e.g. submit buttons) but
+		// should never themselves be tested as injection targets.
 		params := make(map[string]string)
+		fixedParams := make(map[string]string)
 		for _, field := range form.Fields {
-			// Skip password, file, hidden, and action-button fields.
-			// Submit/button/reset/image inputs are action triggers, not data
-			// fields, and should never be used as injection targets.  More
-			// importantly, some forms (e.g. DVWA's CSRF page) rely on the
-			// presence of a submit-button name parameter to trigger side-effects
-			// (password changes).  Scanning those forms while omitting the
-			// actual data fields but retaining the submit button would trigger
-			// the side effect with empty data values – e.g. changing the admin
-			// password to MD5(''), which breaks all subsequent login attempts.
-			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" ||
-				field.Type == "submit" || field.Type == "button" || field.Type == "reset" || field.Type == "image" {
+			// Route submit/button/reset/image inputs to fixedParams so they are
+			// sent as-is in POST bodies (required by some apps to trigger form
+			// processing) but are never used as injection targets.
+			if field.Type == "submit" || field.Type == "button" || field.Type == "reset" || field.Type == "image" {
+				if field.Name != "" {
+					fixedParams[field.Name] = field.Value
+				}
+				continue
+			}
+			// Skip password, file, and hidden fields — these are either
+			// sensitive or not user-visible injection targets.
+			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" {
 				continue
 			}
 			// Skip fields whose name suggests they are password fields regardless of
@@ -157,16 +163,20 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 			}
 		}
 
-		// Only add if there are testable parameters
+		// Only add if there are testable parameters (non-submit data fields).
+		// This prevents adding forms that consist only of submit buttons after
+		// filtering (e.g. DVWA's CSRF change-password form once password fields
+		// are excluded), which would otherwise trigger unintended side-effects.
 		if len(params) > 0 {
 			key := fmt.Sprintf("%s:%s", form.Action, form.Method)
 			if !seen[key] {
 				seen[key] = true
 				targets = append(targets, DiscoveredTarget{
-					URL:        form.Action,
-					Method:     form.Method,
-					Parameters: params,
-					Source:     fmt.Sprintf("form on %s", form.Page),
+					URL:         form.Action,
+					Method:      form.Method,
+					Parameters:  params,
+					FixedParams: fixedParams,
+					Source:      fmt.Sprintf("form on %s", form.Page),
 				})
 			}
 		}
@@ -1026,11 +1036,32 @@ func buildURLWithParams(target DiscoveredTarget) string {
 	return parsedURL.String()
 }
 
+// mergeWithFixedParams returns a parameter map that includes both the testable
+// Parameters and the FixedParams for a discovered target.  The merged map is
+// used when calling ScanPOST so that fixed form fields (e.g. submit buttons)
+// are included in the POST body — which is required by some apps to trigger
+// form processing — while the scanners themselves only iterate Parameters as
+// injection targets.  Testable Parameters take precedence over FixedParams on
+// key collisions (which should never occur in practice).
+func mergeWithFixedParams(target DiscoveredTarget) map[string]string {
+	if len(target.FixedParams) == 0 {
+		return target.Parameters
+	}
+	merged := make(map[string]string, len(target.Parameters)+len(target.FixedParams))
+	for k, v := range target.FixedParams {
+		merged[k] = v
+	}
+	for k, v := range target.Parameters {
+		merged[k] = v
+	}
+	return merged
+}
+
 // scanTargetForXSS scans a single discovered target for XSS vulnerabilities.
 func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target DiscoveredTarget) *XSSScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1041,7 +1072,7 @@ func scanTargetForXSS(ctx context.Context, scanner *XSSScanner, target Discovere
 func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target DiscoveredTarget) *SQLiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1052,7 +1083,7 @@ func scanTargetForSQLi(ctx context.Context, scanner *SQLiScanner, target Discove
 func scanTargetForNoSQLi(ctx context.Context, scanner *NoSQLiScanner, target DiscoveredTarget) *NoSQLiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1090,7 +1121,7 @@ func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target Discove
 func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target DiscoveredTarget) *SSRFScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1101,7 +1132,7 @@ func scanTargetForSSRF(ctx context.Context, scanner *SSRFScanner, target Discove
 func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target DiscoveredTarget) *RedirectScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1112,7 +1143,7 @@ func scanTargetForRedirect(ctx context.Context, scanner *RedirectScanner, target
 func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target DiscoveredTarget) *CMDiScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1123,7 +1154,7 @@ func scanTargetForCMDi(ctx context.Context, scanner *CMDiScanner, target Discove
 func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScanner, target DiscoveredTarget) *PathTraversalScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)
@@ -1134,7 +1165,7 @@ func scanTargetForPathTraversal(ctx context.Context, scanner *PathTraversalScann
 func scanTargetForSSTI(ctx context.Context, scanner *SSTIScanner, target DiscoveredTarget) *SSTIScanResult {
 	// Route based on HTTP method
 	if strings.EqualFold(target.Method, "POST") {
-		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
+		return scanner.ScanPOST(ctx, target.URL, mergeWithFixedParams(target))
 	}
 	// Default to GET
 	targetURL := buildURLWithParams(target)

@@ -638,7 +638,7 @@ func TestExtractDiscoveredTargets_POSTForms(t *testing.T) {
 // action-button fields are excluded from discovered target parameters. This prevents the
 // scanner from triggering unintended side-effects on forms like DVWA's CSRF change-password
 // page where submitting only the "Change" button (without password fields) changes the admin
-// password to MD5(''), breaking all subsequent test logins.
+// password to MD5(”), breaking all subsequent test logins.
 func TestExtractDiscoveredTargets_SubmitButtonsExcluded(t *testing.T) {
 	crawlResult := &crawler.CrawlResult{
 		Target: "http://example.com",

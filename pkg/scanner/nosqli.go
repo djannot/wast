@@ -219,11 +219,16 @@ var nosqliPayloads = []nosqliPayload{
 		ErrorPattern: regexp.MustCompile(`(?i)(unknown operator|invalid operator|MongoError|BSONTypeError)`),
 	},
 	{
-		Payload:      `{$where: "this.x == 1"}`,
-		Type:         "error-based",
-		Severity:     SeverityMedium,
-		Description:  "Error-based MongoDB $where probe to detect NoSQL parsing",
-		ErrorPattern: regexp.MustCompile(`(?i)(MongoError|\$where|SyntaxError|parse error)`),
+		Payload:     `{$where: "this.x == 1"}`,
+		Type:        "error-based",
+		Severity:    SeverityMedium,
+		Description: "Error-based MongoDB $where probe to detect NoSQL parsing",
+		// Note: do NOT include \$where in this pattern — reflection-based pages
+		// (e.g. XSS reflection pages) echo back the payload verbatim, which
+		// would cause false positives.  Real MongoDB $where errors are caught by
+		// the MongoError / SyntaxError patterns, and by the general
+		// nosqlErrorPatterns entry `\$where.*is not allowed`.
+		ErrorPattern: regexp.MustCompile(`(?i)(MongoError|SyntaxError|parse error)`),
 	},
 }
 
