@@ -578,6 +578,8 @@ func TestDVWA_DiscoveryScan(t *testing.T) {
 		t.Logf("  CMDi findings: %d (tests: %d)", stats.TotalCMDiFindings, stats.TotalCMDiTests)
 		t.Logf("  Path Traversal findings: %d (tests: %d)", stats.TotalPathTraversalFindings, stats.TotalPathTraversalTests)
 		t.Logf("  CSRF findings: %d", stats.TotalCSRFFindings)
+		t.Logf("  Redirect findings: %d (tests: %d)", stats.TotalRedirectFindings, stats.TotalRedirectTests)
+		t.Logf("  XXE findings: %d (tests: %d)", stats.TotalXXEFindings, stats.TotalXXETests)
 	}
 
 	// We expect to find at least some vulnerabilities on DVWA
@@ -820,6 +822,40 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		t.Errorf("NoSQLi: expected 0 findings on MySQL DVWA app, got %d (false positives)", nosqliTotal)
 	} else {
 		t.Logf("NoSQLi: 0 findings — PASS")
+	}
+
+	// ----------------------------------------------------------------
+	// Open Redirect: 0 findings (DVWA has no open redirect — any finding is a false positive)
+	// ----------------------------------------------------------------
+	redirectTotal := 0
+	if result.Redirect != nil {
+		redirectTotal = len(result.Redirect.Findings)
+		for _, f := range result.Redirect.Findings {
+			t.Logf("  Redirect false positive: url=%s param=%s payload=%s evidence=%s",
+				f.URL, f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+	if redirectTotal != 0 {
+		t.Errorf("Redirect: expected 0 findings on DVWA, got %d (false positives)", redirectTotal)
+	} else {
+		t.Logf("Redirect: 0 findings — PASS")
+	}
+
+	// ----------------------------------------------------------------
+	// XXE: 0 findings (DVWA has no XXE — any finding is a false positive)
+	// ----------------------------------------------------------------
+	xxeTotal := 0
+	if result.XXE != nil {
+		xxeTotal = len(result.XXE.Findings)
+		for _, f := range result.XXE.Findings {
+			t.Logf("  XXE false positive: url=%s param=%s payload=%s evidence=%s",
+				f.URL, f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+	if xxeTotal != 0 {
+		t.Errorf("XXE: expected 0 findings on DVWA, got %d (false positives)", xxeTotal)
+	} else {
+		t.Logf("XXE: 0 findings — PASS")
 	}
 
 	// ----------------------------------------------------------------

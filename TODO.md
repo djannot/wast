@@ -37,12 +37,12 @@ All original DVWA benchmark targets have been achieved:
 - **Path Traversal** — Payloads reach PHP's `include()` correctly (PR #280)
 - **SQLi** — Zero false positives; CSRF token noise resolved via `normalizeResponseContent()` (PR #282)
 - All assertions in `test/integration/dvwa_test.go` use hard failures (`t.Errorf`) so regressions break the build.
+- **Open Redirect & XXE** — Zero-false-positive assertions added to `TestDVWA_FullDiscoveryScanAssertions` (PR #286)
 
 ---
 
 ## Next steps
 
 - Expand the benchmark beyond DVWA to other test targets (e.g., WebGoat, Juice Shop)
-- Add new scanner types to the DVWA benchmark (e.g., Open Redirect, XXE)
 - Increase coverage thresholds as new scanner capabilities are added
 - Explore authenticated scanning improvements for other session management patterns
