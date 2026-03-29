@@ -135,7 +135,20 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		nosqliOpts = append(nosqliOpts, WithNoSQLiHTTPClient(cfg.HTTPClient))
 		csrfOpts = append(csrfOpts, WithCSRFHTTPClient(cfg.HTTPClient))
 		ssrfOpts = append(ssrfOpts, WithSSRFHTTPClient(cfg.HTTPClient))
-		redirectOpts = append(redirectOpts, WithRedirectHTTPClient(cfg.HTTPClient))
+		// The redirect scanner MUST use a no-redirect client: it detects open redirects
+		// by inspecting raw 3xx status codes and Location headers. Passing the shared
+		// client directly would silently disable redirect detection because the default
+		// client follows redirects and the scanner would only ever see a final 200.
+		// We share the cookie jar so session cookies remain valid, but override
+		// CheckRedirect to prevent automatic redirect-following.
+		noRedirectClient := &http.Client{
+			Jar:     cfg.HTTPClient.Jar,
+			Timeout: cfg.HTTPClient.Timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		redirectOpts = append(redirectOpts, WithRedirectHTTPClient(noRedirectClient))
 		cmdiOpts = append(cmdiOpts, WithCMDiHTTPClient(cfg.HTTPClient))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalHTTPClient(cfg.HTTPClient))
 		sstiOpts = append(sstiOpts, WithSSTIHTTPClient(cfg.HTTPClient))
