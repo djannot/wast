@@ -2812,6 +2812,14 @@ func TestIsNonDataParameter(t *testing.T) {
 		{"reaction param (contains action)", "reaction", true},
 		{"submit_form param (contains submit)", "submit_form", true},
 		{"form_button param (contains button)", "form_button", true},
+
+		// Submit button patterns — "change" (added for DVWA /csrf/ Change button)
+		{"Change button (DVWA)", "Change", true},
+		{"change_password param (contains change)", "change_password", true},
+
+		// Known substring collisions introduced by the "change" pattern (trade-off is documented in sqli.go)
+		{"exchange param (contains change)", "exchange", true},
+		{"last_changed param (contains change)", "last_changed", true},
 	}
 
 	for _, tt := range tests {
@@ -2878,7 +2886,7 @@ func TestNormalizeResponseContent(t *testing.T) {
 			contains: []string{"user_token", "abc123def456abc1"},
 		},
 		{
-			name: "DVWA user_token with single-quoted attributes (mixed-case hex)",
+			name: "DVWA user_token with single-quoted attributes (uppercase hex)",
 			input: `<html><body>
 				<form method='post'>
 				<input type='hidden' name='user_token' value='ABC123DEF456ABC1' />

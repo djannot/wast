@@ -893,7 +893,13 @@ func normalizeResponseContent(htmlStr string) string {
 func isNonDataParameter(paramName string) bool {
 	paramLower := strings.ToLower(paramName)
 
-	// Submit button patterns
+	// Submit button patterns — matched as substrings (case-insensitive via ToLower above).
+	// "change" is included to catch DVWA's Change submit button on /csrf/. As with the
+	// pre-existing "go" entry (which also matches "cargo", "category"), this introduces
+	// known false-negative surface: "exchange", "last_changed", "changelog" etc. will
+	// also be suppressed. This is an acceptable trade-off given the low prevalence of such
+	// parameter names on real injection targets; see TestIsNonDataParameter for the
+	// documented collisions.
 	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action", "change"}
 	for _, pattern := range submitPatterns {
 		if strings.Contains(paramLower, pattern) {
