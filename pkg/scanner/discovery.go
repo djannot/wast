@@ -133,6 +133,16 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" {
 				continue
 			}
+			// Skip fields whose name suggests they are password fields regardless of
+			// input type.  Some apps (e.g. DVWA's CSRF page) use type="text" for
+			// password fields to demonstrate vulnerabilities.  Submitting injection
+			// payloads to those fields causes real side-effects (e.g. changing the
+			// account password), which invalidates authenticated sessions used by
+			// subsequent scanner requests and test cases.
+			fieldNameLower := strings.ToLower(field.Name)
+			if strings.Contains(fieldNameLower, "password") || strings.Contains(fieldNameLower, "passwd") {
+				continue
+			}
 			if field.Name != "" {
 				params[field.Name] = field.Value
 			}

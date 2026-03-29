@@ -63,20 +63,20 @@ type ProgressCallback func(visited int, discovered int, phase string)
 
 // Crawler performs web crawling operations.
 type Crawler struct {
-	client               HTTPClient
-	userAgent            string
-	timeout              time.Duration
-	maxDepth             int
-	respectRobots        bool
-	robotsData           *RobotsData
-	authConfig           *auth.AuthConfig
-	rateLimiter          ratelimit.Limiter
-	concurrency          int
-	tracer               trace.Tracer
-	progressCallback     ProgressCallback
-	headlessConfig       *HeadlessConfig
-	headlessBrowser      *HeadlessBrowser
-	excludedURLPatterns  []string
+	client              HTTPClient
+	userAgent           string
+	timeout             time.Duration
+	maxDepth            int
+	respectRobots       bool
+	robotsData          *RobotsData
+	authConfig          *auth.AuthConfig
+	rateLimiter         ratelimit.Limiter
+	concurrency         int
+	tracer              trace.Tracer
+	progressCallback    ProgressCallback
+	headlessConfig      *HeadlessConfig
+	headlessBrowser     *HeadlessBrowser
+	excludedURLPatterns []string
 }
 
 // Option is a function that configures a Crawler.
