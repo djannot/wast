@@ -5,11 +5,13 @@ package integration
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -171,12 +173,24 @@ func loginToDVWA(t *testing.T) *http.Client {
 		t.Fatalf("Failed to create cookie jar: %v", err)
 	}
 
+	// Set security=low BEFORE first request so DVWA initialises the PHP session
+	// with "low" security. DVWA reads the security cookie on session creation;
+	// setting it afterwards leaves the session at the default "impossible" level.
+	parsedURL, err := url.Parse(dvwaURL)
+	if err != nil {
+		t.Fatalf("Failed to parse DVWA URL: %v", err)
+	}
+	jar.SetCookies(parsedURL, []*http.Cookie{
+		{Name: "security", Value: "low", Path: "/"},
+	})
+
 	client := &http.Client{
 		Jar:     jar,
 		Timeout: 30 * time.Second,
 	}
 
-	// Get login page to get any initial cookies
+	// Get login page to get any initial cookies (session cookie is created here,
+	// with security=low already present in the jar)
 	resp, err := client.Get(dvwaURL + "/login.php")
 	if err != nil {
 		t.Fatalf("Failed to access login page: %v", err)
@@ -194,32 +208,35 @@ func loginToDVWA(t *testing.T) *http.Client {
 	if err != nil {
 		t.Fatalf("Failed to login: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	// Set security level to low
-	parsedURL, _ := url.Parse(dvwaURL)
-	cookies := jar.Cookies(parsedURL)
-
-	// Add security cookie
-	securityCookie := &http.Cookie{
-		Name:  "security",
-		Value: "low",
-		Path:  "/",
-	}
-	cookies = append(cookies, securityCookie)
-	jar.SetCookies(parsedURL, cookies)
-
-	// Also set via the security page
+	// Confirm security level via the security page (requires user_token CSRF).
+	// First GET security.php to retrieve the token, then POST with it.
 	securityURL := dvwaURL + "/security.php"
-	formData = url.Values{
-		"security":      {"low"},
-		"seclev_submit": {"Submit"},
-	}
-	resp, err = client.PostForm(securityURL, formData)
+	resp, err = client.Get(securityURL)
 	if err != nil {
-		t.Logf("Warning: Failed to set security level via form: %v", err)
+		t.Logf("Warning: Failed to GET security page: %v", err)
 	} else {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+
+		// Extract user_token from the hidden input field
+		userToken := ""
+		if m := regexp.MustCompile(`name='user_token'\s+value='([^']+)'`).FindSubmatch(body); m != nil {
+			userToken = string(m[1])
+		}
+
+		formData = url.Values{
+			"security":      {"low"},
+			"seclev_submit": {"Submit"},
+			"user_token":    {userToken},
+		}
+		resp, err = client.PostForm(securityURL, formData)
+		if err != nil {
+			t.Logf("Warning: Failed to set security level via form: %v", err)
+		} else {
+			resp.Body.Close()
+		}
 	}
 
 	return client
