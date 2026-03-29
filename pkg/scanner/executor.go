@@ -22,8 +22,8 @@ type ScanConfig struct {
 	VerifyFindings  bool
 	AuthConfig      *auth.AuthConfig
 	RateLimitConfig ratelimit.Config
-	Tracer          trace.Tracer  // optional, for MCP tracing
-	CallbackURL     string        // optional, for out-of-band SSRF detection
+	Tracer          trace.Tracer // optional, for MCP tracing
+	CallbackURL     string       // optional, for out-of-band SSRF detection
 	HTTPClient      *http.Client // optional, shared HTTP client with cookie jar for session handling
 }
 

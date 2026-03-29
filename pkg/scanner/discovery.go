@@ -65,6 +65,15 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 		crawlerOpts = append(crawlerOpts, crawler.WithAuth(cfg.AuthConfig))
 	}
 
+	// Add shared HTTP client if configured so the crawler uses the same cookie jar
+	// as the rest of the scan pipeline. Go's http.Client does not copy Cookie headers
+	// to redirect requests — only cookie jar cookies are sent automatically on
+	// redirects — so passing the shared client here ensures authenticated session
+	// state is maintained throughout the crawl phase.
+	if cfg.HTTPClient != nil {
+		crawlerOpts = append(crawlerOpts, crawler.WithHTTPClient(cfg.HTTPClient))
+	}
+
 	// Add rate limiting if configured
 	if cfg.RateLimitConfig.IsEnabled() {
 		crawlerOpts = append(crawlerOpts, crawler.WithRateLimitConfig(cfg.RateLimitConfig))
