@@ -1025,6 +1025,13 @@ const nosqliNeutralConfirmValue = "nosqlicheckxyz123"
 // parameter is inherently variable — the original change was a false positive.
 // Returns true when the change is injection-specific (safe to report as a finding).
 func (s *NoSQLiScanner) confirmVarianceIsInjection(ctx context.Context, baseURL *url.URL, paramName string, baseline *baselineResponse) bool {
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			// Cannot wait for rate limiter — conservatively assume injection to avoid suppressing real findings.
+			return true
+		}
+	}
+
 	confirmURL := *baseURL
 	q := confirmURL.Query()
 	q.Set(paramName, nosqliNeutralConfirmValue)
@@ -1067,6 +1074,13 @@ func (s *NoSQLiScanner) confirmVarianceIsInjection(ctx context.Context, baseURL 
 
 // confirmVarianceIsInjectionPOST is the POST-body variant of confirmVarianceIsInjection.
 func (s *NoSQLiScanner) confirmVarianceIsInjectionPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string, baseline *baselineResponse) bool {
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			// Cannot wait for rate limiter — conservatively assume injection to avoid suppressing real findings.
+			return true
+		}
+	}
+
 	formData := url.Values{}
 	for k, v := range allParameters {
 		formData.Set(k, v)

@@ -1032,8 +1032,8 @@ func TestDVWA_NoSQLi_NoFalsePositives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 
-	// Scan the DVWA help/about page which uses the ?doc= parameter to load different pages.
-	// This param previously produced 14 false positives.
+	// Scan the DVWA CSRF vulnerability page with its form parameters.
+	// DVWA uses MySQL, not MongoDB, so any NoSQLi finding here is a false positive.
 	targetURL := dvwaURL + "/vulnerabilities/csrf/?password_new=test&password_conf=test&Change=Change"
 	result := nosqliScanner.Scan(ctx, targetURL)
 
