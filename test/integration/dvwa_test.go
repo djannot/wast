@@ -108,7 +108,16 @@ func waitForDVWA() error {
 
 // initializeDVWA sets up the DVWA database
 func initializeDVWA() error {
+	// Use a cookie jar so the PHP session (PHPSESSID) is preserved between the
+	// GET and the POST. Without this the session is lost and DVWA's CSRF check
+	// (checkToken) rejects the POST, leaving the database uncreated.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return fmt.Errorf("failed to create cookie jar: %w", err)
+	}
+
 	client := &http.Client{
+		Jar:     jar,
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return nil // Follow redirects
@@ -118,23 +127,39 @@ func initializeDVWA() error {
 	// Create the database by visiting setup.php with the create action
 	setupURL := dvwaURL + "/setup.php"
 
-	// First, visit setup.php to get any cookies
+	// GET setup.php — this sets the PHPSESSID cookie in our jar and generates
+	// the CSRF session_token that we must echo back as user_token on the POST.
 	resp, err := client.Get(setupURL)
 	if err != nil {
 		return fmt.Errorf("failed to access setup page: %w", err)
 	}
+	setupBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("failed to read setup page body: %w", err)
+	}
 
-	// Now POST to create the database
+	// Extract the CSRF token from the hidden user_token input field.
+	inputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	valueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	setupToken := ""
+	if inputTag := inputTagRe.Find(setupBody); inputTag != nil {
+		if valueMatch := valueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+			setupToken = string(valueMatch[1])
+		}
+	}
+
+	// POST to create the database, including the CSRF token so checkToken passes.
 	formData := url.Values{
-		"create_db": {"Create / Reset Database"},
+		"create_db":  {"Create / Reset Database"},
+		"user_token": {setupToken},
 	}
 
 	resp, err = client.PostForm(setupURL, formData)
 	if err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
 	// Wait a bit for database to initialize
 	time.Sleep(5 * time.Second)
