@@ -381,6 +381,75 @@ const (
 	ContextURL
 )
 
+// isInsideHTMLComment determines whether position idx within body is inside an HTML
+// comment. It uses a left-to-right state machine over body[:idx] that:
+//
+//   - Properly handles multiple sequential comments (<!-- foo --> <!-- bar -->)
+//   - Ignores comment-like tokens inside <script> and <style> blocks, where
+//     "<!--" is treated as a JavaScript/CSS comment rather than an HTML comment.
+//
+// This avoids the false-positives produced by simple strings.LastIndex approaches,
+// which can mistake "<!--" or "-->" found inside script/style content for HTML
+// comment boundaries and incorrectly classify a reflected payload as being inside
+// a comment when it is actually in the regular HTML body.
+func isInsideHTMLComment(body string, idx int) bool {
+	if idx <= 0 {
+		return false
+	}
+	content := body[:idx]
+	pos := 0
+	inScript := false
+	inStyle := false
+	inComment := false
+
+	for pos < len(content) {
+		switch {
+		case inComment:
+			// Inside HTML comment — scan for the closing "-->"
+			if pos+3 <= len(content) && content[pos:pos+3] == "-->" {
+				inComment = false
+				pos += 3
+			} else {
+				pos++
+			}
+		case inScript:
+			// Inside <script> block — "<!--" here is a JS comment, not HTML.
+			// Scan for the closing "</script>" tag.
+			if pos+9 <= len(content) && strings.EqualFold(content[pos:pos+9], "</script>") {
+				inScript = false
+				pos += 9
+			} else {
+				pos++
+			}
+		case inStyle:
+			// Inside <style> block — similar to script, ignore "<!--" here.
+			// Scan for the closing "</style>" tag.
+			if pos+8 <= len(content) && strings.EqualFold(content[pos:pos+8], "</style>") {
+				inStyle = false
+				pos += 8
+			} else {
+				pos++
+			}
+		default:
+			// Regular HTML content
+			if pos+4 <= len(content) && content[pos:pos+4] == "<!--" {
+				inComment = true
+				pos += 4
+			} else if pos+7 <= len(content) && strings.EqualFold(content[pos:pos+7], "<script") {
+				inScript = true
+				pos += 7
+			} else if pos+6 <= len(content) && strings.EqualFold(content[pos:pos+6], "<style") {
+				inStyle = true
+				pos += 6
+			} else {
+				pos++
+			}
+		}
+	}
+
+	return inComment
+}
+
 // analyzeContext determines where the payload appears and if it's executable.
 // Returns the context type and whether the payload is in an executable form.
 func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, string) {
@@ -427,17 +496,13 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 	}
 
 	if strings.Contains(payload, "<script") {
-		// Only suppress if the payload is demonstrably inside an unclosed HTML comment.
-		// Use the full body up to the payload position so we don't miss a "-->" that falls
-		// outside the 200-char window.
-		{
-			fullBefore := body[:idx]
-			lcStart := strings.LastIndex(fullBefore, "<!--")
-			lcEnd := strings.LastIndex(fullBefore, "-->")
-			if lcStart >= 0 && lcEnd < lcStart {
-				// There is an unclosed comment before the payload — fall through to detailed analysis.
-				goto detailedAnalysis
-			}
+		// Only suppress if the payload is demonstrably inside an HTML comment.
+		// Use isInsideHTMLComment which correctly handles multiple comments, script/style
+		// blocks, and other edge cases where a naive LastIndex search would produce
+		// false positives (e.g., "<!--"/"-->" tokens inside JavaScript string literals).
+		if isInsideHTMLComment(body, idx) {
+			// Payload is inside an HTML comment — fall through to detailed analysis.
+			goto detailedAnalysis
 		}
 		return ContextHTMLBody, true, "high"
 	}
@@ -455,16 +520,10 @@ func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, str
 		return ContextHTMLBody, true, "high"
 	}
 
-	// Check if payload is inside HTML comment - not executable.
-	// Use the full body up to the payload (body[:idx]) so that a comment opened and closed
-	// far before the 200-char window is not mistakenly treated as unclosed.
-	{
-		fullBefore := body[:idx]
-		lcStart := strings.LastIndex(fullBefore, "<!--")
-		lcEnd := strings.LastIndex(fullBefore, "-->")
-		if lcStart >= 0 && lcEnd < lcStart {
-			goto detailedAnalysis
-		}
+	// Check if payload is inside an HTML comment — not executable.
+	// isInsideHTMLComment correctly handles script/style blocks and multiple comments.
+	if isInsideHTMLComment(body, idx) {
+		goto detailedAnalysis
 	}
 
 detailedAnalysis:
@@ -534,16 +593,10 @@ detailedAnalysis:
 			}
 
 			// Check if payload is inside an HTML comment.
-			// Use the full body up to the payload position (body[:idx]) so that comments
-			// opened and closed outside the 200-char context window are correctly handled.
-			{
-				fullBefore := body[:idx]
-				lastCommentStart := strings.LastIndex(fullBefore, "<!--")
-				lastCommentEnd := strings.LastIndex(fullBefore, "-->")
-				if lastCommentStart >= 0 && lastCommentEnd < lastCommentStart {
-					// Comment is not closed before payload - payload is inside comment
-					goto defaultAnalysis
-				}
+			// isInsideHTMLComment correctly handles script/style blocks and multiple comments,
+			// avoiding false positives from "<!--"/"-->" tokens inside JS/CSS blocks.
+			if isInsideHTMLComment(body, idx) {
+				goto defaultAnalysis
 			}
 
 			// Check if payload is inside a JavaScript comment

@@ -327,7 +327,6 @@ func TestDVWA_XSS(t *testing.T) {
 
 	t.Logf("XSS scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
-	// We expect at least one XSS finding on the 'name' parameter
 	// NOTE: XSS detection on live DVWA is still unreliable — P0 scanner bug
 	// open (analyzeContext comment detection). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
@@ -343,7 +342,7 @@ func TestDVWA_XSS(t *testing.T) {
 			}
 		}
 		if !foundNameParam {
-			t.Logf("Warning: Expected to find XSS on 'name' parameter, but didn't")
+			t.Logf("Warning: Expected to find XSS on 'name' parameter, but didn't (found %d findings on other parameters)", len(result.Findings))
 		}
 	}
 }
