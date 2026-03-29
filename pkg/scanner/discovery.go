@@ -58,6 +58,14 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 		crawler.WithUserAgent("WAST/1.0 (Web Application Security Testing)"),
 		crawler.WithRespectRobots(false),
 		crawler.WithConcurrency(cfg.Concurrency),
+		// Exclude session-destructive endpoints. Visiting a logout URL during
+		// crawl would invalidate the authenticated session (PHPSESSID) used by
+		// all subsequent scanners, causing auth-gated vulnerabilities to go
+		// undetected because every scanner request would be redirected to the
+		// login page.
+		crawler.WithExcludedURLPatterns([]string{
+			"logout", "log-out", "logoff", "log-off", "signout", "sign-out",
+		}),
 	}
 
 	// Add authentication if configured
