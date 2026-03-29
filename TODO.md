@@ -34,17 +34,17 @@ All vulnerabilities confirmed exploitable via curl:
 
 ---
 
-## P0: CMDi — not detecting command injection on live DVWA
+## ~~P0: CMDi — not detecting command injection on live DVWA~~ ✅ FIXED (PR #264)
 
-Unit tests pass with simulated DVWA responses but the live scan finds nothing.
+**Root cause (resolved):** Two issues, both fixed:
 
-**Root cause:** Two issues:
+1. **Empty baseline value / missing prefix:** The discovery pipeline extracts the form with `ip=""` (empty default value). Payloads like `; id` were sent as direct replacements, giving `ip=; id`. Many real-world apps (including DVWA) require a valid prefix (e.g. `127.0.0.1`) before the shell separator. The scanner now also tries prepended variants: `127.0.0.1;sleep 5`, `test;sleep 5`, etc., via `buildPrependedPayloads()`. When the original value is non-empty, it is prepended to the payload as well.
 
-1. **Empty baseline value:** The discovery pipeline extracts the form with `ip=""` (empty default value). The CMDi scanner sends a baseline request with `ip=""`, which DVWA doesn't process (no ping output). When injection payloads like `; id` are sent (without a leading valid IP), DVWA may also not process them. The payloads need a valid prefix like `127.0.0.1; id` but the scanner may be sending just `; id` as a replacement for the empty `ip` value rather than prepending to a valid value.
+2. **Submit button injection waste:** Already fixed via `isSubmitButton()` — the `Submit` parameter is now correctly skipped during scanning.
 
-2. **Submit button injection waste:** The scanner tests all parameters including `Submit`. When it injects into `Submit` while keeping `ip=""`, DVWA doesn't process the form at all. This wastes test budget and produces noise. Submit-type params should be excluded from injection testing.
+**Fix:** Added `buildPrependedPayloads(originalValue, payload string) []string` helper in `pkg/scanner/cmdi.go`. All 6 test functions (`testErrorBased`, `testOutputBased`, `testTimeBased` and their POST variants) now iterate over prepended payload variants.
 
-**Files:** `pkg/scanner/cmdi.go` — `ScanPOST()`, `testOutputBasedPOST()`, baseline value handling
+**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for CMDi in `TestDVWA_CommandInjection` and `TestDVWA_FullDiscoveryScanAssertions`.
 
 ---
 
@@ -83,8 +83,10 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 - CSRF: `TestDVWA_CSRF` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
 - Discovery scan combined check: `TestDVWA_DiscoveryScan` — **HARD FAILURE** (SQLi/CSRF always present)
 
-**Pending (blocked by P0 bugs above):** CMDi and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for both.
+**CMDi done (PR #264):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for CMDi in `TestDVWA_CommandInjection` and `TestDVWA_FullDiscoveryScanAssertions`.
 
 **XSS done (PR #262):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
 
-**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for CMDi and Path Traversal in `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
+**Pending (blocked by Path Traversal P0 bug):** Path Traversal remains as `t.Logf("Warning: ...")` in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions` until the P0 scanner detection bug is resolved.
+
+**What still needs to change once remaining P0 bugs are fixed:** Convert Path Traversal warnings to `t.Errorf(...)` in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
