@@ -1640,7 +1640,11 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	// The two-way true/false diff is only ~28 words which is caught above, but the
 	// three-way comparison provides a dedicated, higher-confidence detection path and
 	// ensures correct detection even when the true/false diff happens to be small.
-	if baseline.DataWordCount >= 0 {
+	// Only run the 3-way check when the baseline itself has measurable data content
+	// (i.e. the endpoint is known to return data rows). A baseline with DataWordCount == 0
+	// means the page has no <pre>/<td> elements, so the comparison would be meaningless
+	// and could produce false positives on pages that naturally return varying content.
+	if baseline.DataWordCount > 0 {
 		trueExceedsBaseline := trueResp.DataWordCount > baseline.DataWordCount+adaptiveWordCountThreshold
 		falseWithinBaseline := falseResp.DataWordCount <= baseline.DataWordCount+adaptiveWordCountThreshold
 		if trueExceedsBaseline && falseWithinBaseline {
@@ -2020,6 +2024,21 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 	if dataContentDiffers && dataWordCountDiffersSignificantly {
 		detectionMethods = append(detectionMethods, fmt.Sprintf("data content differs (true: %d words, false: %d words, diff: %d words in data elements)", trueResp.DataWordCount, falseResp.DataWordCount, dataWordCountDiff))
 		detectedVulnerability = true
+	}
+
+	// 3-way baseline comparison for numeric parameter detection (POST):
+	// Mirrors the GET-path logic in testBooleanBased. Only runs when the baseline has
+	// measurable data content (DataWordCount > 0), preventing false positives on pages
+	// with no data-bearing elements.
+	if baseline.DataWordCount > 0 {
+		trueExceedsBaseline := trueResp.DataWordCount > baseline.DataWordCount+adaptiveWordCountThreshold
+		falseWithinBaseline := falseResp.DataWordCount <= baseline.DataWordCount+adaptiveWordCountThreshold
+		if trueExceedsBaseline && falseWithinBaseline {
+			detectionMethods = append(detectionMethods, fmt.Sprintf(
+				"true payload returns more data than baseline while false stays near baseline (true: %d words, baseline: %d words, false: %d words)",
+				trueResp.DataWordCount, baseline.DataWordCount, falseResp.DataWordCount))
+			detectedVulnerability = true
+		}
 	}
 
 	// If true and false produce different responses, it's likely SQL injection

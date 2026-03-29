@@ -2548,7 +2548,7 @@ func TestSQLiScanner_DVWAFixtures_NumericParam(t *testing.T) {
 		}
 	}
 	if !foundBaselineEvidence {
-		t.Logf("Note: no finding explicitly mentions baseline comparison; detection used other signals")
+		t.Errorf("3-way baseline evidence not found in any finding; expected 'baseline' in evidence string — verify the 3-way check block in testBooleanBased is still present and executing")
 	}
 }
 

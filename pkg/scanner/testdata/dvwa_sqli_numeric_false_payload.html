@@ -67,6 +67,10 @@
 
 		<input type="submit" name="Submit" value="Submit">
 	</form>
+	<!-- NOTE: This false-payload response echoes the injection string as the ID value.
+	     That makes falseWithinBaseline evaluate to (9 <= baseline(7)+threshold(2) = 9),
+	     passing by exactly zero margin. If a new payload string is longer (more words),
+	     this fixture must be updated or the adaptiveWordCountThreshold guard revisited. -->
 	<pre>ID: 1' OR '1'='2<br />First name: admin<br />Surname: admin</pre></div>
 
 				</div>
