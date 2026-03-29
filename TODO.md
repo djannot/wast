@@ -48,17 +48,21 @@ All vulnerabilities confirmed exploitable via curl:
 
 ---
 
-## P0: Path Traversal — not detecting LFI on live DVWA
+## ~~P0: Path Traversal — not detecting LFI on live DVWA~~ ✅ FIXED (PR #266)
 
 Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
-**Root cause:** Two issues:
+**Root cause (resolved):** Three issues, all fixed:
 
-1. **Wrapper payload takes priority over direct replacement:** When the parameter has an existing value (`page=include.php`), the scanner first tries `page=include.php/../../../etc/passwd`. This fails because `include.php` is not a real directory. The direct replacement payload (`page=../../../../../../etc/passwd`) works, but it may not be tried first, or the wrapper result may mask it.
+1. **Non-deterministic `RawQuery` construction:** `testPayloadVariant()` iterated over `url.Values` (a `map[string][]string`) with Go's non-deterministic map iteration order when building the manual query string. For multi-parameter URLs this produced an unpredictable parameter order. Fixed by sorting keys before building the query string.
 
-2. **URL encoding of slashes:** The scanner manually constructs `RawQuery` to avoid Go's `url.Values.Encode()` encoding `/` as `%2F`. However, the manual construction may still have edge cases where slashes get encoded by the HTTP client, breaking the traversal for PHP's `include()` which needs literal `../` sequences.
+2. **POST form encoding destroys path separators:** `testParameterPOST()` used `formData.Encode()` which encodes `/` as `%2F`. PHP's `include()` needs literal `../` sequences. Fixed by replacing `formData.Encode()` with a new `buildPathTraversalFormBody()` helper that preserves `/` and `\` characters while still encoding other special characters.
 
-**Files:** `pkg/scanner/pathtraversal.go` — `testParameter()`, `testPayloadVariant()`, payload ordering
+3. **Direct replacement (Test 1) correctly tried first:** The direct replacement (`page=../../../../../../etc/passwd`) is already tried first in `testParameter()`. The GET path preserves literal slashes via manual `RawQuery` construction, which is now also stabilised with sorted keys.
+
+**Files:** `pkg/scanner/pathtraversal.go` — added `"sort"` import, sorted keys in `testPayloadVariant()`, added `buildPathTraversalFormBody()` helper, refactored `testParameterPOST()` to use it.
+
+**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
 
 ---
 
@@ -87,6 +91,6 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 **XSS done (PR #262):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
 
-**Pending (blocked by Path Traversal P0 bug):** Path Traversal remains as `t.Logf("Warning: ...")` in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions` until the P0 scanner detection bug is resolved.
+**Path Traversal done (PR #266):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
 
-**What still needs to change once remaining P0 bugs are fixed:** Convert Path Traversal warnings to `t.Errorf(...)` in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
+**All scanner categories now have hard assertions.** No remaining soft warnings.

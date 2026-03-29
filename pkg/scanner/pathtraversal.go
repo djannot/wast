@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -404,18 +405,45 @@ func (s *PathTraversalScanner) ScanPOST(ctx context.Context, targetURL string, p
 	return result
 }
 
+// buildPathTraversalFormBody constructs a URL-encoded form body while preserving
+// literal path separators (/ and \) in the payload value. Standard url.Values.Encode()
+// encodes / as %2F, which breaks path traversal payloads against targets like PHP's
+// include() that require literal ../ sequences.
+func buildPathTraversalFormBody(params map[string]string, payloadParam, payloadValue string) string {
+	// Sort keys for deterministic body construction.
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(params))
+	for _, k := range keys {
+		v := params[k]
+		if k == payloadParam {
+			v = payloadValue
+		}
+		// Encode key normally; encode value but preserve / and \ for traversal payloads.
+		encodedKey := url.QueryEscape(k)
+		encodedValue := v
+		encodedValue = strings.ReplaceAll(encodedValue, " ", "+")
+		encodedValue = strings.ReplaceAll(encodedValue, "&", "%26")
+		encodedValue = strings.ReplaceAll(encodedValue, "=", "%3D")
+		encodedValue = strings.ReplaceAll(encodedValue, "#", "%23")
+		parts = append(parts, encodedKey+"="+encodedValue)
+	}
+	return strings.Join(parts, "&")
+}
+
 // testParameterPOST tests a single parameter with a specific Path Traversal payload using POST method.
 func (s *PathTraversalScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, paramName string, payload pathTraversalPayload, allParameters map[string]string) *PathTraversalFinding {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
+	// Build the form body manually to preserve path separators (/ and \).
+	// url.Values.Encode() would encode / as %2F, breaking path traversal payloads
+	// against PHP's include() and similar functions that need literal ../ sequences.
+	formBody := buildPathTraversalFormBody(allParameters, paramName, payload.Payload)
 
 	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formBody))
 	if err != nil {
 		return nil
 	}
@@ -520,17 +548,24 @@ func (s *PathTraversalScanner) testPayloadVariant(ctx context.Context, baseURL *
 		// Use standard URL encoding
 		testURL.RawQuery = q.Encode()
 	} else {
-		// Construct RawQuery manually to avoid encoding path separators
+		// Construct RawQuery manually to avoid encoding path separators.
 		// This is critical for LFI detection where PHP's include() needs literal ../
+		// Sort keys for deterministic query string construction (map iteration is
+		// non-deterministic in Go, which can cause subtle issues with multi-param URLs).
+		keys := make([]string, 0, len(q))
+		for key := range q {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
 		params := []string{}
-		for key, values := range q {
-			for _, value := range values {
-				// Only encode special URL characters, not path separators
-				encodedKey := url.QueryEscape(key)
+		for _, key := range keys {
+			for _, value := range q[key] {
+				// Only encode special URL characters, not path separators.
 				// For path traversal payloads, we want to preserve / and \ characters
 				// but still encode other special characters like spaces, &, =, etc.
+				encodedKey := url.QueryEscape(key)
 				encodedValue := value
-				// Only encode the truly problematic characters for URLs
 				encodedValue = strings.ReplaceAll(encodedValue, " ", "+")
 				encodedValue = strings.ReplaceAll(encodedValue, "&", "%26")
 				encodedValue = strings.ReplaceAll(encodedValue, "=", "%3D")
