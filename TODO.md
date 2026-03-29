@@ -80,17 +80,18 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## P1: CI integration test assertions are soft (warnings, not failures) — ✅ PARTIALLY DONE
+## P1: CI integration test assertions are soft (warnings, not failures) — PARTIALLY DONE
 
-**Done (PR #259):** `t.Logf("Warning: ...")` assertions converted to `t.Errorf(...)` hard failures for:
-- SQLi: `TestDVWA_SQLi` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
-- CSRF: `TestDVWA_CSRF` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
-- Discovery scan combined check: `TestDVWA_DiscoveryScan` — **HARD FAILURE** (SQLi/CSRF always present)
+Hard failures (`t.Errorf`) are in place for:
+- **PR #259:** SQLi (false-positive count), CSRF, SSTI, Headers, submit-button false-positives.
+- **PR #262:** XSS `name` param check (individual scan test — hardened).
+- **PR #264:** CMDi `ip` param check (individual scan test — hardened).
+- **PR #267:** Path Traversal `page` param check (individual scan test — hardened).
 
-**CMDi done (PR #264):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for CMDi in `TestDVWA_CommandInjection` and `TestDVWA_FullDiscoveryScanAssertions`.
+Soft warnings (`t.Logf("Warning: ...")`) remain for scanner types whose detection is still unreliable on live DVWA Docker:
+- **SQLi** (`TestDVWA_SQLi`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case.
+- **XSS** (`TestDVWA_XSS`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
+- **CMDi** (`TestDVWA_CommandInjection`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
+- **Path Traversal** (`TestDVWA_PathTraversal`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
 
-**XSS done (PR #262):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
-
-**Path Traversal done (PR #267):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
-
-**Remaining soft warnings:** SQLi (`TestDVWA_SQLi` line 286, `TestDVWA_FullDiscoveryScanAssertions` line 656), XSS (`TestDVWA_XSS` line 333, `TestDVWA_FullDiscoveryScanAssertions` line 674), and CMDi (`TestDVWA_CommandInjection` line 395, `TestDVWA_FullDiscoveryScanAssertions` line 692) are still soft `t.Logf("Warning: ...")` calls pending their P0 scanner fixes.
+These assertions should be hardened once the live-DVWA detection is confirmed stable in CI.
