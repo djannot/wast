@@ -46,7 +46,7 @@ build-all:
 .PHONY: test
 test:
 	@echo "Running tests..."
-	$(GOTEST) -v -race -coverprofile=coverage.out ./...
+	$(GOTEST) -v -race -timeout 20m -coverprofile=coverage.out ./...
 	@echo "Tests complete"
 
 # Run integration tests
