@@ -212,18 +212,36 @@ func loginToDVWA(t *testing.T) *http.Client {
 
 	// Confirm security level via the security page (requires user_token CSRF).
 	// First GET security.php to retrieve the token, then POST with it.
+	// Retry up to 3 times in case the first attempt fails.
 	securityURL := dvwaURL + "/security.php"
-	resp, err = client.Get(securityURL)
-	if err != nil {
-		t.Logf("Warning: Failed to GET security page: %v", err)
-	} else {
+
+	// Regexes for robust token extraction regardless of attribute ordering or quote style.
+	// Pass 1: find the <input> element whose name attribute is "user_token".
+	inputTagRe := regexp.MustCompile(`(?i)<input\b[^>]*\bname=["']user_token["'][^>]*>`)
+	// Pass 2: extract the value attribute from that element.
+	valueAttrRe := regexp.MustCompile(`(?i)\bvalue=["']([^"']+)["']`)
+	// Regex to verify that "low" is the selected option on security.php after the POST.
+	lowSelectedRe := regexp.MustCompile(`(?i)<option[^>]+value=["']?low["']?[^>]*selected|<option[^>]+selected[^>]*value=["']?low["']?`)
+
+	securitySet := false
+	for attempt := 1; attempt <= 3 && !securitySet; attempt++ {
+		resp, err = client.Get(securityURL)
+		if err != nil {
+			t.Logf("Warning: Failed to GET security page (attempt %d): %v", attempt, err)
+			continue
+		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// Extract user_token from the hidden input field
+		// Two-pass extraction handles any attribute ordering (e.g. type before value).
 		userToken := ""
-		if m := regexp.MustCompile(`name='user_token'\s+value='([^']+)'`).FindSubmatch(body); m != nil {
-			userToken = string(m[1])
+		if inputTag := inputTagRe.Find(body); inputTag != nil {
+			if valueMatch := valueAttrRe.FindSubmatch(inputTag); valueMatch != nil {
+				userToken = string(valueMatch[1])
+			}
+		}
+		if userToken == "" {
+			t.Logf("Warning: Could not extract user_token from security page (attempt %d)", attempt)
 		}
 
 		formData = url.Values{
@@ -233,10 +251,30 @@ func loginToDVWA(t *testing.T) *http.Client {
 		}
 		resp, err = client.PostForm(securityURL, formData)
 		if err != nil {
-			t.Logf("Warning: Failed to set security level via form: %v", err)
-		} else {
-			resp.Body.Close()
+			t.Logf("Warning: Failed to POST security level (attempt %d): %v", attempt, err)
+			continue
 		}
+		resp.Body.Close()
+
+		// Verify the level was actually accepted by reading security.php again.
+		resp, err = client.Get(securityURL)
+		if err != nil {
+			t.Logf("Warning: Failed to verify security level (attempt %d): %v", attempt, err)
+			continue
+		}
+		verifyBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if lowSelectedRe.Match(verifyBody) {
+			securitySet = true
+			t.Logf("DVWA security level confirmed as 'low' (attempt %d)", attempt)
+		} else {
+			t.Logf("Warning: Security level verification failed (attempt %d), retrying...", attempt)
+		}
+	}
+
+	if !securitySet {
+		t.Fatalf("Failed to set DVWA security level to 'low' after 3 attempts; scanner tests require low security")
 	}
 
 	return client
