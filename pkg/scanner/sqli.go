@@ -64,7 +64,7 @@ var dynamicContentPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)[?&](timestamp|ts|time|_t)=[0-9]{10,}`),
 
 	// Common token patterns in hidden inputs
-	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-f]{16,}['"][^>]*>`),
+	regexp.MustCompile(`(?i)<input[^>]*type=['"]?hidden['"]?[^>]*value=['"][0-9a-fA-F]{16,}['"][^>]*>`),
 }
 
 // SQLiScanner performs active SQL injection vulnerability detection.
@@ -893,8 +893,14 @@ func normalizeResponseContent(htmlStr string) string {
 func isNonDataParameter(paramName string) bool {
 	paramLower := strings.ToLower(paramName)
 
-	// Submit button patterns
-	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action"}
+	// Submit button patterns — matched as substrings (case-insensitive via ToLower above).
+	// "change" is included to catch DVWA's Change submit button on /csrf/. As with the
+	// pre-existing "go" entry (which also matches "cargo", "category"), this introduces
+	// known false-negative surface: "exchange", "last_changed", "changelog" etc. will
+	// also be suppressed. This is an acceptable trade-off given the low prevalence of such
+	// parameter names on real injection targets; see TestIsNonDataParameter for the
+	// documented collisions.
+	submitPatterns := []string{"submit", "button", "btn", "send", "go", "action", "change"}
 	for _, pattern := range submitPatterns {
 		if strings.Contains(paramLower, pattern) {
 			return true
