@@ -4,6 +4,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type ScanConfig struct {
 	RateLimitConfig ratelimit.Config
 	Tracer          trace.Tracer // optional, for MCP tracing
 	CallbackURL     string       // optional, for out-of-band SSRF detection
+	HTTPClient      *http.Client // optional, shared HTTP client with cookie jar for session handling
 }
 
 // IntermediateScanResult represents the combined results of all security scans
@@ -120,6 +122,37 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
 		sstiOpts = append(sstiOpts, WithSSTIAuth(cfg.AuthConfig))
 		xxeOpts = append(xxeOpts, WithXXEAuth(cfg.AuthConfig))
+	}
+
+	// Propagate shared HTTP client (with cookie jar) to all scanners when provided.
+	// This ensures session cookies (e.g. PHPSESSID) and rotating CSRF tokens are
+	// handled correctly across all scanner invocations instead of using stale
+	// per-request Cookie headers.
+	if cfg.HTTPClient != nil {
+		headerOpts = append(headerOpts, WithHTTPClient(cfg.HTTPClient))
+		xssOpts = append(xssOpts, WithXSSHTTPClient(cfg.HTTPClient))
+		sqliOpts = append(sqliOpts, WithSQLiHTTPClient(cfg.HTTPClient))
+		nosqliOpts = append(nosqliOpts, WithNoSQLiHTTPClient(cfg.HTTPClient))
+		csrfOpts = append(csrfOpts, WithCSRFHTTPClient(cfg.HTTPClient))
+		ssrfOpts = append(ssrfOpts, WithSSRFHTTPClient(cfg.HTTPClient))
+		// The redirect scanner MUST use a no-redirect client: it detects open redirects
+		// by inspecting raw 3xx status codes and Location headers. Passing the shared
+		// client directly would silently disable redirect detection because the default
+		// client follows redirects and the scanner would only ever see a final 200.
+		// We share the cookie jar so session cookies remain valid, but override
+		// CheckRedirect to prevent automatic redirect-following.
+		noRedirectClient := &http.Client{
+			Jar:     cfg.HTTPClient.Jar,
+			Timeout: cfg.HTTPClient.Timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		redirectOpts = append(redirectOpts, WithRedirectHTTPClient(noRedirectClient))
+		cmdiOpts = append(cmdiOpts, WithCMDiHTTPClient(cfg.HTTPClient))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalHTTPClient(cfg.HTTPClient))
+		sstiOpts = append(sstiOpts, WithSSTIHTTPClient(cfg.HTTPClient))
+		xxeOpts = append(xxeOpts, WithXXEHTTPClient(cfg.HTTPClient))
 	}
 
 	// Add rate limiting if configured

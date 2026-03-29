@@ -63,19 +63,20 @@ type ProgressCallback func(visited int, discovered int, phase string)
 
 // Crawler performs web crawling operations.
 type Crawler struct {
-	client           HTTPClient
-	userAgent        string
-	timeout          time.Duration
-	maxDepth         int
-	respectRobots    bool
-	robotsData       *RobotsData
-	authConfig       *auth.AuthConfig
-	rateLimiter      ratelimit.Limiter
-	concurrency      int
-	tracer           trace.Tracer
-	progressCallback ProgressCallback
-	headlessConfig   *HeadlessConfig
-	headlessBrowser  *HeadlessBrowser
+	client              HTTPClient
+	userAgent           string
+	timeout             time.Duration
+	maxDepth            int
+	respectRobots       bool
+	robotsData          *RobotsData
+	authConfig          *auth.AuthConfig
+	rateLimiter         ratelimit.Limiter
+	concurrency         int
+	tracer              trace.Tracer
+	progressCallback    ProgressCallback
+	headlessConfig      *HeadlessConfig
+	headlessBrowser     *HeadlessBrowser
+	excludedURLPatterns []string
 }
 
 // Option is a function that configures a Crawler.
@@ -207,6 +208,28 @@ func WithHeadlessPoolSize(size int) Option {
 			cr.headlessConfig.PoolSize = size
 		}
 	}
+}
+
+// WithExcludedURLPatterns sets URL substrings that cause a URL to be skipped
+// during crawling. Any URL whose path or raw string contains one of these
+// substrings (case-insensitive) will not be fetched or queued. Use this to
+// prevent the crawler from visiting destructive endpoints (e.g. "logout",
+// "signout") that would invalidate the authenticated session.
+func WithExcludedURLPatterns(patterns []string) Option {
+	return func(cr *Crawler) {
+		cr.excludedURLPatterns = patterns
+	}
+}
+
+// isExcludedURL returns true when rawURL matches any of the excluded patterns.
+func isExcludedURL(rawURL string, patterns []string) bool {
+	lower := strings.ToLower(rawURL)
+	for _, p := range patterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewCrawler creates a new Crawler with the given options.
@@ -395,6 +418,12 @@ func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.
 		return
 	}
 
+	// Skip URLs matching any excluded pattern (e.g. logout endpoints that
+	// would destroy the authenticated session).
+	if isExcludedURL(item.url, c.excludedURLPatterns) {
+		return
+	}
+
 	// Check robots.txt
 	if c.respectRobots && c.robotsData != nil {
 		parsedURL, _ := url.Parse(item.url)
@@ -441,6 +470,11 @@ func (c *Crawler) processItem(ctx context.Context, item queueItem, baseURL *url.
 		// Resolve relative URLs
 		resolvedURL := baseURL.ResolveReference(linkURL)
 		link.URL = resolvedURL.String()
+
+		// Skip links that match excluded patterns before any further processing.
+		if isExcludedURL(link.URL, c.excludedURLPatterns) {
+			continue
+		}
 
 		// Check if internal or external
 		if isSameDomain(baseURL, resolvedURL) {

@@ -6,12 +6,12 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 
 ### Target scores
 
-| Scanner | Target | Current | Status |
-|---------|--------|---------|--------|
-| XSS | >= 1 finding on `/xss_r/` `name` param | 0 (259 tests) | **FAIL** |
-| CMDi | >= 1 finding on `/exec/` `ip` param (POST) | 0 (1,120 tests) | **FAIL** |
-| Path Traversal | >= 1 finding on `/fi/` `page` param | 0 (666 tests) | **FAIL** |
-| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 1 on `username` | **PASS** |
+| Scanner | Target | Current | Gap |
+|---------|--------|---------|-----|
+| XSS | >= 1 finding on `/xss_r/` `name` param | >= 1 | **PASS** (PR #280) |
+| CMDi | >= 1 finding on `/exec/` `ip` param (POST) | >= 1 | **PASS** (PR #280) |
+| Path Traversal | >= 1 finding on `/fi/` `page` param | >= 1 | **PASS** (PR #280) |
+| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 5 (including `id`) | **PASS** (PR #276) |
 | CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
 | SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
 | SSRF | 0 findings | 0 | **PASS** |

@@ -634,6 +634,103 @@ func TestExtractDiscoveredTargets_POSTForms(t *testing.T) {
 	}
 }
 
+// TestExtractDiscoveredTargets_SubmitButtonsExcluded verifies that submit-type and other
+// action-button fields are excluded from discovered target parameters. This prevents the
+// scanner from triggering unintended side-effects on forms like DVWA's CSRF change-password
+// page where submitting only the "Change" button (without password fields) changes the admin
+// password to MD5(”), breaking all subsequent test logins.
+func TestExtractDiscoveredTargets_SubmitButtonsExcluded(t *testing.T) {
+	crawlResult := &crawler.CrawlResult{
+		Target: "http://example.com",
+		Forms: []crawler.FormInfo{
+			// DVWA-style CSRF change-password form: only submit button remains after password
+			// fields are excluded; the form should NOT be added to targets at all.
+			{
+				Action: "http://example.com/vulnerabilities/csrf/",
+				Method: "GET",
+				Fields: []crawler.FormFieldInfo{
+					{Name: "password_new", Type: "password", Value: "", Required: false},
+					{Name: "password_conf", Type: "password", Value: "", Required: false},
+					{Name: "Change", Type: "submit", Value: "Change", Required: false},
+				},
+				Page: "http://example.com/vulnerabilities/csrf/",
+			},
+			// Normal form with a data field AND a submit button: form IS added, but only
+			// the data field (not the submit button) appears in parameters.
+			{
+				Action: "http://example.com/search",
+				Method: "GET",
+				Fields: []crawler.FormFieldInfo{
+					{Name: "q", Type: "text", Value: "", Required: false},
+					{Name: "Submit", Type: "submit", Value: "Search", Required: false},
+				},
+				Page: "http://example.com",
+			},
+			// Form with button/reset/image types – all should be excluded.
+			{
+				Action: "http://example.com/action",
+				Method: "POST",
+				Fields: []crawler.FormFieldInfo{
+					{Name: "data", Type: "text", Value: "value", Required: false},
+					{Name: "btn", Type: "button", Value: "Click", Required: false},
+					{Name: "rst", Type: "reset", Value: "Reset", Required: false},
+					{Name: "img", Type: "image", Value: "", Required: false},
+				},
+				Page: "http://example.com",
+			},
+		},
+		InternalLinks: []crawler.LinkInfo{},
+		Statistics:    crawler.CrawlStats{},
+	}
+
+	targets := extractDiscoveredTargets("http://example.com", crawlResult)
+
+	// CSRF-only form (password + submit) should be excluded (no testable params remain).
+	for _, tgt := range targets {
+		if tgt.URL == "http://example.com/vulnerabilities/csrf/" {
+			t.Errorf("CSRF change-password form (only submit button after filtering) should not be added as a target; got params: %v", tgt.Parameters)
+		}
+	}
+
+	// Search form: present with only the data parameter.
+	var searchTarget *DiscoveredTarget
+	for i := range targets {
+		if targets[i].URL == "http://example.com/search" {
+			searchTarget = &targets[i]
+			break
+		}
+	}
+	if searchTarget == nil {
+		t.Fatal("Search form target not found")
+	}
+	if _, hasQ := searchTarget.Parameters["q"]; !hasQ {
+		t.Error("Expected 'q' parameter in search target")
+	}
+	if _, hasSubmit := searchTarget.Parameters["Submit"]; hasSubmit {
+		t.Error("Submit button should be filtered out of search target parameters")
+	}
+
+	// Action form: present with only the data field.
+	var actionTarget *DiscoveredTarget
+	for i := range targets {
+		if targets[i].URL == "http://example.com/action" {
+			actionTarget = &targets[i]
+			break
+		}
+	}
+	if actionTarget == nil {
+		t.Fatal("Action form target not found")
+	}
+	if _, hasData := actionTarget.Parameters["data"]; !hasData {
+		t.Error("Expected 'data' parameter in action target")
+	}
+	for _, buttonName := range []string{"btn", "rst", "img"} {
+		if _, found := actionTarget.Parameters[buttonName]; found {
+			t.Errorf("Button field %q should be filtered out of action target parameters", buttonName)
+		}
+	}
+}
+
 // TestScanTargetRouting tests that different HTTP methods are routed correctly
 func TestScanTargetRouting(t *testing.T) {
 	ctx := context.Background()
