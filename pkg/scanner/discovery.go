@@ -216,6 +216,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	sstiOpts := []SSTIOption{
 		WithSSTITimeout(time.Duration(cfg.Timeout) * time.Second),
 	}
+	xxeOpts := []XXEOption{
+		WithXXETimeout(time.Duration(cfg.Timeout) * time.Second),
+	}
 
 	// Add authentication if configured
 	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
@@ -229,6 +232,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
 		sstiOpts = append(sstiOpts, WithSSTIAuth(cfg.AuthConfig))
+		xxeOpts = append(xxeOpts, WithXXEAuth(cfg.AuthConfig))
 	}
 
 	// Add rate limiting if configured
@@ -243,6 +247,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
 		sstiOpts = append(sstiOpts, WithSSTIRateLimitConfig(cfg.RateLimitConfig))
+		xxeOpts = append(xxeOpts, WithXXERateLimitConfig(cfg.RateLimitConfig))
 	}
 
 	// Add tracer if configured (for MCP)
@@ -257,6 +262,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
 		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
 		sstiOpts = append(sstiOpts, WithSSTITracer(cfg.Tracer))
+		xxeOpts = append(xxeOpts, WithXXETracer(cfg.Tracer))
+	}
+
+	// Add callback server if configured (for out-of-band XXE detection)
+	if cfg.CallbackURL != "" {
+		callbackServer := createCallbackServer(cfg.CallbackURL)
+		if callbackServer != nil {
+			xxeOpts = append(xxeOpts, WithXXECallbackServer(callbackServer))
+		}
 	}
 
 	// Create scanners
@@ -292,6 +306,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		cmdiScanner := NewCMDiScanner(cmdiOpts...)
 		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
 		sstiScanner := NewSSTIScanner(sstiOpts...)
+		xxeScanner := NewXXEScanner(xxeOpts...)
 
 		// Aggregate findings from all targets
 		allXSSFindings := make([]XSSFinding, 0)
@@ -303,6 +318,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		allCMDiFindings := make([]CMDiFinding, 0)
 		allPathTraversalFindings := make([]PathTraversalFinding, 0)
 		allSSTIFindings := make([]SSTIFinding, 0)
+		allXXEFindings := make([]XXEFinding, 0)
 		var mu sync.Mutex
 
 		// Create buffered channel for target distribution
@@ -338,6 +354,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					cmdiResult := scanTargetForCMDi(workerCtx, cmdiScanner, target)
 					pathtraversalResult := scanTargetForPathTraversal(workerCtx, pathtraversalScanner, target)
 					sstiResult := scanTargetForSSTI(workerCtx, sstiScanner, target)
+					xxeResult := scanTargetForXXE(workerCtx, xxeScanner, target)
 
 					// Add source information to findings
 					for i := range xssResult.Findings {
@@ -367,6 +384,9 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					for i := range sstiResult.Findings {
 						sstiResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, sstiResult.Findings[i].Evidence)
 					}
+					for i := range xxeResult.Findings {
+						xxeResult.Findings[i].Evidence = fmt.Sprintf("Source: %s | %s", target.Source, xxeResult.Findings[i].Evidence)
+					}
 
 					// Thread-safe aggregation of findings and test counts
 					mu.Lock()
@@ -379,6 +399,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					allCMDiFindings = append(allCMDiFindings, cmdiResult.Findings...)
 					allPathTraversalFindings = append(allPathTraversalFindings, pathtraversalResult.Findings...)
 					allSSTIFindings = append(allSSTIFindings, sstiResult.Findings...)
+					allXXEFindings = append(allXXEFindings, xxeResult.Findings...)
 
 					// Accumulate test counts from each scanner's summary
 					stats.TotalXSSTests += xssResult.Summary.TotalTests
@@ -390,6 +411,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 					stats.TotalCMDiTests += cmdiResult.Summary.TotalTests
 					stats.TotalPathTraversalTests += pathtraversalResult.Summary.TotalTests
 					stats.TotalSSTITests += sstiResult.Summary.TotalTests
+					stats.TotalXXETests += xxeResult.Summary.TotalTests
 					mu.Unlock()
 
 					// Report progress if callback is set
@@ -439,6 +461,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		stats.TotalCMDiFindings = len(allCMDiFindings)
 		stats.TotalPathTraversalFindings = len(allPathTraversalFindings)
 		stats.TotalSSTIFindings = len(allSSTIFindings)
+		stats.TotalXXEFindings = len(allXXEFindings)
 
 		// Create result structures with accumulated test counts
 		xssResult := &XSSScanResult{
@@ -531,6 +554,16 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			Errors: []string{},
 		}
 
+		xxeResult := &XXEScanResult{
+			Target:   cfg.Target,
+			Findings: allXXEFindings,
+			Summary: XXESummary{
+				TotalTests:           stats.TotalXXETests,
+				VulnerabilitiesFound: len(allXXEFindings),
+			},
+			Errors: []string{},
+		}
+
 		// Verify findings if enabled
 		if cfg.VerifyFindings {
 			verifyConfig := VerificationConfig{
@@ -549,6 +582,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			stats.TotalCMDiFindings = len(cmdiResult.Findings)
 			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
 			stats.TotalSSTIFindings = len(sstiResult.Findings)
+			stats.TotalXXEFindings = len(xxeResult.Findings)
 
 			// Verify findings (similar to ExecuteScan)
 			// Verify XSS findings
@@ -687,6 +721,22 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 				}
 			}
 
+			// Verify XXE findings
+			for i := range xxeResult.Findings {
+				result, err := xxeScanner.VerifyFinding(ctx, &xxeResult.Findings[i], verifyConfig)
+				if err == nil && result != nil {
+					xxeResult.Findings[i].Verified = result.Verified
+					xxeResult.Findings[i].VerificationAttempts = result.Attempts
+					if result.Verified && result.Confidence > 0.8 {
+						xxeResult.Findings[i].Confidence = "high"
+					} else if result.Verified && result.Confidence > 0.5 {
+						xxeResult.Findings[i].Confidence = "medium"
+					} else if !result.Verified {
+						xxeResult.Findings[i].Confidence = "low"
+					}
+				}
+			}
+
 			// Filter out unverified findings
 			verifiedXSSFindings := make([]XSSFinding, 0)
 			for _, finding := range xssResult.Findings {
@@ -768,6 +818,15 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 			}
 			sstiResult.Findings = verifiedSSTIFindings
 			sstiResult.Summary.VulnerabilitiesFound = len(verifiedSSTIFindings)
+
+			verifiedXXEFindings := make([]XXEFinding, 0)
+			for _, finding := range xxeResult.Findings {
+				if finding.Verified {
+					verifiedXXEFindings = append(verifiedXXEFindings, finding)
+				}
+			}
+			xxeResult.Findings = verifiedXXEFindings
+			xxeResult.Summary.VulnerabilitiesFound = len(verifiedXXEFindings)
 		}
 
 		intermediateResult.XSS = xssResult
@@ -779,6 +838,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		intermediateResult.CMDi = cmdiResult
 		intermediateResult.PathTraversal = pathtraversalResult
 		intermediateResult.SSTI = sstiResult
+		intermediateResult.XXE = xxeResult
 	}
 
 	// Perform WebSocket detection and scanning
@@ -1009,6 +1069,13 @@ func scanTargetForSSTI(ctx context.Context, scanner *SSTIScanner, target Discove
 		return scanner.ScanPOST(ctx, target.URL, target.Parameters)
 	}
 	// Default to GET
+	targetURL := buildURLWithParams(target)
+	return scanner.Scan(ctx, targetURL)
+}
+
+// scanTargetForXXE scans a single discovered target for XXE vulnerabilities.
+func scanTargetForXXE(ctx context.Context, scanner *XXEScanner, target DiscoveredTarget) *XXEScanResult {
+	// XXE scanner discovers XML endpoints internally; provide the base URL with params
 	targetURL := buildURLWithParams(target)
 	return scanner.Scan(ctx, targetURL)
 }
