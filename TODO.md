@@ -15,7 +15,7 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 | CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
 | SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
 | SSRF | 0 findings | 0 | **PASS** |
-| NoSQLi | 0 false positives on non-MongoDB app | 14 FPs | All on `doc` param — DVWA uses MySQL, not MongoDB |
+| NoSQLi | 0 false positives on non-MongoDB app | 0 FPs | **PASS** (PR #274) |
 | Headers | >= 5 missing security headers | 7 | **PASS** |
 
 ### False positive targets
@@ -23,7 +23,7 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 | Scanner | Target | Current | Gap |
 |---------|--------|---------|-----|
 | SQLi | 0 findings on `Change`, `doc`, `Login`, submit buttons | 4 FPs | CSRF token normalization not fully effective |
-| NoSQLi | 0 findings on DVWA (MySQL app) | 14 FPs | `doc` param loads different pages — response size change is not injection |
+| NoSQLi | 0 findings on DVWA (MySQL app) | 0 FPs | **PASS** (PR #274) |
 | SSTI | 0 findings | 0 | **PASS** |
 | SSRF | 0 findings | 0 | **PASS** |
 
@@ -95,3 +95,15 @@ Hard failures (`t.Errorf`) are in place for:
 - **PR #272:** SQLi, XSS, CMDi, Path Traversal 0-finding cases in `TestDVWA_SQLi`, `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
 
 All blocking scanner bugs are resolved (PRs #262, #264, #267, #268), so CI will now correctly fail on any regression.
+
+---
+
+## ~~P0: NoSQLi — 14 false positives on MySQL DVWA (non-MongoDB app)~~ ✅ FIXED (PR #274)
+
+**Root cause (resolved):** `isSignificantResponseChange()` used a naive 30% body-length-difference threshold. Parameters like `doc` that legitimately load different page content (e.g., `?doc=readme` vs `?doc=changelog`) naturally produce large response-size variations, triggering false findings.
+
+**Fix:** Added confirmation requests to all three differential-analysis call sites (`testWithBaseline`, `testWithBaselinePOST`, `testArrayPollution`). After detecting a significant response change from an injected payload, the scanner now sends a second benign request using a neutral value (`nosqlicheckxyz123`). If the benign value also produces a significant change from baseline, the parameter is a routing/content-selector param and the finding is suppressed. Only when the benign confirmation stays close to baseline is the finding reported.
+
+**Added helpers:** `confirmVarianceIsInjection()` (GET) and `confirmVarianceIsInjectionPOST()` (POST) in `pkg/scanner/nosqli.go`.
+
+**Files:** `pkg/scanner/nosqli.go` — three differential-analysis sites updated; two new confirmation helpers. `pkg/scanner/nosqli_test.go` — three new tests. `test/integration/dvwa_test.go` — added `TestDVWA_NoSQLi_NoFalsePositives`; added NoSQLi assertion to `TestDVWA_FullDiscoveryScanAssertions`.

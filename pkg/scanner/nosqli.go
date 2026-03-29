@@ -798,8 +798,16 @@ func (s *NoSQLiScanner) testWithBaseline(ctx context.Context, baseURL *url.URL, 
 		}
 	}
 
-	// Differential analysis: significant response change may indicate injection
+	// Differential analysis: significant response change may indicate injection.
+	// A confirmation request with a benign neutral value is sent to verify the change
+	// is injection-specific and not simply natural parameter variance (e.g. a page-router
+	// param like ?doc=readme that legitimately returns different content for every value).
 	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		if !s.confirmVarianceIsInjection(ctx, baseURL, paramName, baseline) {
+			// Benign neutral value also changes the response → parameter naturally varies
+			// → this is not injection, skip to avoid false positive.
+			return nil
+		}
 		return &NoSQLiFinding{
 			URL:         testURL.String(),
 			Parameter:   paramName,
@@ -875,6 +883,9 @@ func (s *NoSQLiScanner) testWithBaselinePOST(ctx context.Context, baseURL *url.U
 	}
 
 	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		if !s.confirmVarianceIsInjectionPOST(ctx, baseURL, paramName, allParameters, baseline) {
+			return nil
+		}
 		return &NoSQLiFinding{
 			URL:         baseURL.String(),
 			Parameter:   paramName,
@@ -957,8 +968,11 @@ func (s *NoSQLiScanner) testArrayPollution(ctx context.Context, baseURL *url.URL
 		}
 	}
 
-	// Differential analysis
+	// Differential analysis — with confirmation to eliminate false positives on routing params.
 	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		if !s.confirmVarianceIsInjection(ctx, baseURL, paramName, baseline) {
+			return nil
+		}
 		return &NoSQLiFinding{
 			URL:         testURL.String(),
 			Parameter:   paramName,
@@ -997,6 +1011,110 @@ func (s *NoSQLiScanner) isSignificantResponseChange(baseline *baselineResponse, 
 	}
 
 	return false
+}
+
+// nosqliNeutralConfirmValue is a benign value used for confirmation requests.
+// It is not a valid NoSQL operator and is unlikely to match real page content or DB entries.
+const nosqliNeutralConfirmValue = "nosqlicheckxyz123"
+
+// confirmVarianceIsInjection checks that a detected response change is injection-specific
+// and not simply natural parameter variance (e.g. a page-router param like ?doc=readme).
+//
+// It sends a second GET request with a benign neutral value and compares the response
+// length to the baseline. If the benign value ALSO produces a significant change, the
+// parameter is inherently variable — the original change was a false positive.
+// Returns true when the change is injection-specific (safe to report as a finding).
+func (s *NoSQLiScanner) confirmVarianceIsInjection(ctx context.Context, baseURL *url.URL, paramName string, baseline *baselineResponse) bool {
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			// Cannot wait for rate limiter — conservatively assume injection to avoid suppressing real findings.
+			return true
+		}
+	}
+
+	confirmURL := *baseURL
+	q := confirmURL.Query()
+	q.Set(paramName, nosqliNeutralConfirmValue)
+	confirmURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, confirmURL.String(), nil)
+	if err != nil {
+		// Cannot confirm — assume injection to avoid suppressing real findings
+		return true
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return true
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return true
+	}
+
+	// If a benign neutral value also produces a significant response change from the
+	// baseline, the parameter is a routing/content-selector param (e.g. ?doc=readme).
+	// Any injected-payload change is therefore not unique → not injection.
+	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		return false
+	}
+
+	// Benign confirmation is close to baseline → injected-payload change is unique → injection confirmed.
+	return true
+}
+
+// confirmVarianceIsInjectionPOST is the POST-body variant of confirmVarianceIsInjection.
+func (s *NoSQLiScanner) confirmVarianceIsInjectionPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string, baseline *baselineResponse) bool {
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			// Cannot wait for rate limiter — conservatively assume injection to avoid suppressing real findings.
+			return true
+		}
+	}
+
+	formData := url.Values{}
+	for k, v := range allParameters {
+		formData.Set(k, v)
+	}
+	formData.Set(paramName, nosqliNeutralConfirmValue)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		return true
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return true
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return true
+	}
+
+	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		return false
+	}
+
+	return true
 }
 
 // extractEvidence extracts context around a match in the response body.

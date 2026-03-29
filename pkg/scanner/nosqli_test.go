@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -800,4 +801,152 @@ func TestNoSQLiPayloads_RequiredVectors(t *testing.T) {
 			t.Errorf("Missing required NoSQLi payload: %s", required)
 		}
 	}
+}
+
+// TestNoSQLiScanner_ConfirmationRequest_SkipsRoutingParam verifies that the scanner does NOT
+// report a finding when a routing parameter (e.g. ?doc=readme) naturally produces large
+// response-size changes for ANY value, including benign neutral ones.
+// This is the core regression test for the DVWA false-positive fix (issue #274).
+func TestNoSQLiScanner_ConfirmationRequest_SkipsRoutingParam(t *testing.T) {
+	// Simulate a page-routing parameter: every different value returns different content.
+	// doc=readme   → 5000-byte page
+	// doc=anything → 2000-byte page  (a "not found" / different page)
+	// This mimics DVWA's ?doc= parameter behaviour.
+	mockClient := &handlerNoSQLiHTTPClient{
+		handler: func(req *http.Request) (*http.Response, error) {
+			docVal := req.URL.Query().Get("doc")
+			switch docVal {
+			case "readme":
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", 5000))),
+				}, nil
+			default:
+				// Any other value (including NoSQL payloads AND the neutral confirm value)
+				// returns shorter content — mimics a "page not found" page.
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader(strings.Repeat("y", 2000))),
+				}, nil
+			}
+		},
+	}
+
+	s := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
+	result := s.Scan(context.Background(), "http://example.com/help?doc=readme")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	if len(result.Findings) != 0 {
+		t.Errorf("Expected 0 findings for routing param (false positive), got %d:", len(result.Findings))
+		for _, f := range result.Findings {
+			t.Logf("  false positive: param=%s payload=%s evidence=%s", f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+}
+
+// TestNoSQLiScanner_ConfirmationRequest_DetectsRealInjection verifies that the confirmation
+// logic does NOT suppress real NoSQL injection findings.
+// A real injection makes the injected-payload response differ from baseline while the
+// benign confirmation response stays close to baseline.
+func TestNoSQLiScanner_ConfirmationRequest_DetectsRealInjection(t *testing.T) {
+	// Simulate a MongoDB login endpoint:
+	//   username=admin          → 200 "Login OK" (baseline, already authenticated-looking for simplicity)
+	//   username={"$gt":""}     → 200 "Welcome admin" (larger; injection bypasses auth)
+	//   username=nosqlicheckxyz123 → 200 "Login OK" (neutral value, same as baseline → confirms injection)
+	//
+	// For the scanner: baseline is sent with username=admin (original URL value).
+	// Injected payload causes a size change. Neutral confirm returns same as baseline.
+	const baselineBody = "Login page: enter your credentials to proceed."
+	const injectedBody = "Welcome back, admin! Your dashboard is ready with all your data loaded."
+
+	mockClient := &handlerNoSQLiHTTPClient{
+		handler: func(req *http.Request) (*http.Response, error) {
+			usernameVal := req.URL.Query().Get("username")
+			if strings.Contains(usernameVal, "$") {
+				// NoSQL operator payload → auth bypass, bigger response
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader(injectedBody)),
+				}, nil
+			}
+			// Baseline or neutral confirm value → same safe page
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(baselineBody)),
+			}, nil
+		},
+	}
+
+	s := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
+	result := s.Scan(context.Background(), "http://example.com/login?username=admin")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// The scan MUST still detect the real injection.
+	found := false
+	for _, f := range result.Findings {
+		if f.Parameter == "username" {
+			found = true
+			t.Logf("Correctly detected NoSQL injection: param=%s payload=%s confidence=%s", f.Parameter, f.Payload, f.Confidence)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected at least one finding on 'username' parameter (real injection), got %d finding(s)", len(result.Findings))
+	}
+}
+
+// TestNoSQLiScanner_ConfirmVarianceIsInjection_Unit tests the low-level confirmation helper
+// directly with a mock HTTP client.
+func TestNoSQLiScanner_ConfirmVarianceIsInjection_Unit(t *testing.T) {
+	t.Run("returns false when neutral value also varies", func(t *testing.T) {
+		// Any value other than "stable" returns a response much smaller than baseline.
+		// This simulates a page-router param where the neutral confirm value also
+		// produces a different-sized page.
+		mockClient := &handlerNoSQLiHTTPClient{
+			handler: func(req *http.Request) (*http.Response, error) {
+				val := req.URL.Query().Get("page")
+				if val == "stable" {
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("a", 1000)))}, nil
+				}
+				// Neutral value → small "not found" page (80% smaller than baseline)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("b", 100)))}, nil
+			},
+		}
+		s := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
+		parsedURL, err := url.Parse("http://example.com/help?page=stable")
+		if err != nil {
+			t.Fatalf("Failed to parse URL: %v", err)
+		}
+		baseline := &baselineResponse{StatusCode: 200, BodyLength: 1000}
+		result := s.confirmVarianceIsInjection(context.Background(), parsedURL, "page", baseline)
+		if result {
+			t.Error("Expected false (param naturally varies → not injection), got true")
+		}
+	})
+
+	t.Run("returns true when neutral value stays close to baseline", func(t *testing.T) {
+		// Every request returns the same stable response.
+		// The neutral confirm value is identical to baseline → the param doesn't naturally vary.
+		mockClient := &handlerNoSQLiHTTPClient{
+			handler: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("a", 1000)))}, nil
+			},
+		}
+		s := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
+		parsedURL, err := url.Parse("http://example.com/login?username=admin")
+		if err != nil {
+			t.Fatalf("Failed to parse URL: %v", err)
+		}
+		baseline := &baselineResponse{StatusCode: 200, BodyLength: 1000}
+		result := s.confirmVarianceIsInjection(context.Background(), parsedURL, "username", baseline)
+		if !result {
+			t.Error("Expected true (stable param → injection confirmed), got false")
+		}
+	})
 }
