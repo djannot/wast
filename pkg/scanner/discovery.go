@@ -129,8 +129,17 @@ func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []
 		// Build parameters from form fields
 		params := make(map[string]string)
 		for _, field := range form.Fields {
-			// Skip password, file, and hidden fields
-			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" {
+			// Skip password, file, hidden, and action-button fields.
+			// Submit/button/reset/image inputs are action triggers, not data
+			// fields, and should never be used as injection targets.  More
+			// importantly, some forms (e.g. DVWA's CSRF page) rely on the
+			// presence of a submit-button name parameter to trigger side-effects
+			// (password changes).  Scanning those forms while omitting the
+			// actual data fields but retaining the submit button would trigger
+			// the side effect with empty data values – e.g. changing the admin
+			// password to MD5(''), which breaks all subsequent login attempts.
+			if field.Type == "password" || field.Type == "file" || field.Type == "hidden" ||
+				field.Type == "submit" || field.Type == "button" || field.Type == "reset" || field.Type == "image" {
 				continue
 			}
 			// Skip fields whose name suggests they are password fields regardless of
