@@ -80,18 +80,15 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## P1: CI integration test assertions are soft (warnings, not failures) — PARTIALLY DONE
+## ~~P1: CI integration test assertions are soft (warnings, not failures)~~ ✅ FIXED (PR #272)
+
+All integration test assertions are now hard `t.Errorf` failures. No soft `t.Logf("Warning: ...")` remain for scanner-result assertions.
 
 Hard failures (`t.Errorf`) are in place for:
 - **PR #259:** SQLi (false-positive count), CSRF, SSTI, Headers, submit-button false-positives.
-- **PR #262:** XSS `name` param check (individual scan test — hardened).
-- **PR #264:** CMDi `ip` param check (individual scan test — hardened).
-- **PR #267:** Path Traversal `page` param check (individual scan test — hardened).
+- **PR #262:** XSS `name` param check (individual scan test).
+- **PR #264:** CMDi `ip` param check (individual scan test).
+- **PR #267:** Path Traversal `page` param check (individual scan test).
+- **PR #272:** SQLi, XSS, CMDi, Path Traversal 0-finding cases in `TestDVWA_SQLi`, `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
 
-Soft warnings (`t.Logf("Warning: ...")`) remain for scanner types whose detection is still unreliable on live DVWA Docker:
-- **SQLi** (`TestDVWA_SQLi`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case.
-- **XSS** (`TestDVWA_XSS`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
-- **CMDi** (`TestDVWA_CommandInjection`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
-- **Path Traversal** (`TestDVWA_PathTraversal`, `TestDVWA_FullDiscoveryScanAssertions`) — 0-finding case (PR #271 reverted premature hardening).
-
-These assertions should be hardened once the live-DVWA detection is confirmed stable in CI.
+All blocking scanner bugs are resolved (PRs #262, #264, #267, #268), so CI will now correctly fail on any regression.
