@@ -662,10 +662,13 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 
 // baselineResponse stores information about a baseline request for comparison.
 type baselineResponse struct {
-	StatusCode  int
-	BodyLength  int
-	BodyHash    string
-	ContainsKey string
+	StatusCode    int
+	BodyLength    int
+	BodyHash      string
+	ContainsKey   string
+	DataWordCount int    // Number of words in data-bearing elements (td, th, pre)
+	DataContent   string // Text extracted from data-bearing elements
+	DataRowCount  int    // Number of table rows with data cells
 }
 
 // getBaseline makes a request with the original parameter value to establish a baseline.
@@ -719,11 +722,17 @@ func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 		return nil, 0
 	}
 
+	bodyStr := string(body)
+	_, _, _, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
+
 	baseline := &baselineResponse{
-		StatusCode:  resp.StatusCode,
-		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
-		ContainsKey: string(body),
+		StatusCode:    resp.StatusCode,
+		BodyLength:    len(body),
+		BodyHash:      fmt.Sprintf("%x", len(body)), // Simple hash for comparison
+		ContainsKey:   bodyStr,
+		DataWordCount: dataWordCount,
+		DataContent:   dataContent,
+		DataRowCount:  dataRowCount,
 	}
 
 	return baseline, duration
@@ -769,14 +778,20 @@ func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 		return nil, 0
 	}
 
+	bodyStr := string(body)
+	_, _, _, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
+
 	// Calculate proper hash of response body
 	hash := md5.Sum(body)
 
 	baseline := &baselineResponse{
-		StatusCode:  resp.StatusCode,
-		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", hash),
-		ContainsKey: string(body),
+		StatusCode:    resp.StatusCode,
+		BodyLength:    len(body),
+		BodyHash:      fmt.Sprintf("%x", hash),
+		ContainsKey:   bodyStr,
+		DataWordCount: dataWordCount,
+		DataContent:   dataContent,
+		DataRowCount:  dataRowCount,
 	}
 
 	return baseline, duration
@@ -1615,6 +1630,25 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	if dataRowCountDiff > 0 {
 		detectionMethods = append(detectionMethods, fmt.Sprintf("data row count differs (true: %d rows, false: %d rows, diff: %d rows)", trueResp.DataRowCount, falseResp.DataRowCount, dataRowCountDiff))
 		detectedVulnerability = true
+	}
+
+	// 3-way baseline comparison for numeric parameter detection:
+	// If the true payload returns significantly MORE data than the baseline AND the false
+	// payload stays near the baseline, that is a strong boolean-SQLi signal.
+	// This catches the canonical DVWA id=1 case where:
+	//   baseline → 1 row, true (1' OR '1'='1) → 5 rows, false (1' OR '1'='2) → 1 row
+	// The two-way true/false diff is only ~28 words which is caught above, but the
+	// three-way comparison provides a dedicated, higher-confidence detection path and
+	// ensures correct detection even when the true/false diff happens to be small.
+	if baseline.DataWordCount >= 0 {
+		trueExceedsBaseline := trueResp.DataWordCount > baseline.DataWordCount+adaptiveWordCountThreshold
+		falseWithinBaseline := falseResp.DataWordCount <= baseline.DataWordCount+adaptiveWordCountThreshold
+		if trueExceedsBaseline && falseWithinBaseline {
+			detectionMethods = append(detectionMethods, fmt.Sprintf(
+				"true payload returns more data than baseline while false stays near baseline (true: %d words, baseline: %d words, false: %d words)",
+				trueResp.DataWordCount, baseline.DataWordCount, falseResp.DataWordCount))
+			detectedVulnerability = true
+		}
 	}
 
 	// For high confidence: true/false must behave differently via multiple methods

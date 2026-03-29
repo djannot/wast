@@ -11,7 +11,7 @@ The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_Full
 | XSS | >= 1 finding on `/xss_r/` `name` param | 0 | Payload reflected verbatim but `analyzeContext()` still rejects it |
 | CMDi | >= 1 finding on `/exec/` `ip` param (POST) | 0 | 1,120 tests run, prepended payloads added, still no detection |
 | Path Traversal | >= 1 finding on `/fi/` `page` param | 0 | 666 tests run, raw slashes preserved, still no detection |
-| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 4 (but 0 on `id`) | Detects on `username`/`page` but misses the primary `/sqli/?id=` endpoint |
+| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 5 (including `id`) | **PASS** (PR #276) |
 | CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
 | SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
 | SSRF | 0 findings | 0 | **PASS** |

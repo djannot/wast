@@ -960,7 +960,7 @@ func TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons(t *testing.T) {
 	}
 
 	if !foundIdVulnerability {
-		t.Log("Note: Did not find SQLi on 'id' parameter - may need further tuning")
+		t.Errorf("Did not find SQLi on 'id' parameter — boolean-based 3-way baseline comparison should detect this (tests: %d, findings: %d)", result2.Summary.TotalTests, len(result2.Findings))
 	}
 }
 
