@@ -1234,14 +1234,17 @@ func hasResultsData(body string, structuralElements int) bool {
 // analyzeResponse extracts all characteristics from a response
 // Optimized to extract body content only once
 func analyzeResponse(body string) (contentHash string, wordCount int, structuralElements int, dataContent string, dataWordCount int, dataRowCount int) {
-	// Extract content once and reuse for both hash and word count
-	extractedContent := extractBodyContent(body)
+	// Normalize to remove dynamic content (CSRF tokens, nonces, timestamps)
+	// before computing ContentHash and WordCount to avoid false positives caused
+	// by per-request token changes (e.g. DVWA user_token hidden field).
+	normalizedBody := normalizeResponseContent(body)
+	extractedContent := extractBodyContent(normalizedBody)
 
-	// Compute hash from extracted content
+	// Compute hash from normalized extracted content
 	hash := md5.Sum([]byte(extractedContent))
 	contentHash = fmt.Sprintf("%x", hash)
 
-	// Count words from extracted content
+	// Count words from normalized extracted content
 	if extractedContent == "" {
 		wordCount = 0
 	} else {

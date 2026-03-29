@@ -2900,3 +2900,40 @@ func TestSQLiScanner_NoFalsePositivesOnCSRFTokenChanges(t *testing.T) {
 
 	t.Logf("Scan result: %d tests, %d findings (expected 0)", result.Summary.TotalTests, len(result.Findings))
 }
+
+// TestAnalyzeResponse_CSRFTokenNormalization verifies that two HTML pages differing
+// only in a CSRF token hidden field produce the same ContentHash and WordCount.
+// This is the core regression test for the boolean-based SQLi false-positive fix.
+func TestAnalyzeResponse_CSRFTokenNormalization(t *testing.T) {
+	// Two pages identical in structure/content but with different user_token values
+	// (as seen on DVWA's /csrf/ page).
+	html1 := `<html><body>
+		<h1>Change Your Admin Password</h1>
+		<form method="GET">
+			<input name="password_new" type="password">
+			<input name="password_conf" type="password">
+			<input name="Change" type="submit" value="Change">
+			<input name="user_token" type="hidden" value="aabbccdd11223344aabbccdd11223344">
+		</form>
+	</body></html>`
+
+	html2 := `<html><body>
+		<h1>Change Your Admin Password</h1>
+		<form method="GET">
+			<input name="password_new" type="password">
+			<input name="password_conf" type="password">
+			<input name="Change" type="submit" value="Change">
+			<input name="user_token" type="hidden" value="99887766554433229988776655443322">
+		</form>
+	</body></html>`
+
+	hash1, words1, _, _, _, _ := analyzeResponse(html1)
+	hash2, words2, _, _, _, _ := analyzeResponse(html2)
+
+	if hash1 != hash2 {
+		t.Errorf("analyzeResponse() ContentHash differs for pages that differ only in CSRF token: %q vs %q (CSRF normalization not applied)", hash1, hash2)
+	}
+	if words1 != words2 {
+		t.Errorf("analyzeResponse() WordCount differs for pages that differ only in CSRF token: %d vs %d (CSRF normalization not applied)", words1, words2)
+	}
+}

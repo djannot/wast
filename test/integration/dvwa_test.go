@@ -855,3 +855,48 @@ func TestDVWA_SQLi_NoFalsePositivesOnSubmitButtons(t *testing.T) {
 		t.Log("Note: Did not find SQLi on 'id' parameter - may need further tuning")
 	}
 }
+
+// TestDVWA_SQLi_NoFalsePositivesOnCSRFPage verifies that the SQLi scanner does not
+// flag the Change param, doc param, or Login button on the DVWA /csrf/ page.
+// These were previously false-positived due to CSRF token (user_token) changes
+// causing ContentHash and WordCount differences on every request.
+func TestDVWA_SQLi_NoFalsePositivesOnCSRFPage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping DVWA integration test in short mode")
+	}
+
+	client := loginToDVWA(t)
+
+	sqliScanner := scanner.NewSQLiScanner(
+		scanner.WithSQLiHTTPClient(client),
+		scanner.WithSQLiTimeout(60*time.Second),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+
+	// The CSRF change-password page has non-injectable params (Change, doc) and a
+	// rotating user_token hidden field that previously caused boolean-based FPs.
+	targetURL := dvwaURL + "/vulnerabilities/csrf/?password_new=test&password_conf=test&Change=Change"
+	result := sqliScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	t.Logf("SQLi scan on /csrf/ page: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+
+	// None of these params are injectable — any finding here is a false positive.
+	falsePositiveParams := map[string]bool{
+		"change": true,
+		"doc":    true,
+		"login":  true,
+	}
+	for _, finding := range result.Findings {
+		paramLower := strings.ToLower(finding.Parameter)
+		if falsePositiveParams[paramLower] {
+			t.Errorf("False positive: SQLi reported on non-injectable param '%s' at %s — evidence: %s",
+				finding.Parameter, finding.URL, finding.Evidence)
+		}
+	}
+}
