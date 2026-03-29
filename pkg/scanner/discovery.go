@@ -235,6 +235,24 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		xxeOpts = append(xxeOpts, WithXXEAuth(cfg.AuthConfig))
 	}
 
+	// Propagate shared HTTP client (with cookie jar) to all scanners when provided.
+	// This ensures session cookies (e.g. PHPSESSID) and rotating CSRF tokens are
+	// handled correctly across all scanner invocations instead of using stale
+	// per-request Cookie headers.
+	if cfg.HTTPClient != nil {
+		headerOpts = append(headerOpts, WithHTTPClient(cfg.HTTPClient))
+		xssOpts = append(xssOpts, WithXSSHTTPClient(cfg.HTTPClient))
+		sqliOpts = append(sqliOpts, WithSQLiHTTPClient(cfg.HTTPClient))
+		nosqliOpts = append(nosqliOpts, WithNoSQLiHTTPClient(cfg.HTTPClient))
+		csrfOpts = append(csrfOpts, WithCSRFHTTPClient(cfg.HTTPClient))
+		ssrfOpts = append(ssrfOpts, WithSSRFHTTPClient(cfg.HTTPClient))
+		redirectOpts = append(redirectOpts, WithRedirectHTTPClient(cfg.HTTPClient))
+		cmdiOpts = append(cmdiOpts, WithCMDiHTTPClient(cfg.HTTPClient))
+		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalHTTPClient(cfg.HTTPClient))
+		sstiOpts = append(sstiOpts, WithSSTIHTTPClient(cfg.HTTPClient))
+		xxeOpts = append(xxeOpts, WithXXEHTTPClient(cfg.HTTPClient))
+	}
+
 	// Add rate limiting if configured
 	if cfg.RateLimitConfig.IsEnabled() {
 		headerOpts = append(headerOpts, WithRateLimitConfig(cfg.RateLimitConfig))

@@ -689,6 +689,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 			Target:     dvwaURL,
 			Timeout:    240,
 			AuthConfig: authConfig,
+			HTTPClient: client,
 		},
 		CrawlDepth:      3,
 		Concurrency:     3,
@@ -741,10 +742,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	}
 
 	// ----------------------------------------------------------------
-	// XSS: log findings on /xss_r/ with 'name' param
-	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
-	// so XSS detection via discovery scan is unreliable on live DVWA. Individual
-	// TestDVWA_XSS test already hardens this assertion.
+	// XSS: >= 1 finding on /xss_r/ with 'name' param
 	// ----------------------------------------------------------------
 	xssOnExpectedPaths := 0
 	if result.XSS != nil {
@@ -756,16 +754,13 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if xssOnExpectedPaths < 1 {
-		t.Logf("Warning: XSS: 0 findings on /xss_r/ with 'name' param — detection unreliable in discovery scan context")
+		t.Errorf("XSS: expected >= 1 finding on /xss_r/ with 'name' param in discovery scan, got 0")
 	} else {
 		t.Logf("XSS: %d finding(s) on /xss_r/ — PASS", xssOnExpectedPaths)
 	}
 
 	// ----------------------------------------------------------------
-	// CMDi: log findings on /exec/ with 'ip' param
-	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
-	// so CMDi detection via discovery scan is unreliable on live DVWA. Individual
-	// TestDVWA_CommandInjection test already hardens this assertion.
+	// CMDi: >= 1 finding on /exec/ with 'ip' param (POST)
 	// ----------------------------------------------------------------
 	cmdiOnExpectedPaths := 0
 	if result.CMDi != nil {
@@ -777,7 +772,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if cmdiOnExpectedPaths < 1 {
-		t.Logf("Warning: CMDi: 0 findings on /exec/ with 'ip' param — detection unreliable in discovery scan context")
+		t.Errorf("CMDi: expected >= 1 finding on /exec/ with 'ip' param in discovery scan, got 0")
 	} else {
 		t.Logf("CMDi: %d finding(s) on /exec/ — PASS", cmdiOnExpectedPaths)
 	}
@@ -828,10 +823,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 	}
 
 	// ----------------------------------------------------------------
-	// Path Traversal: log findings on /fi/ with 'page' param
-	// NOTE: Discovery scan uses per-request Cookie header auth (not cookie jar),
-	// so PathTraversal detection via discovery scan is unreliable on live DVWA.
-	// Individual TestDVWA_PathTraversal test already hardens this assertion.
+	// Path Traversal: >= 1 finding on /fi/ with 'page' param
 	// ----------------------------------------------------------------
 	ptOnExpectedPaths := 0
 	if result.PathTraversal != nil {
@@ -843,7 +835,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if ptOnExpectedPaths < 1 {
-		t.Logf("Warning: PathTraversal: 0 findings on /fi/ with 'page' param — detection unreliable in discovery scan context")
+		t.Errorf("PathTraversal: expected >= 1 finding on /fi/ with 'page' param in discovery scan, got 0")
 	} else {
 		t.Logf("PathTraversal: %d finding(s) on /fi/ — PASS", ptOnExpectedPaths)
 	}
