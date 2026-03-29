@@ -1,30 +1,33 @@
 # WAST - TODO
 
-## Live DVWA Retest Results (2026-03-28)
+## Goal: Pass DVWA benchmark with zero false positives
 
-Tested against DVWA (security=low) with `wast_scan active=true, discover=true, depth=3`.
+The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_FullDiscoveryScanAssertions`. Every scanner must hit its target score **and** produce no false positives. Once all targets are met, convert the soft warnings (`t.Logf`) to hard failures (`t.Errorf`) so regressions break the build.
 
-All vulnerabilities confirmed exploitable via curl:
-- `curl "http://dvwa/vulnerabilities/xss_r/?name=%3Cscript%3Ealert(1)%3C/script%3E"` → payload reflected verbatim
-- `curl -X POST http://dvwa/vulnerabilities/exec/ -d "ip=127.0.0.1;id&Submit=Submit"` → `uid=33(www-data)`
-- `curl "http://dvwa/vulnerabilities/fi/?page=../../../../../../etc/passwd"` → `root:x:0:0:root:/root:/bin/bash`
+### Target scores
 
-| Scanner | Tests | Findings | Expected | Verdict |
-|---------|-------|----------|----------|---------|
-| SQLi | 391 | 6 | SQLi on `/sqli/`, `/brute/` | Mixed — real positives on `/brute/`, `/fi/` but FPs on `Change`, `doc` |
-| CSRF | — | 9 | 9 missing tokens | **PASS** |
-| SSTI | 370 | 0 | 0 (PHP app) | **PASS** |
-| SSRF | 629 | 0 | 0 | **PASS** |
-| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FIXED** |
-| CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FAIL** |
-| Path Traversal | 666 | 0 | LFI on `/fi/?page=` | **FAIL** |
-| Headers | — | 7 | 7 missing | **PASS** |
+| Scanner | Target | Current | Gap |
+|---------|--------|---------|-----|
+| XSS | >= 1 finding on `/xss_r/` `name` param | 0 | Payload reflected verbatim but `analyzeContext()` still rejects it |
+| CMDi | >= 1 finding on `/exec/` `ip` param (POST) | 0 | 1,120 tests run, prepended payloads added, still no detection |
+| Path Traversal | >= 1 finding on `/fi/` `page` param | 0 | 666 tests run, raw slashes preserved, still no detection |
+| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 4 (but 0 on `id`) | Detects on `username`/`page` but misses the primary `/sqli/?id=` endpoint |
+| CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
+| SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
+| SSRF | 0 findings | 0 | **PASS** |
+| NoSQLi | 0 false positives on non-MongoDB app | 14 FPs | All on `doc` param — DVWA uses MySQL, not MongoDB |
+| Headers | >= 5 missing security headers | 7 | **PASS** |
 
----
+### False positive targets
 
-## ~~P0: XSS — not detecting reflected XSS on live DVWA~~ ✅ FIXED (PR #262)
+| Scanner | Target | Current | Gap |
+|---------|--------|---------|-----|
+| SQLi | 0 findings on `Change`, `doc`, `Login`, submit buttons | 4 FPs | CSRF token normalization not fully effective |
+| NoSQLi | 0 findings on DVWA (MySQL app) | 14 FPs | `doc` param loads different pages — response size change is not injection |
+| SSTI | 0 findings | 0 | **PASS** |
+| SSRF | 0 findings | 0 | **PASS** |
 
-**Root cause (resolved):** `analyzeContext()` used `strings.LastIndex` to detect HTML comments, which incorrectly treated `<!--`/`-->` sequences inside `<script>` blocks as HTML comment boundaries. If a JS string literal in a `<script>` block contained `-->` at a lower offset than `<!--`, the function classified the payload as inside an HTML comment and skipped it.
+### When all targets are met
 
 **Fix:** Replaced with `isInsideHTMLComment()` — a left-to-right state machine that properly skips content inside `<script>` and `<style>` blocks and only counts `<!--`/`-->` as HTML comment boundaries in regular HTML body content.
 
