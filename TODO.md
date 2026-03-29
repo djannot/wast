@@ -15,20 +15,22 @@ All vulnerabilities confirmed exploitable via curl:
 | CSRF | — | 9 | 9 missing tokens | **PASS** |
 | SSTI | 370 | 0 | 0 (PHP app) | **PASS** |
 | SSRF | 629 | 0 | 0 | **PASS** |
-| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FAIL** |
+| XSS | 259 | 0 | Reflected XSS on `/xss_r/?name=` | **FIXED** |
 | CMDi | 1,184 | 0 | CMDi on POST `/exec/` `ip` param | **FAIL** |
 | Path Traversal | 666 | 0 | LFI on `/fi/?page=` | **FAIL** |
 | Headers | — | 7 | 7 missing | **PASS** |
 
 ---
 
-## P0: XSS — not detecting reflected XSS on live DVWA
+## ~~P0: XSS — not detecting reflected XSS on live DVWA~~ ✅ FIXED (PR #262)
 
-Unit tests pass with simulated DVWA responses but the live scan finds nothing.
+**Root cause (resolved):** `analyzeContext()` used `strings.LastIndex` to detect HTML comments, which incorrectly treated `<!--`/`-->` sequences inside `<script>` blocks as HTML comment boundaries. If a JS string literal in a `<script>` block contained `-->` at a lower offset than `<!--`, the function classified the payload as inside an HTML comment and skipped it.
 
-**Root cause:** `analyzeContext()` examines a context snippet around the payload to determine if it's in an executable position. The function checks for HTML comments (`<!--`) before the payload. DVWA pages contain HTML comments in the page structure (e.g., `<!-- You used a wrong captcha -->`, source code comments). If any `<!--` appears before the payload position in the extracted snippet, and the corresponding `-->` appears after the payload, the function classifies the payload as inside a comment and skips it — even though the payload is actually in the HTML body, not inside that comment. The comment detection uses `strings.Index()` on the full body rather than checking the specific DOM context around the injection point.
+**Fix:** Replaced with `isInsideHTMLComment()` — a left-to-right state machine that properly skips content inside `<script>` and `<style>` blocks and only counts `<!--`/`-->` as HTML comment boundaries in regular HTML body content.
 
-**Files:** `pkg/scanner/xss.go` — `analyzeContext()` comment detection logic
+**Files:** `pkg/scanner/xss.go` — added `isInsideHTMLComment()`, replaced three `strings.LastIndex` calls in `analyzeContext()`
+
+**Integration tests hardened:** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
 
 ---
 
@@ -81,6 +83,8 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 - CSRF: `TestDVWA_CSRF` and `TestDVWA_FullDiscoveryScanAssertions` — **HARD FAILURE** (scanner reliably detects)
 - Discovery scan combined check: `TestDVWA_DiscoveryScan` — **HARD FAILURE** (SQLi/CSRF always present)
 
-**Pending (blocked by P0 bugs above):** XSS, CMDi, and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for all three.
+**Pending (blocked by P0 bugs above):** CMDi and Path Traversal remain as `t.Logf("Warning: ...")` in both individual tests and `TestDVWA_FullDiscoveryScanAssertions` until their P0 scanner detection bugs are resolved. Live DVWA retesting on 2026-03-28 confirmed 0 findings for both.
 
-**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for XSS, CMDi, and Path Traversal in `TestDVWA_XSS`, `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.
+**XSS done (PR #262):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
+
+**What still needs to change once P0 bugs are fixed:** Convert remaining warnings to `t.Errorf(...)` for CMDi and Path Traversal in `TestDVWA_CommandInjection`, `TestDVWA_PathTraversal`, and `TestDVWA_FullDiscoveryScanAssertions`.

@@ -328,11 +328,8 @@ func TestDVWA_XSS(t *testing.T) {
 	t.Logf("XSS scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// We expect at least one XSS finding on the 'name' parameter
-	// NOTE: XSS detection on live DVWA is still unreliable — P0 scanner bug
-	// open (analyzeContext comment detection). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No XSS findings on /vulnerabilities/xss_r/ — P0 scanner bug open, detection unreliable on live DVWA")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No XSS findings on /vulnerabilities/xss_r/ — expected reflected XSS on 'name' parameter (tests performed: %d)", result.Summary.TotalTests)
 	} else {
 		// Verify we found XSS on the 'name' parameter
 		foundNameParam := false
@@ -343,7 +340,7 @@ func TestDVWA_XSS(t *testing.T) {
 			}
 		}
 		if !foundNameParam {
-			t.Logf("Warning: Expected to find XSS on 'name' parameter, but didn't")
+			t.Errorf("Expected to find XSS on 'name' parameter, but didn't (found %d findings on other parameters)", len(result.Findings))
 		}
 	}
 }
@@ -673,7 +670,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if xssOnExpectedPaths < 1 {
-		t.Logf("Warning: XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d — P0 scanner bug open", xssOnExpectedPaths)
+		t.Errorf("XSS: expected >= 1 finding on /xss_r/ with 'name' param, got %d", xssOnExpectedPaths)
 	} else {
 		t.Logf("XSS: %d finding(s) on /xss_r/ — PASS", xssOnExpectedPaths)
 	}

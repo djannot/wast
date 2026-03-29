@@ -3174,3 +3174,210 @@ func TestXSSScanner_AnalyzeContext_PayloadInsideHTMLComment(t *testing.T) {
 		t.Error("Payload inside unclosed HTML comment should NOT be reported as executable")
 	}
 }
+
+// TestIsInsideHTMLComment tests the isInsideHTMLComment helper directly.
+// This function is the core fix for issue #262 — it replaces the naive
+// strings.LastIndex-based comment detection with a proper state machine.
+func TestIsInsideHTMLComment(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantIn   bool // true = expect the position just before the sentinel to be inside a comment
+		sentinel string
+	}{
+		{
+			name:     "no comments anywhere",
+			body:     `<html><body><pre>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+		{
+			name:     "completed comment before sentinel",
+			body:     `<html><!-- completed comment --><body>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+		{
+			name:     "two completed comments before sentinel",
+			body:     `<!-- comment 1 --> <!-- comment 2 --><body>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+		{
+			name:     "unclosed comment directly before sentinel",
+			body:     `<html><body><!-- open comment SENTINEL`,
+			wantIn:   true,
+			sentinel: "SENTINEL",
+		},
+		{
+			name:     "unclosed comment with closed comment before it",
+			body:     `<!-- closed --> <!-- unclosed SENTINEL`,
+			wantIn:   true,
+			sentinel: "SENTINEL",
+		},
+		{
+			// The LastIndex bug: script block contains "-->" before "<!--".
+			// LastIndex finds the "-->" of the JS string "End: -->" at a lower
+			// offset than the "<!--" of the JS string "Start: <!--", making it
+			// look like an unclosed HTML comment. isInsideHTMLComment should
+			// correctly skip both tokens because they are inside a <script> block.
+			name: "script block with reversed --> before <!-- (LastIndex false-positive case)",
+			body: `<html><head>` +
+				`<script type="text/javascript">` +
+				`var end = "End: -->"; var start = "Start: <!--";` +
+				`</script>` +
+				`</head><body><pre>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+		{
+			// Style block with comment-like tokens should also be ignored.
+			name: "style block with <!-- token",
+			body: `<html><head>` +
+				`<style>/* <!-- not a comment --> */</style>` +
+				`</head><body>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+		{
+			// The payload is inside a real HTML comment that closes later in the
+			// document (after the sentinel). The sentinel position is inside the comment.
+			name:     "sentinel inside real comment (closed after sentinel in full body)",
+			body:     `<html><body><!-- open SENTINEL`,
+			wantIn:   true,
+			sentinel: "SENTINEL",
+		},
+		{
+			// Multiple script blocks followed by no HTML comments.
+			name: "multiple script blocks no HTML comments",
+			body: `<script><!-- js --></script>` +
+				`<script>var x = 1;</script>` +
+				`<body>SENTINEL`,
+			wantIn:   false,
+			sentinel: "SENTINEL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx := strings.Index(tt.body, tt.sentinel)
+			if idx == -1 {
+				t.Fatalf("sentinel %q not found in body", tt.sentinel)
+			}
+			got := isInsideHTMLComment(tt.body, idx)
+			if got != tt.wantIn {
+				t.Errorf("isInsideHTMLComment(..., %d) = %v, want %v\nbody=%q", idx, got, tt.wantIn, tt.body)
+			}
+		})
+	}
+}
+
+// TestXSSScanner_AnalyzeContext_ScriptBlockCommentFalsePositive is a regression
+// test for issue #262. It verifies that a <script> block containing "<!--"/"-->"
+// tokens in reverse order (a pattern that breaks the old strings.LastIndex
+// heuristic) does NOT suppress detection of a verbatim script-tag payload that
+// appears in the HTML body AFTER the script block.
+//
+// Old behaviour: analyzeContext returned (ContextHTMLBody, false, "low") → no finding.
+// Fixed behaviour: analyzeContext returns (ContextHTMLBody, true, "high") → finding reported.
+func TestXSSScanner_AnalyzeContext_ScriptBlockCommentFalsePositive(t *testing.T) {
+	// Build a page that triggers the old LastIndex bug:
+	//   • The <script> block contains the JS string literal "-->" before "<!--".
+	//   • strings.LastIndex(body[:idx], "<!--") finds the "<!--" inside the JS string.
+	//   • strings.LastIndex(body[:idx], "-->")  finds the "-->" inside the JS string
+	//     at a LOWER offset than the "<!--" above.
+	//   • So (lcEnd < lcStart) is TRUE → the old code incorrectly classified the
+	//     payload as being inside an HTML comment → returned low confidence → discarded.
+	//
+	// The fixed code uses isInsideHTMLComment which skips script-block content and
+	// correctly returns false (not inside a comment).
+	body := `<!DOCTYPE html>
+<html>
+<head>
+<script type="text/javascript">
+var endMarker   = "Use --> to close an HTML comment";
+var startMarker = "Use <!-- to open an HTML comment";
+</script>
+</head>
+<body>
+<div class="vulnerable_code_area">
+<pre>Hello <script>alert(1)</script></pre>
+</div>
+</body>
+</html>`
+
+	payload := "<script>alert(1)</script>"
+
+	scanner := NewXSSScanner()
+	contextType, isExecutable, confidence := scanner.analyzeContext(body, payload)
+
+	if !isExecutable {
+		t.Errorf("issue #262 regression: analyzeContext returned isExecutable=false. "+
+			"A verbatim <script> payload after a script block containing reversed "+
+			`"-->"/"<!--" tokens must be detected as executable. `+
+			"context=%v confidence=%s", contextType, confidence)
+	}
+	if confidence != "high" {
+		t.Errorf("Expected confidence 'high' for verbatim script-tag reflection, got %s", confidence)
+	}
+}
+
+// TestXSSScanner_Scan_DVWALike_ScriptBlockCommentFalsePositive is the full
+// scanner-level regression for issue #262: the scan must produce at least one
+// high-confidence XSS finding when the response contains a <script> block whose
+// JS strings include "-->" before "<!--" (triggering the old LastIndex bug).
+func TestXSSScanner_Scan_DVWALike_ScriptBlockCommentFalsePositive(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert(1)</script>"
+	// The response has a script block whose JS strings contain "-->" before "<!--",
+	// which would fool the old strings.LastIndex approach into thinking the payload
+	// is inside an HTML comment.
+	responseBody := `<!DOCTYPE html>
+<html>
+<head>
+<script type="text/javascript">
+var endMarker   = "Use --> to close an HTML comment";
+var startMarker = "Use <!-- to open an HTML comment";
+</script>
+</head>
+<body>
+<div class="vulnerable_code_area">
+<pre>Hello ` + testPayload + `</pre>
+</div>
+</body>
+</html>`
+
+	encodedURL := "https://example.com/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+	mock.responses[encodedURL] = &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
+		Header:     make(http.Header),
+	}
+
+	sc := NewXSSScanner(WithXSSHTTPClient(mock))
+	ctx := context.Background()
+	result := sc.Scan(ctx, "https://example.com/vulnerabilities/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("issue #262 regression: scanner found 0 vulnerabilities. "+
+			"Expected ≥1 high-confidence XSS finding when payload is reflected verbatim "+
+			"after a script block containing reversed \"-->\" / \"<!--\" JS string literals.")
+	}
+
+	for _, f := range result.Findings {
+		if f.Payload == testPayload {
+			if f.Confidence != "high" {
+				t.Errorf("Expected high confidence, got %s", f.Confidence)
+			}
+			return
+		}
+	}
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Found vulnerabilities but none for the expected payload %q", testPayload)
+	}
+}
