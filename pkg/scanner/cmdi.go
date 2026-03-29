@@ -850,139 +850,93 @@ func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 	return baseline, duration
 }
 
-// testErrorBased tests a single parameter with an error-based command injection payload.
-func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload) *CMDiFinding {
-	// Create a copy of the URL with the test payload
-	testURL := *baseURL
-	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
-	testURL.RawQuery = q.Encode()
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
-		return nil
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Send the request
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-
-	bodyStr := string(body)
-
-	// Check for shell error patterns in the response
-	for _, pattern := range cmdErrorPatterns {
-		if pattern.MatchString(bodyStr) {
-			// Command error detected!
-			match := pattern.FindString(bodyStr)
-			finding := &CMDiFinding{
-				URL:         testURL.String(),
-				Parameter:   paramName,
-				Payload:     payload.Payload,
-				Evidence:    s.extractEvidence(bodyStr, match),
-				Severity:    payload.Severity,
-				Type:        payload.Type,
-				OSType:      payload.OSType,
-				Description: payload.Description,
-				Remediation: s.getRemediation(),
-				Confidence:  "high", // Error-based detection with shell errors is high confidence
-			}
-			return finding
+// buildPrependedPayloads returns payload variants to try for a given parameter.
+// It always includes the original payload as a direct replacement. If originalValue
+// is non-empty, it also prepends originalValue to the payload so that apps requiring
+// a valid prefix (e.g. a ping page that needs an IP before a shell separator) still
+// process the request. If originalValue is empty, it prepends common benign defaults
+// ("127.0.0.1" for IP-like parameters and "test" as a generic fallback).
+func buildPrependedPayloads(originalValue, payloadStr string) []string {
+	variants := []string{payloadStr}
+	if originalValue != "" {
+		prepended := originalValue + payloadStr
+		if prepended != payloadStr {
+			variants = append(variants, prepended)
 		}
+	} else {
+		// Empty original value: try benign prefixes so the app processes the form.
+		// Many real-world apps (e.g. DVWA /vulnerabilities/exec/) require a valid
+		// prefix before a command separator to actually invoke the shell command.
+		variants = append(variants, "127.0.0.1"+payloadStr, "test"+payloadStr)
 	}
-
-	return nil
+	return variants
 }
 
-// testOutputBased tests a single parameter with an output-based command injection payload.
-// It performs differential analysis by comparing the response with payload against the baseline response.
-func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baseline *baselineResponse) *CMDiFinding {
-	// Create a copy of the URL with the test payload
-	testURL := *baseURL
-	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
-	testURL.RawQuery = q.Encode()
+// testErrorBased tests a single parameter with an error-based command injection payload.
+// It tries the payload directly and also prepended with the original parameter value (or
+// a benign default when empty) to handle apps that require a valid prefix.
+func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload) *CMDiFinding {
+	originalValue := baseURL.Query().Get(paramName)
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
-		return nil
-	}
+	for _, payloadValue := range payloadVariants {
+		// Create a copy of the URL with the test payload variant
+		testURL := *baseURL
+		q := testURL.Query()
+		q.Set(paramName, payloadValue)
+		testURL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+		if err != nil {
+			continue
+		}
 
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	// Send the request
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
 
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
+		// Send the request
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
 
-	bodyStr := string(body)
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
 
-	// Check if baseline is available for differential analysis
-	if baseline == nil {
-		return nil
-	}
+		bodyStr := string(body)
 
-	// Perform differential analysis: check if command output patterns appear in the
-	// injected response but NOT in the baseline response (to avoid false positives)
-	for _, pattern := range cmdOutputPatterns {
-		if pattern.MatchString(bodyStr) {
-			// Pattern found in injected response - now check if it was also in baseline
-			if !pattern.MatchString(baseline.ContainsKey) {
-				// Pattern is NEW - this indicates command output from our injection!
+		// Check for shell error patterns in the response
+		for _, pattern := range cmdErrorPatterns {
+			if pattern.MatchString(bodyStr) {
+				// Command error detected!
 				match := pattern.FindString(bodyStr)
 				finding := &CMDiFinding{
 					URL:         testURL.String(),
 					Parameter:   paramName,
-					Payload:     payload.Payload,
+					Payload:     payloadValue,
 					Evidence:    s.extractEvidence(bodyStr, match),
 					Severity:    payload.Severity,
 					Type:        payload.Type,
 					OSType:      payload.OSType,
 					Description: payload.Description,
 					Remediation: s.getRemediation(),
-					Confidence:  "high", // Output-based detection with differential analysis is high confidence
+					Confidence:  "high", // Error-based detection with shell errors is high confidence
 				}
 				return finding
 			}
@@ -992,62 +946,97 @@ func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, par
 	return nil
 }
 
-// testTimeBased tests a single parameter with a time-based command injection payload.
-// It measures request duration and compares with baseline and expected delay.
-func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration) *CMDiFinding {
-	// Create a copy of the URL with the test payload
-	testURL := *baseURL
-	q := testURL.Query()
-	q.Set(paramName, payload.Payload)
-	testURL.RawQuery = q.Encode()
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
+// testOutputBased tests a single parameter with an output-based command injection payload.
+// It performs differential analysis by comparing the response with payload against the baseline response.
+// It tries the payload directly and also prepended with the original parameter value (or a benign
+// default when empty) to handle apps that require a valid prefix before the shell separator.
+func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baseline *baselineResponse) *CMDiFinding {
+	// Check if baseline is available for differential analysis
+	if baseline == nil {
 		return nil
 	}
 
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	originalValue := baseURL.Query().Get(paramName)
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
+	for _, payloadValue := range payloadVariants {
+		// Create a copy of the URL with the test payload variant
+		testURL := *baseURL
+		q := testURL.Query()
+		q.Set(paramName, payloadValue)
+		testURL.RawQuery = q.Encode()
 
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	requestDuration := time.Since(startTime)
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+		if err != nil {
+			continue
+		}
 
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
 
-	// Read response body to check for shell errors (which would indicate even higher confidence)
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
+		// Send the request
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
 
-	bodyStr := string(body)
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
 
-	// First check if there are shell errors - this would be even stronger evidence
-	shellErrorFound := false
-	var errorMatch string
-	for _, pattern := range cmdErrorPatterns {
-		if pattern.MatchString(bodyStr) {
-			shellErrorFound = true
-			errorMatch = pattern.FindString(bodyStr)
-			break
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		bodyStr := string(body)
+
+		// Perform differential analysis: check if command output patterns appear in the
+		// injected response but NOT in the baseline response (to avoid false positives)
+		for _, pattern := range cmdOutputPatterns {
+			if pattern.MatchString(bodyStr) {
+				// Pattern found in injected response - now check if it was also in baseline
+				if !pattern.MatchString(baseline.ContainsKey) {
+					// Pattern is NEW - this indicates command output from our injection!
+					match := pattern.FindString(bodyStr)
+					finding := &CMDiFinding{
+						URL:         testURL.String(),
+						Parameter:   paramName,
+						Payload:     payloadValue,
+						Evidence:    s.extractEvidence(bodyStr, match),
+						Severity:    payload.Severity,
+						Type:        payload.Type,
+						OSType:      payload.OSType,
+						Description: payload.Description,
+						Remediation: s.getRemediation(),
+						Confidence:  "high", // Output-based detection with differential analysis is high confidence
+					}
+					return finding
+				}
+			}
 		}
 	}
+
+	return nil
+}
+
+// testTimeBased tests a single parameter with a time-based command injection payload.
+// It measures request duration and compares with baseline and expected delay.
+// It tries the payload directly and also prepended with the original parameter value (or a benign
+// default when empty) to handle apps that require a valid prefix before the shell separator.
+func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration) *CMDiFinding {
+	originalValue := baseURL.Query().Get(paramName)
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
 	// Determine the expected delay (use payload's expected delay or scanner's default)
 	expectedDelay := payload.ExpectedDelay
@@ -1064,29 +1053,86 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 	}
 	minExpectedDuration := baselineDuration + expectedDelay - tolerance
 
-	// Check if the request took significantly longer than expected
-	if requestDuration >= minExpectedDuration {
-		confidence := "high"
-		evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based command injection",
-			requestDuration, baselineDuration, expectedDelay)
+	for _, payloadValue := range payloadVariants {
+		// Create a copy of the URL with the test payload variant
+		testURL := *baseURL
+		q := testURL.Query()
+		q.Set(paramName, payloadValue)
+		testURL.RawQuery = q.Encode()
 
-		// If shell error is also present, mention it in evidence
-		if shellErrorFound {
-			evidenceMsg += fmt.Sprintf("; Shell error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
-			confidence = "high" // Both timing and error confirms vulnerability
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
+		if err != nil {
+			continue
 		}
 
-		return &CMDiFinding{
-			URL:         testURL.String(),
-			Parameter:   paramName,
-			Payload:     payload.Payload,
-			Evidence:    evidenceMsg,
-			Severity:    payload.Severity,
-			Type:        payload.Type,
-			OSType:      payload.OSType,
-			Description: payload.Description,
-			Remediation: s.getRemediation(),
-			Confidence:  confidence,
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
+
+		// Measure request time
+		startTime := time.Now()
+		resp, err := s.client.Do(req)
+		requestDuration := time.Since(startTime)
+
+		if err != nil {
+			continue
+		}
+
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
+
+		// Read response body to check for shell errors (which would indicate even higher confidence)
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		bodyStr := string(body)
+
+		// First check if there are shell errors - this would be even stronger evidence
+		shellErrorFound := false
+		var errorMatch string
+		for _, pattern := range cmdErrorPatterns {
+			if pattern.MatchString(bodyStr) {
+				shellErrorFound = true
+				errorMatch = pattern.FindString(bodyStr)
+				break
+			}
+		}
+
+		// Check if the request took significantly longer than expected
+		if requestDuration >= minExpectedDuration {
+			confidence := "high"
+			evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based command injection",
+				requestDuration, baselineDuration, expectedDelay)
+
+			// If shell error is also present, mention it in evidence
+			if shellErrorFound {
+				evidenceMsg += fmt.Sprintf("; Shell error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
+				confidence = "high" // Both timing and error confirms vulnerability
+			}
+
+			return &CMDiFinding{
+				URL:         testURL.String(),
+				Parameter:   paramName,
+				Payload:     payloadValue,
+				Evidence:    evidenceMsg,
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				OSType:      payload.OSType,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  confidence,
+			}
 		}
 	}
 
@@ -1094,154 +1140,73 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 }
 
 // testErrorBasedPOST tests a single parameter with an error-based command injection payload using POST.
+// It tries the payload directly and also prepended with the original parameter value (or a benign
+// default when empty) to handle apps that require a valid prefix before the shell separator.
 func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string) *CMDiFinding {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
+	originalValue := allParameters[paramName]
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
-		return nil
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Send the request
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-
-	bodyStr := string(body)
-
-	// Check for shell error patterns in the response
-	for _, pattern := range cmdErrorPatterns {
-		if pattern.MatchString(bodyStr) {
-			// Command error detected!
-			match := pattern.FindString(bodyStr)
-			finding := &CMDiFinding{
-				URL:         baseURL.String(),
-				Parameter:   paramName,
-				Payload:     payload.Payload,
-				Evidence:    s.extractEvidence(bodyStr, match),
-				Severity:    payload.Severity,
-				Type:        payload.Type,
-				OSType:      payload.OSType,
-				Description: payload.Description,
-				Remediation: s.getRemediation(),
-				Confidence:  "high", // Error-based detection with shell errors is high confidence
-			}
-			return finding
+	for _, payloadValue := range payloadVariants {
+		// Create form data with ALL parameters
+		formData := url.Values{}
+		for k, v := range allParameters {
+			formData.Set(k, v)
 		}
-	}
+		// Override the parameter being tested with this variant
+		formData.Set(paramName, payloadValue)
 
-	return nil
-}
-
-// testOutputBasedPOST tests a single parameter with an output-based command injection payload using POST.
-// It performs differential analysis by comparing the response with payload against the baseline response.
-func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string, baseline *baselineResponse) *CMDiFinding {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
-		return nil
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Send the request
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-
-	bodyStr := string(body)
-
-	// Check if baseline is available for differential analysis
-	if baseline == nil {
-		return nil
-	}
-
-	// Perform differential analysis: check if command output patterns appear in the
-	// injected response but NOT in the baseline response (to avoid false positives)
-	if s.verbose {
-		log.Printf("[CMDi] testOutputBasedPOST: param=%q payload=%q injected_body_len=%d baseline_body_len=%d",
-			paramName, payload.Payload, len(bodyStr), len(baseline.ContainsKey))
-	}
-	for _, pattern := range cmdOutputPatterns {
-		inInjected := pattern.MatchString(bodyStr)
-		inBaseline := pattern.MatchString(baseline.ContainsKey)
-		if s.verbose {
-			log.Printf("[CMDi] testOutputBasedPOST: pattern=%q inInjected=%v inBaseline=%v",
-				pattern.String(), inInjected, inBaseline)
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+		if err != nil {
+			continue
 		}
-		if inInjected {
-			// Pattern found in injected response - now check if it was also in baseline
-			if !inBaseline {
-				// Pattern is NEW - this indicates command output from our injection!
+
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
+
+		// Send the request
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
+
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
+
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		bodyStr := string(body)
+
+		// Check for shell error patterns in the response
+		for _, pattern := range cmdErrorPatterns {
+			if pattern.MatchString(bodyStr) {
+				// Command error detected!
 				match := pattern.FindString(bodyStr)
 				finding := &CMDiFinding{
 					URL:         baseURL.String(),
 					Parameter:   paramName,
-					Payload:     payload.Payload,
+					Payload:     payloadValue,
 					Evidence:    s.extractEvidence(bodyStr, match),
 					Severity:    payload.Severity,
 					Type:        payload.Type,
 					OSType:      payload.OSType,
 					Description: payload.Description,
 					Remediation: s.getRemediation(),
-					Confidence:  "high", // Output-based detection with differential analysis is high confidence
+					Confidence:  "high", // Error-based detection with shell errors is high confidence
 				}
 				return finding
 			}
@@ -1251,64 +1216,109 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 	return nil
 }
 
-// testTimeBasedPOST tests a single parameter with a time-based command injection payload using POST.
-func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration, allParameters map[string]string) *CMDiFinding {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-	// Override the parameter being tested
-	formData.Set(paramName, payload.Payload)
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
+// testOutputBasedPOST tests a single parameter with an output-based command injection payload using POST.
+// It performs differential analysis by comparing the response with payload against the baseline response.
+// It tries the payload directly and also prepended with the original parameter value (or a benign
+// default when empty) to handle apps that require a valid prefix before the shell separator.
+func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, allParameters map[string]string, baseline *baselineResponse) *CMDiFinding {
+	// Check if baseline is available for differential analysis
+	if baseline == nil {
 		return nil
 	}
 
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	originalValue := allParameters[paramName]
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
+	for _, payloadValue := range payloadVariants {
+		// Create form data with ALL parameters
+		formData := url.Values{}
+		for k, v := range allParameters {
+			formData.Set(k, v)
+		}
+		// Override the parameter being tested with this variant
+		formData.Set(paramName, payloadValue)
 
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	requestDuration := time.Since(startTime)
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+		if err != nil {
+			continue
+		}
 
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	// Handle rate limiting (HTTP 429)
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil
-	}
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
 
-	// Read response body to check for shell errors
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
+		// Send the request
+		resp, err := s.client.Do(req)
+		if err != nil {
+			continue
+		}
 
-	bodyStr := string(body)
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
 
-	// Check if there are shell errors
-	shellErrorFound := false
-	var errorMatch string
-	for _, pattern := range cmdErrorPatterns {
-		if pattern.MatchString(bodyStr) {
-			shellErrorFound = true
-			errorMatch = pattern.FindString(bodyStr)
-			break
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		bodyStr := string(body)
+
+		// Perform differential analysis: check if command output patterns appear in the
+		// injected response but NOT in the baseline response (to avoid false positives)
+		if s.verbose {
+			log.Printf("[CMDi] testOutputBasedPOST: param=%q payload=%q injected_body_len=%d baseline_body_len=%d",
+				paramName, payloadValue, len(bodyStr), len(baseline.ContainsKey))
+		}
+		for _, pattern := range cmdOutputPatterns {
+			inInjected := pattern.MatchString(bodyStr)
+			inBaseline := pattern.MatchString(baseline.ContainsKey)
+			if s.verbose {
+				log.Printf("[CMDi] testOutputBasedPOST: pattern=%q inInjected=%v inBaseline=%v",
+					pattern.String(), inInjected, inBaseline)
+			}
+			if inInjected {
+				// Pattern found in injected response - now check if it was also in baseline
+				if !inBaseline {
+					// Pattern is NEW - this indicates command output from our injection!
+					match := pattern.FindString(bodyStr)
+					finding := &CMDiFinding{
+						URL:         baseURL.String(),
+						Parameter:   paramName,
+						Payload:     payloadValue,
+						Evidence:    s.extractEvidence(bodyStr, match),
+						Severity:    payload.Severity,
+						Type:        payload.Type,
+						OSType:      payload.OSType,
+						Description: payload.Description,
+						Remediation: s.getRemediation(),
+						Confidence:  "high", // Output-based detection with differential analysis is high confidence
+					}
+					return finding
+				}
+			}
 		}
 	}
+
+	return nil
+}
+
+// testTimeBasedPOST tests a single parameter with a time-based command injection payload using POST.
+// It tries the payload directly and also prepended with the original parameter value (or a benign
+// default when empty) to handle apps that require a valid prefix before the shell separator.
+func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload cmdiPayload, baselineDuration time.Duration, allParameters map[string]string) *CMDiFinding {
+	originalValue := allParameters[paramName]
+	payloadVariants := buildPrependedPayloads(originalValue, payload.Payload)
 
 	// Determine the expected delay
 	expectedDelay := payload.ExpectedDelay
@@ -1320,29 +1330,89 @@ func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, p
 	tolerance := 1 * time.Second
 	minExpectedDuration := baselineDuration + expectedDelay - tolerance
 
-	// Check if the request took significantly longer than expected
-	if requestDuration >= minExpectedDuration {
-		confidence := "high"
-		evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based command injection",
-			requestDuration, baselineDuration, expectedDelay)
+	for _, payloadValue := range payloadVariants {
+		// Create form data with ALL parameters
+		formData := url.Values{}
+		for k, v := range allParameters {
+			formData.Set(k, v)
+		}
+		// Override the parameter being tested with this variant
+		formData.Set(paramName, payloadValue)
 
-		// If shell error is also present, mention it in evidence
-		if shellErrorFound {
-			evidenceMsg += fmt.Sprintf("; Shell error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
-			confidence = "high"
+		// Create the request
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
+		if err != nil {
+			continue
 		}
 
-		return &CMDiFinding{
-			URL:         baseURL.String(),
-			Parameter:   paramName,
-			Payload:     payload.Payload,
-			Evidence:    evidenceMsg,
-			Severity:    payload.Severity,
-			Type:        payload.Type,
-			OSType:      payload.OSType,
-			Description: payload.Description,
-			Remediation: s.getRemediation(),
-			Confidence:  confidence,
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		// Apply authentication configuration
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
+
+		// Measure request time
+		startTime := time.Now()
+		resp, err := s.client.Do(req)
+		requestDuration := time.Since(startTime)
+
+		if err != nil {
+			continue
+		}
+
+		// Handle rate limiting (HTTP 429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			continue
+		}
+
+		// Read response body to check for shell errors
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		bodyStr := string(body)
+
+		// Check if there are shell errors
+		shellErrorFound := false
+		var errorMatch string
+		for _, pattern := range cmdErrorPatterns {
+			if pattern.MatchString(bodyStr) {
+				shellErrorFound = true
+				errorMatch = pattern.FindString(bodyStr)
+				break
+			}
+		}
+
+		// Check if the request took significantly longer than expected
+		if requestDuration >= minExpectedDuration {
+			confidence := "high"
+			evidenceMsg := fmt.Sprintf("Request took %v (baseline: %v, expected delay: %v) - indicates time-based command injection",
+				requestDuration, baselineDuration, expectedDelay)
+
+			// If shell error is also present, mention it in evidence
+			if shellErrorFound {
+				evidenceMsg += fmt.Sprintf("; Shell error also detected: %s", s.extractEvidence(bodyStr, errorMatch))
+				confidence = "high"
+			}
+
+			return &CMDiFinding{
+				URL:         baseURL.String(),
+				Parameter:   paramName,
+				Payload:     payloadValue,
+				Evidence:    evidenceMsg,
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				OSType:      payload.OSType,
+				Description: payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  confidence,
+			}
 		}
 	}
 

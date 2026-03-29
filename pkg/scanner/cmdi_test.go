@@ -1277,3 +1277,165 @@ func (m *mockBaselineValueCapturingClient) Do(req *http.Request) (*http.Response
 		Body:       io.NopCloser(strings.NewReader("Normal response")),
 	}, nil
 }
+
+// TestBuildPrependedPayloads verifies that buildPrependedPayloads produces the correct
+// set of payload variants for both empty and non-empty original values.
+func TestBuildPrependedPayloads(t *testing.T) {
+	t.Run("non-empty original value", func(t *testing.T) {
+		variants := buildPrependedPayloads("127.0.0.1", ";sleep 5")
+		// Should include the direct payload and the prepended version
+		if len(variants) < 2 {
+			t.Fatalf("Expected at least 2 variants for non-empty original value, got %d", len(variants))
+		}
+		found := map[string]bool{}
+		for _, v := range variants {
+			found[v] = true
+		}
+		if !found[";sleep 5"] {
+			t.Error("Expected direct payload ;sleep 5 in variants")
+		}
+		if !found["127.0.0.1;sleep 5"] {
+			t.Error("Expected prepended payload 127.0.0.1;sleep 5 in variants")
+		}
+	})
+
+	t.Run("empty original value", func(t *testing.T) {
+		variants := buildPrependedPayloads("", ";sleep 5")
+		// Should include the direct payload plus benign-prefix variants
+		if len(variants) < 3 {
+			t.Fatalf("Expected at least 3 variants for empty original value, got %d", len(variants))
+		}
+		found := map[string]bool{}
+		for _, v := range variants {
+			found[v] = true
+		}
+		if !found[";sleep 5"] {
+			t.Error("Expected direct payload ;sleep 5 in variants")
+		}
+		if !found["127.0.0.1;sleep 5"] {
+			t.Error("Expected 127.0.0.1 prefixed payload in variants")
+		}
+		if !found["test;sleep 5"] {
+			t.Error("Expected test prefixed payload in variants")
+		}
+	})
+
+	t.Run("payload equal to original value", func(t *testing.T) {
+		// When originalValue + payload == payload (e.g. empty string), no duplicate
+		variants := buildPrependedPayloads("", "")
+		for _, v := range variants {
+			_ = v // just ensure no panic
+		}
+	})
+}
+
+// TestCMDiScanner_DVWALikeExecPOST_EmptyIPParam simulates the DVWA discovery scenario
+// where the form scraper extracts ip="" (empty default value). The scanner must detect
+// command injection by prepending a valid IP before the shell separator payload.
+// This is the key regression test for the P0 CMDi detection bug on live DVWA.
+func TestCMDiScanner_DVWALikeExecPOST_EmptyIPParam(t *testing.T) {
+	mockClient := &mockDVWAExecEmptyIPClient{}
+
+	scanner := NewCMDiScanner(WithCMDiHTTPClient(mockClient))
+	// ip="" simulates the discovery pipeline extracting an empty default value
+	params := map[string]string{
+		"ip":     "",
+		"Submit": "Submit",
+	}
+	result := scanner.ScanPOST(context.Background(), "http://localhost:8080/vulnerabilities/exec/", params)
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	// Should detect output-based command injection via prepended payload (127.0.0.1; id)
+	foundOutputBased := false
+	for _, finding := range result.Findings {
+		if finding.Type == "output-based" && finding.Parameter == "ip" {
+			foundOutputBased = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected severity %s, got %s", SeverityHigh, finding.Severity)
+			}
+			if finding.Confidence != "high" {
+				t.Errorf("Expected confidence high, got %s", finding.Confidence)
+			}
+			if finding.Evidence == "" {
+				t.Error("Expected evidence to be captured")
+			}
+			t.Logf("Detected CMDi via prepended payload: payload=%s evidence=%s", finding.Payload, finding.Evidence)
+		}
+	}
+
+	if !foundOutputBased {
+		t.Error("Expected to find output-based CMDi via prepended payload when original ip param is empty (DVWA scenario)")
+	}
+
+	// Submit should not be tested
+	for _, finding := range result.Findings {
+		if strings.EqualFold(finding.Parameter, "submit") {
+			t.Errorf("Expected Submit parameter to be skipped, but found finding on it: %+v", finding)
+		}
+	}
+}
+
+// mockDVWAExecEmptyIPClient simulates DVWA's /vulnerabilities/exec/ endpoint when
+// the ip parameter starts as empty. The server only responds to requests where ip
+// contains a valid IP address prefix — injections without a prefix (e.g., ip=;id)
+// return no meaningful output, while prepended payloads (ip=127.0.0.1;id) work.
+type mockDVWAExecEmptyIPClient struct{}
+
+func (m *mockDVWAExecEmptyIPClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method != http.MethodPost {
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("OK")),
+		}, nil
+	}
+
+	body, _ := io.ReadAll(req.Body)
+	formData, _ := url.ParseQuery(string(body))
+
+	ipVals := formData["ip"]
+	ipValue := ""
+	if len(ipVals) > 0 {
+		ipValue = ipVals[0]
+	}
+
+	// App only processes the form when ip starts with a valid-looking IP prefix.
+	// Payloads without a prefix (e.g., ";sleep 5", ";id") produce no useful output.
+	hasValidPrefix := strings.HasPrefix(ipValue, "127.0.0.1") || strings.HasPrefix(ipValue, "test")
+
+	if !hasValidPrefix {
+		// DVWA ignores the form — no shell command runs
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader("<html>No output — invalid IP</html>")),
+		}, nil
+	}
+
+	// With a valid prefix, the app runs the shell command. If the value contains
+	// a shell separator, command injection succeeds.
+	isInjected := strings.ContainsAny(ipValue, ";|&")
+
+	if isInjected && (strings.Contains(ipValue, "id") || strings.Contains(ipValue, "whoami")) {
+		return &http.Response{
+			StatusCode: 200,
+			Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1 56 bytes of data.
+64 bytes icmp_seq=1
+uid=33(www-data) gid=33(www-data) groups=33(www-data)`)),
+		}, nil
+	}
+
+	// Note: time-based detection (sleep payloads) is tested separately in
+	// TestCMDiScanner_TimeBasedDetection_Unix. This mock focuses on output-based
+	// detection to keep the test fast.
+
+	// Normal ping output (baseline or non-injected)
+	return &http.Response{
+		StatusCode: 200,
+		Body: io.NopCloser(strings.NewReader(`PING 127.0.0.1 56 bytes of data.
+64 bytes icmp_seq=1
+--- 127.0.0.1 ping statistics ---
+1 packets transmitted, 1 received`)),
+	}, nil
+}

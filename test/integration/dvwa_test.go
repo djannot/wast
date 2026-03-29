@@ -388,11 +388,8 @@ func TestDVWA_CommandInjection(t *testing.T) {
 	t.Logf("CMDi scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
 
 	// We expect at least one command injection finding on the 'ip' parameter
-	// NOTE: CMDi detection on live DVWA is still unreliable — P0 scanner bug
-	// open (empty baseline value handling). Keep as warning until fixed.
 	if len(result.Findings) == 0 {
-		t.Logf("Warning: No CMDi findings on /vulnerabilities/exec/ — P0 scanner bug open, detection unreliable on live DVWA")
-		t.Logf("Tests performed: %d", result.Summary.TotalTests)
+		t.Errorf("No CMDi findings on /vulnerabilities/exec/ — expected at least 1 (tests performed: %d)", result.Summary.TotalTests)
 	} else {
 		// Verify we found injection on the 'ip' parameter
 		foundIPParam := false
@@ -403,7 +400,7 @@ func TestDVWA_CommandInjection(t *testing.T) {
 			}
 		}
 		if !foundIPParam {
-			t.Logf("Warning: Expected to find command injection on 'ip' parameter, but didn't")
+			t.Errorf("Expected to find command injection on 'ip' parameter, but didn't (found: %d findings on other params)", len(result.Findings))
 		}
 	}
 }
@@ -690,7 +687,7 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 		}
 	}
 	if cmdiOnExpectedPaths < 1 {
-		t.Logf("Warning: CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d — P0 scanner bug open", cmdiOnExpectedPaths)
+		t.Errorf("CMDi: expected >= 1 finding on /exec/ with 'ip' param, got %d", cmdiOnExpectedPaths)
 	} else {
 		t.Logf("CMDi: %d finding(s) on /exec/ — PASS", cmdiOnExpectedPaths)
 	}
