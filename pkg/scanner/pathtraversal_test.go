@@ -922,3 +922,130 @@ func TestPathTraversalScanner_WrapperPayloads(t *testing.T) {
 		t.Error("Expected to find wrapper payload (normal.php/../../../etc/passwd)")
 	}
 }
+
+// TestBuildPathTraversalFormBody verifies that buildPathTraversalFormBody preserves
+// path separators (/ and \) in the payload while correctly encoding characters that
+// would break form-body parsing.
+func TestBuildPathTraversalFormBody(t *testing.T) {
+	tests := []struct {
+		name         string
+		params       map[string]string
+		payloadParam string
+		payloadValue string
+		want         string
+	}{
+		{
+			name: "forward slash preserved in payload",
+			params: map[string]string{
+				"page": "include.php",
+			},
+			payloadParam: "page",
+			payloadValue: "../../etc/passwd",
+			want:         "page=../../etc/passwd",
+		},
+		{
+			name: "backslash preserved in payload",
+			params: map[string]string{
+				"file": "normal.txt",
+			},
+			payloadParam: "file",
+			payloadValue: "..\\..\\windows\\win.ini",
+			want:         "file=..\\..\\windows\\win.ini",
+		},
+		{
+			name: "ampersand in payload value is encoded",
+			params: map[string]string{
+				"q": "test",
+			},
+			payloadParam: "q",
+			payloadValue: "foo&bar",
+			want:         "q=foo%26bar",
+		},
+		{
+			name: "equals sign in payload value is encoded",
+			params: map[string]string{
+				"q": "test",
+			},
+			payloadParam: "q",
+			payloadValue: "foo=bar",
+			want:         "q=foo%3Dbar",
+		},
+		{
+			name: "hash in payload value is encoded",
+			params: map[string]string{
+				"q": "test",
+			},
+			payloadParam: "q",
+			payloadValue: "foo#bar",
+			want:         "q=foo%23bar",
+		},
+		{
+			name: "space in payload value is encoded as plus",
+			params: map[string]string{
+				"q": "test",
+			},
+			payloadParam: "q",
+			payloadValue: "foo bar",
+			want:         "q=foo+bar",
+		},
+		{
+			name: "percent in non-payload param is encoded to avoid double-decoding",
+			params: map[string]string{
+				"extra": "50%off",
+				"page":  "include.php",
+			},
+			payloadParam: "page",
+			payloadValue: "../../etc/passwd",
+			want:         "extra=50%25off&page=../../etc/passwd",
+		},
+		{
+			name: "plus in non-payload param is encoded as %2B",
+			params: map[string]string{
+				"tag":  "c++",
+				"page": "include.php",
+			},
+			payloadParam: "page",
+			payloadValue: "../../etc/passwd",
+			want:         "page=../../etc/passwd&tag=c%2B%2B",
+		},
+		{
+			name: "non-payload parameter original value is preserved",
+			params: map[string]string{
+				"page":   "include.php",
+				"Submit": "Submit",
+			},
+			payloadParam: "page",
+			payloadValue: "../../etc/passwd",
+			want:         "Submit=Submit&page=../../etc/passwd",
+		},
+		{
+			name: "multi-parameter result is sorted deterministically",
+			params: map[string]string{
+				"zebra": "z",
+				"alpha": "a",
+				"page":  "include.php",
+			},
+			payloadParam: "page",
+			payloadValue: "../../etc/passwd",
+			want:         "alpha=a&page=../../etc/passwd&zebra=z",
+		},
+		{
+			name: "payload parameter value is overridden",
+			params: map[string]string{
+				"page": "original_value.php",
+			},
+			payloadParam: "page",
+			payloadValue: "../../../etc/shadow",
+			want:         "page=../../../etc/shadow",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildPathTraversalFormBody(tt.params, tt.payloadParam, tt.payloadValue)
+			if got != tt.want {
+				t.Errorf("buildPathTraversalFormBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
