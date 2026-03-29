@@ -66,17 +66,17 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 ---
 
-## P1: SQLi — boolean-based false positives from CSRF tokens
+## ~~P1: SQLi — boolean-based false positives from CSRF tokens~~ ✅ FIXED (PR #268)
 
-**Root cause:** `ContentHash` is computed from `extractBodyContent()` which does NOT normalize CSRF tokens. DVWA's `user_token` hidden field changes every request, so `contentHashDiffers` is always `true`. Combined with small word count diffs (~4 words from different token values), this exceeds the `minWordCountDifference=2` threshold.
+**Root cause (resolved):** `ContentHash` was computed from `extractBodyContent()` which did NOT normalize CSRF tokens. DVWA's `user_token` hidden field changes every request, so `contentHashDiffers` was always `true`. Combined with small word count diffs (~4 words from different token values), this exceeded the `minWordCountDifference=2` threshold.
 
-`extractDataContent()` already normalizes via `normalizeResponseContent()`, but `extractBodyContent()` (used for ContentHash) does not. The normalization exists but isn't applied to the right function.
+`extractDataContent()` already normalized via `normalizeResponseContent()`, but `extractBodyContent()` (used for ContentHash) did not. The normalization existed but wasn't applied to the right function.
 
-**Affected:** `Change` on `/csrf/`, `doc` param, `Login` button — all non-injectable.
+**Affected:** `Change` on `/csrf/`, `doc` param, `Login` button — all non-injectable (now no longer false-positived).
 
-**Fix:** Normalize content before computing ContentHash in `analyzeResponse()`.
+**Fix:** `analyzeResponse()` now calls `normalizeResponseContent()` before `extractBodyContent()` so both `ContentHash` and `WordCount` are computed from normalized HTML.
 
-**Files:** `pkg/scanner/sqli.go` — `analyzeResponse()`, `extractBodyContent()`
+**Files:** `pkg/scanner/sqli.go` — `analyzeResponse()`, `pkg/scanner/sqli_test.go` — added `TestAnalyzeResponse_CSRFTokenNormalization`, `test/integration/dvwa_test.go` — added `TestDVWA_SQLi_NoFalsePositivesOnCSRFPage`
 
 ---
 
