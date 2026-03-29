@@ -426,6 +426,14 @@ func buildPathTraversalFormBody(params map[string]string, payloadParam, payloadV
 		// Encode key normally; encode value but preserve / and \ for traversal payloads.
 		encodedKey := url.QueryEscape(k)
 		encodedValue := v
+		// NOTE: % must be encoded before any other substitution to avoid double-encoding.
+		// A literal % in a non-payload parameter value (e.g. from a percent-encoded URL
+		// scraped by the crawler) would otherwise be misinterpreted by the server's
+		// form-body parser as the start of a percent-encoded sequence.
+		encodedValue = strings.ReplaceAll(encodedValue, "%", "%25")
+		// NOTE: + in a form value would be decoded as a space by most servers. Encode it
+		// as %2B so existing parameter values are transmitted verbatim.
+		encodedValue = strings.ReplaceAll(encodedValue, "+", "%2B")
 		encodedValue = strings.ReplaceAll(encodedValue, " ", "+")
 		encodedValue = strings.ReplaceAll(encodedValue, "&", "%26")
 		encodedValue = strings.ReplaceAll(encodedValue, "=", "%3D")
@@ -566,6 +574,11 @@ func (s *PathTraversalScanner) testPayloadVariant(ctx context.Context, baseURL *
 				// but still encode other special characters like spaces, &, =, etc.
 				encodedKey := url.QueryEscape(key)
 				encodedValue := value
+				// NOTE: % must be encoded first to avoid double-encoding any literal %
+				// present in non-payload parameter values scraped from URLs.
+				encodedValue = strings.ReplaceAll(encodedValue, "%", "%25")
+				// NOTE: + would be decoded as a space; encode it as %2B.
+				encodedValue = strings.ReplaceAll(encodedValue, "+", "%2B")
 				encodedValue = strings.ReplaceAll(encodedValue, " ", "+")
 				encodedValue = strings.ReplaceAll(encodedValue, "&", "%26")
 				encodedValue = strings.ReplaceAll(encodedValue, "=", "%3D")

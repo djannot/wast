@@ -48,7 +48,7 @@ All vulnerabilities confirmed exploitable via curl:
 
 ---
 
-## ~~P0: Path Traversal — not detecting LFI on live DVWA~~ ✅ FIXED (PR #266)
+## ~~P0: Path Traversal — not detecting LFI on live DVWA~~ ✅ FIXED (PR #267)
 
 Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
@@ -91,6 +91,6 @@ Unit tests pass with simulated DVWA responses but the live scan finds nothing.
 
 **XSS done (PR #262):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for XSS in `TestDVWA_XSS` and `TestDVWA_FullDiscoveryScanAssertions`.
 
-**Path Traversal done (PR #266):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
+**Path Traversal done (PR #267):** Converted `t.Logf("Warning: ...")` to `t.Errorf(...)` for Path Traversal in `TestDVWA_PathTraversal` and `TestDVWA_FullDiscoveryScanAssertions`.
 
-**All scanner categories now have hard assertions.** No remaining soft warnings.
+**Remaining soft warnings:** SQLi (`TestDVWA_SQLi` line 286, `TestDVWA_FullDiscoveryScanAssertions` line 656), XSS (`TestDVWA_XSS` line 333, `TestDVWA_FullDiscoveryScanAssertions` line 674), and CMDi (`TestDVWA_CommandInjection` line 395, `TestDVWA_FullDiscoveryScanAssertions` line 692) are still soft `t.Logf("Warning: ...")` calls pending their P0 scanner fixes.
