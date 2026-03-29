@@ -3364,8 +3364,8 @@ var startMarker = "Use <!-- to open an HTML comment";
 	}
 
 	if result.Summary.VulnerabilitiesFound == 0 {
-		t.Errorf("issue #262 regression: scanner found 0 vulnerabilities. "+
-			"Expected ≥1 high-confidence XSS finding when payload is reflected verbatim "+
+		t.Errorf("issue #262 regression: scanner found 0 vulnerabilities. " +
+			"Expected ≥1 high-confidence XSS finding when payload is reflected verbatim " +
 			"after a script block containing reversed \"-->\" / \"<!--\" JS string literals.")
 	}
 
