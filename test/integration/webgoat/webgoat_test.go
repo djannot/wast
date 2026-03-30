@@ -169,6 +169,14 @@ func loginToWebGoat(t *testing.T) *auth.AuthConfig {
 		cookies = append(cookies, c.Name+"="+c.Value)
 	}
 
+	if len(cookies) == 0 {
+		// Warn loudly: all auth-dependent tests will run unauthenticated, which makes
+		// their soft-assertion failures very hard to diagnose. This can happen if
+		// WebGoat is misconfigured or has changed its cookie-issuing behaviour.
+		t.Logf("WARNING: loginToWebGoat succeeded (status %d) but server set 0 cookies — "+
+			"auth-dependent tests will run unauthenticated", resp.StatusCode)
+	}
+
 	t.Logf("Logged into WebGoat as %s (cookies: %d)", webGoatUser, len(resp.Cookies()))
 
 	return &auth.AuthConfig{
@@ -196,7 +204,14 @@ type sessionTransport struct {
 func (st *sessionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	if len(st.cookies) > 0 {
-		clone.Header.Set("Cookie", strings.Join(st.cookies, "; "))
+		injected := strings.Join(st.cookies, "; ")
+		if existing := clone.Header.Get("Cookie"); existing != "" {
+			// Merge: preserve any cookies already set by the caller (e.g. a scanner's
+			// internal redirect handling) rather than silently overwriting them.
+			clone.Header.Set("Cookie", existing+"; "+injected)
+		} else {
+			clone.Header.Set("Cookie", injected)
+		}
 	}
 	return st.wrapped.RoundTrip(clone)
 }
@@ -235,6 +250,8 @@ func TestWebGoat_SQLi(t *testing.T) {
 	}
 
 	// WebGoat uses an in-memory SQL database — at least one SQLi finding is expected.
+	// TODO: promote to t.Errorf once session authentication against this Java/Spring
+	// app is fully validated (tracked in a follow-up issue).
 	if len(result.Findings) < 1 {
 		t.Logf("SQLi: 0 findings on SqlInjection/attack5a — may need auth or endpoint variant (tests: %d)",
 			result.Summary.TotalTests)
@@ -277,6 +294,8 @@ func TestWebGoat_XSS(t *testing.T) {
 	}
 
 	// WebGoat's XSS lesson reflects input — at least one finding is expected.
+	// TODO: promote to t.Errorf once session authentication against this Java/Spring
+	// app is fully validated (tracked in a follow-up issue).
 	if len(result.Findings) < 1 {
 		t.Logf("XSS: 0 findings on CrossSiteScripting lesson — may need different endpoint (tests: %d)",
 			result.Summary.TotalTests)
@@ -319,6 +338,8 @@ func TestWebGoat_PathTraversal(t *testing.T) {
 	}
 
 	// WebGoat's path traversal lesson is intentionally vulnerable.
+	// TODO: promote to t.Errorf once session authentication against this Java/Spring
+	// app is fully validated (tracked in a follow-up issue).
 	if len(result.Findings) < 1 {
 		t.Logf("PathTraversal: 0 findings on PathTraversal lesson — may need different endpoint (tests: %d)",
 			result.Summary.TotalTests)
@@ -462,55 +483,68 @@ func TestWebGoat_FullScanSummary(t *testing.T) {
 
 	authCfg := loginToWebGoat(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), webGoatScanTimeout)
-	defer cancel()
+	// Each scanner gets its own fresh context so that a slow early scanner does not
+	// exhaust the deadline for later ones. 6 scanners × up to 90 s each = up to 540 s
+	// total, which cannot fit in a single 300 s shared context.
 
 	// --- SQLi on SQL injection lesson ---
+	sqliCtx, sqliCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer sqliCancel()
 	sqliScanner := scanner.NewSQLiScanner(
 		scanner.WithSQLiHTTPClient(newSessionHTTPClient(authCfg)),
 		scanner.WithSQLiTimeout(60*time.Second),
 		scanner.WithSQLiAuth(authCfg),
 	)
-	sqliResult := sqliScanner.Scan(ctx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
+	sqliResult := sqliScanner.Scan(sqliCtx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
 
 	// --- XSS on XSS lesson ---
+	xssCtx, xssCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer xssCancel()
 	xssScanner := scanner.NewXSSScanner(
 		scanner.WithXSSHTTPClient(newSessionHTTPClient(authCfg)),
 		scanner.WithXSSTimeout(60*time.Second),
 		scanner.WithXSSAuth(authCfg),
 	)
-	xssResult := xssScanner.Scan(ctx, webGoatURL+"/WebGoat/CrossSiteScripting/attack5a?QTY1=1&QTY2=1&QTY3=1&QTY4=1&field1=test&field2=test")
+	xssResult := xssScanner.Scan(xssCtx, webGoatURL+"/WebGoat/CrossSiteScripting/attack5a?QTY1=1&QTY2=1&QTY3=1&QTY4=1&field1=test&field2=test")
 
 	// --- PathTraversal on path traversal lesson ---
+	ptCtx, ptCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer ptCancel()
 	ptScanner := scanner.NewPathTraversalScanner(
 		scanner.WithPathTraversalHTTPClient(newSessionHTTPClient(authCfg)),
 		scanner.WithPathTraversalTimeout(60*time.Second),
 		scanner.WithPathTraversalAuth(authCfg),
 	)
-	ptResult := ptScanner.Scan(ctx, webGoatURL+"/WebGoat/PathTraversal/random-picture?id=cat.jpg")
+	ptResult := ptScanner.Scan(ptCtx, webGoatURL+"/WebGoat/PathTraversal/random-picture?id=cat.jpg")
 
 	// --- Headers on login page ---
+	headersCtx, headersCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer headersCancel()
 	headersScanner := scanner.NewHTTPHeadersScanner(
 		scanner.WithHTTPClient(&http.Client{Timeout: 30 * time.Second}),
 		scanner.WithTimeout(30*time.Second),
 	)
-	headersResult := headersScanner.Scan(ctx, webGoatURL+"/WebGoat/login")
+	headersResult := headersScanner.Scan(headersCtx, webGoatURL+"/WebGoat/login")
 
 	// --- NoSQLi on SQL endpoint (expect 0 — no MongoDB) ---
+	nosqliCtx, nosqliCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer nosqliCancel()
 	nosqliScanner := scanner.NewNoSQLiScanner(
 		scanner.WithNoSQLiHTTPClient(newSessionHTTPClient(authCfg)),
 		scanner.WithNoSQLiTimeout(60*time.Second),
 		scanner.WithNoSQLiAuth(authCfg),
 	)
-	nosqliResult := nosqliScanner.Scan(ctx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
+	nosqliResult := nosqliScanner.Scan(nosqliCtx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
 
 	// --- XXE on non-XML endpoint (expect 0) ---
+	xxeCtx, xxeCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer xxeCancel()
 	xxeScanner := scanner.NewXXEScanner(
 		scanner.WithXXEHTTPClient(newSessionHTTPClient(authCfg)),
 		scanner.WithXXETimeout(60*time.Second),
 		scanner.WithXXEAuth(authCfg),
 	)
-	xxeResult := xxeScanner.Scan(ctx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
+	xxeResult := xxeScanner.Scan(xxeCtx, webGoatURL+"/WebGoat/SqlInjection/attack5a?account=Smith")
 
 	// ---- Summary ----
 	t.Logf("=== WebGoat Full Scan Summary ===")
