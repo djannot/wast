@@ -841,23 +841,22 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	}
 
 	// Create unified result with correlation and risk scoring.
-	unifiedResult := NewUnifiedScanResult(
-		cfg.Target,
-		cfg.SafeMode,
-		intermediateResult.Headers,
-		intermediateResult.XSS,
-		intermediateResult.SQLi,
-		intermediateResult.NoSQLi,
-		intermediateResult.CSRF,
-		intermediateResult.SSRF,
-		intermediateResult.Redirect,
-		intermediateResult.CMDi,
-		intermediateResult.PathTraversal,
-		intermediateResult.SSTI,
-		intermediateResult.XXE,
-		nil, // WebSocket results (to be added in discovery mode)
-		intermediateResult.Errors,
-	)
+	unifiedResult := NewUnifiedScanResult(ScanResultOptions{
+		Target:        cfg.Target,
+		PassiveOnly:   cfg.SafeMode,
+		Headers:       intermediateResult.Headers,
+		XSS:           intermediateResult.XSS,
+		SQLi:          intermediateResult.SQLi,
+		NoSQLi:        intermediateResult.NoSQLi,
+		CSRF:          intermediateResult.CSRF,
+		SSRF:          intermediateResult.SSRF,
+		Redirect:      intermediateResult.Redirect,
+		CMDi:          intermediateResult.CMDi,
+		PathTraversal: intermediateResult.PathTraversal,
+		SSTI:          intermediateResult.SSTI,
+		XXE:           intermediateResult.XXE,
+		Errors:        intermediateResult.Errors,
+	})
 
 	return unifiedResult, stats
 }
