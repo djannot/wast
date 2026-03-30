@@ -108,10 +108,10 @@ func waitForWebGoat() error {
 func registerWebGoatUser() error {
 	client := &http.Client{Timeout: 30 * time.Second}
 	formData := url.Values{
-		"username":        {webGoatUser},
-		"password":        {webGoatPass},
+		"username":         {webGoatUser},
+		"password":         {webGoatPass},
 		"matchingPassword": {webGoatPass},
-		"agree":           {"agree"},
+		"agree":            {"agree"},
 	}
 	resp, err := client.PostForm(webGoatURL+"/WebGoat/register.mvc", formData)
 	if err != nil {
