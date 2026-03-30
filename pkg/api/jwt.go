@@ -170,8 +170,14 @@ func ExtractJWTFromHeaders(headers map[string]string) []string {
 	return tokens
 }
 
-// looksLikeJWT performs a quick check if a string looks like a JWT.
-func looksLikeJWT(s string) bool {
+// LooksLikeJWT performs a quick check if a string looks like a JWT.
+// It verifies the string has three dot-separated parts and a non-empty header.
+func LooksLikeJWT(s string) bool {
 	parts := strings.Split(s, ".")
 	return len(parts) == 3 && len(parts[0]) > 0
+}
+
+// looksLikeJWT is the unexported alias for backward compatibility within this package.
+func looksLikeJWT(s string) bool {
+	return LooksLikeJWT(s)
 }

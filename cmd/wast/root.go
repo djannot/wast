@@ -36,11 +36,13 @@ var (
 	authBasic   string
 	authCookies []string
 	// Login flow flags
-	loginURL       string
-	loginUser      string
-	loginPass      string
-	loginUserField string
-	loginPassField string
+	loginURL         string
+	loginUser        string
+	loginPass        string
+	loginUserField   string
+	loginPassField   string
+	loginContentType string
+	loginTokenField  string
 	// Rate limiting flags
 	rateLimit float64
 	delayMs   int
@@ -196,6 +198,10 @@ func init() {
 		"Form field name for username (default: username)")
 	rootCmd.PersistentFlags().StringVar(&loginPassField, "login-pass-field", "password",
 		"Form field name for password (default: password)")
+	rootCmd.PersistentFlags().StringVar(&loginContentType, "login-content-type", "",
+		"Content type for login request: \"form\" (default) or \"json\"")
+	rootCmd.PersistentFlags().StringVar(&loginTokenField, "login-token-field", "",
+		"Dot-separated JSON path to extract a bearer token from the login response body (e.g. \"authentication.token\")")
 
 	// Rate limiting flags
 	rootCmd.PersistentFlags().Float64Var(&rateLimit, "rate-limit", 0,
@@ -244,6 +250,8 @@ func getAuthConfig() *auth.AuthConfig {
 			Password:      password,
 			UsernameField: loginUserField,
 			PasswordField: loginPassField,
+			ContentType:   loginContentType,
+			TokenField:    loginTokenField,
 		}
 	}
 

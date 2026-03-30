@@ -183,7 +183,7 @@ func TestLooksLikeJWT(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := looksLikeJWT(tt.input)
+			result := LooksLikeJWT(tt.input)
 			if result != tt.expect {
 				t.Errorf("Expected %v, got %v", tt.expect, result)
 			}
