@@ -269,9 +269,9 @@ func TestJuiceShop_Headers(t *testing.T) {
 }
 
 // TestJuiceShop_XSS scans the Juice Shop search endpoint for reflected XSS.
-// The `q` parameter is reflected in the response, making it a target for XSS.
-// This test logs findings without hard-failing so that CI passes even if the
-// scanner's reflection detection evolves over time.
+// The `q` parameter is reflected in the JSON response body, making it a target for XSS.
+// The scanner detects payloads reflected verbatim or Unicode-escaped inside JSON string
+// values, so this test hard-fails when no findings are produced.
 func TestJuiceShop_XSS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping Juice Shop integration test in short mode")
@@ -303,11 +303,10 @@ func TestJuiceShop_XSS(t *testing.T) {
 	}
 
 	// At least one reflected XSS finding is expected on the search endpoint.
+	// The scanner now detects payloads reflected inside JSON string values (verbatim
+	// and Unicode-escaped), so this is a hard failure.
 	if len(result.Findings) < 1 {
-		// Use Logf (not Errorf) here because XSS detection on JSON responses
-		// depends on whether the scanner observes verbatim reflection in the body.
-		// TODO: convert to t.Errorf once verified against live Juice Shop.
-		t.Logf("XSS: 0 findings on /rest/products/search — expected >= 1 (tests: %d)", result.Summary.TotalTests)
+		t.Errorf("XSS: 0 findings on /rest/products/search — expected >= 1 (tests: %d)", result.Summary.TotalTests)
 	} else {
 		t.Logf("XSS: %d finding(s) on search endpoint — PASS", len(result.Findings))
 	}

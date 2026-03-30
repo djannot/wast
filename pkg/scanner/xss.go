@@ -450,6 +450,30 @@ func isInsideHTMLComment(body string, idx int) bool {
 	return inComment
 }
 
+// analyzeJSONContext checks whether the payload is reflected inside a JSON response body.
+// It handles both verbatim reflection and JSON Unicode-escaped reflection (e.g. \u003c for <).
+// Returns (reflected bool, confidence string). Confidence is always "medium" for JSON reflection
+// because exploitability depends on whether the client renders the JSON data as HTML.
+func analyzeJSONContext(body, payload string) (bool, string) {
+	// Check for verbatim payload in the JSON body
+	if strings.Contains(body, payload) {
+		return true, "medium"
+	}
+
+	// Check for JSON Unicode-escaped version of the payload.
+	// Go's encoding/json and Node.js JSON.stringify both encode <, >, & as \u003c, \u003e, \u0026
+	// to prevent HTML injection in JSON-embedded script blocks.
+	jsonEncoded := payload
+	jsonEncoded = strings.ReplaceAll(jsonEncoded, "<", `\u003c`)
+	jsonEncoded = strings.ReplaceAll(jsonEncoded, ">", `\u003e`)
+	jsonEncoded = strings.ReplaceAll(jsonEncoded, "&", `\u0026`)
+	if jsonEncoded != payload && strings.Contains(body, jsonEncoded) {
+		return true, "medium"
+	}
+
+	return false, ""
+}
+
 // analyzeContext determines where the payload appears and if it's executable.
 // Returns the context type and whether the payload is in an executable form.
 func (s *XSSScanner) analyzeContext(body, payload string) (XSSContext, bool, string) {
@@ -669,6 +693,28 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 	}
 
 	bodyStr := string(body)
+
+	// For JSON responses, use JSON-aware reflection detection.
+	// The payload may be Unicode-escaped (e.g. \u003c for <) by the JSON serialiser,
+	// so a plain strings.Contains on the raw payload would miss it.
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		reflected, confidence := analyzeJSONContext(bodyStr, payload.Payload)
+		if reflected {
+			return &XSSFinding{
+				URL:         testURL.String(),
+				Parameter:   paramName,
+				Payload:     payload.Payload,
+				Evidence:    s.extractEvidence(bodyStr, payload.Payload, payload.Payload),
+				Severity:    payload.Severity,
+				Type:        payload.Type,
+				Description: payload.Description + " (reflected in JSON response — exploitable when rendered client-side)",
+				Remediation: s.getRemediation(payload.Type),
+				Confidence:  confidence,
+			}
+		}
+		return nil
+	}
 
 	// Check if the payload or evidence is reflected in the response
 	// Note: We check for both the original payload and the URL-encoded version
