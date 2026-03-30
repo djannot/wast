@@ -315,6 +315,181 @@ func TestJuiceShop_XSS(t *testing.T) {
 	}
 }
 
+// TestJuiceShop_PathTraversal verifies that the path-traversal scanner detects at least
+// one finding on Juice Shop's /ftp endpoint, which is known to be vulnerable to
+// path traversal via encoded traversal sequences (%2f..%2f).
+func TestJuiceShop_PathTraversal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Juice Shop integration test in short mode")
+	}
+
+	authCfg := loginToJuiceShop(t)
+	client := newAuthHTTPClient(authCfg)
+
+	ptScanner := scanner.NewPathTraversalScanner(
+		scanner.WithPathTraversalHTTPClient(client),
+		scanner.WithPathTraversalTimeout(60*time.Second),
+		scanner.WithPathTraversalAuth(authCfg),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), juiceShopScanTimeout)
+	defer cancel()
+
+	// Juice Shop's /ftp directory is accessible and supports path traversal via
+	// encoded traversal sequences (e.g. %2f..%2f). The `file` query parameter
+	// is the known injection point.
+	targetURL := juiceShopURL + "/ftp?file=test"
+	result := ptScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("PathTraversal scan returned nil result")
+	}
+
+	t.Logf("PathTraversal scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+	for _, f := range result.Findings {
+		t.Logf("  PathTraversal finding: url=%s param=%s type=%s confidence=%s payload=%q",
+			f.URL, f.Parameter, f.Type, f.Confidence, f.Payload)
+	}
+
+	// Juice Shop's /ftp endpoint is known to be vulnerable to path traversal.
+	if len(result.Findings) < 1 {
+		t.Errorf("PathTraversal: expected >= 1 finding on /ftp (known vulnerable endpoint), got 0 (tests: %d)",
+			result.Summary.TotalTests)
+	} else {
+		t.Logf("PathTraversal: %d finding(s) on /ftp endpoint — PASS", len(result.Findings))
+	}
+}
+
+// TestJuiceShop_CSRF verifies that the CSRF scanner produces zero findings against
+// Juice Shop. Juice Shop is a REST+JWT SPA with no HTML forms embedding CSRF tokens,
+// so any CSRF-form finding would be a false positive.
+func TestJuiceShop_CSRF(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Juice Shop integration test in short mode")
+	}
+
+	authCfg := loginToJuiceShop(t)
+	client := newAuthHTTPClient(authCfg)
+
+	csrfScanner := scanner.NewCSRFScanner(
+		scanner.WithCSRFHTTPClient(client),
+		scanner.WithCSRFTimeout(60*time.Second),
+		scanner.WithCSRFAuth(authCfg),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), juiceShopScanTimeout)
+	defer cancel()
+
+	// Juice Shop is a pure REST+JWT SPA — it has no server-rendered HTML forms,
+	// so zero CSRF-form findings are expected.
+	result := csrfScanner.Scan(ctx, juiceShopURL)
+
+	if result == nil {
+		t.Fatal("CSRF scan returned nil result")
+	}
+
+	t.Logf("CSRF scan completed: %d forms tested, %d findings", result.Summary.TotalFormsTested, len(result.Findings))
+	for _, f := range result.Findings {
+		t.Logf("  CSRF finding: action=%s method=%s type=%s severity=%s",
+			f.FormAction, f.FormMethod, f.Type, f.Severity)
+	}
+
+	// Juice Shop has no HTML forms with CSRF tokens — zero findings expected.
+	if len(result.Findings) != 0 {
+		t.Errorf("CSRF: expected 0 findings on Juice Shop (REST+JWT SPA with no HTML forms), got %d (false positives)",
+			len(result.Findings))
+	} else {
+		t.Logf("CSRF: 0 findings — PASS")
+	}
+}
+
+// TestJuiceShop_SSRF_NoFalsePositives asserts that the SSRF scanner produces zero
+// findings against Juice Shop. Juice Shop has no known SSRF sink, so any finding
+// would be a false positive on this Node.js app.
+func TestJuiceShop_SSRF_NoFalsePositives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Juice Shop integration test in short mode")
+	}
+
+	authCfg := loginToJuiceShop(t)
+	client := newAuthHTTPClient(authCfg)
+
+	ssrfScanner := scanner.NewSSRFScanner(
+		scanner.WithSSRFHTTPClient(client),
+		scanner.WithSSRFTimeout(60*time.Second),
+		scanner.WithSSRFAuth(authCfg),
+		scanner.WithSSRFOnlyProvidedParams(true),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), juiceShopScanTimeout)
+	defer cancel()
+
+	// Test the product search endpoint — Juice Shop has no SSRF sink.
+	targetURL := juiceShopURL + "/rest/products/search?q=test"
+	result := ssrfScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("SSRF scan returned nil result")
+	}
+
+	t.Logf("SSRF scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+	for _, f := range result.Findings {
+		t.Logf("  SSRF false positive: url=%s param=%s type=%s evidence=%s",
+			f.URL, f.Parameter, f.Type, f.Evidence)
+	}
+
+	// Juice Shop has no SSRF sinks — zero findings expected.
+	if len(result.Findings) != 0 {
+		t.Errorf("SSRF: expected 0 findings on Juice Shop (no SSRF sink), got %d (false positives)",
+			len(result.Findings))
+	} else {
+		t.Logf("SSRF: 0 findings — PASS")
+	}
+}
+
+// TestJuiceShop_XXE_NoFalsePositives asserts that the XXE scanner produces zero
+// findings against Juice Shop. Juice Shop does not parse XML in a vulnerable way,
+// so any XXE finding would be a false positive on this Node.js/Angular app.
+func TestJuiceShop_XXE_NoFalsePositives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Juice Shop integration test in short mode")
+	}
+
+	authCfg := loginToJuiceShop(t)
+	client := newAuthHTTPClient(authCfg)
+
+	xxeScanner := scanner.NewXXEScanner(
+		scanner.WithXXEHTTPClient(client),
+		scanner.WithXXETimeout(60*time.Second),
+		scanner.WithXXEAuth(authCfg),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), juiceShopScanTimeout)
+	defer cancel()
+
+	// Test against the API — Juice Shop doesn't parse XML in a vulnerable way.
+	targetURL := juiceShopURL + "/rest/products/search?q=test"
+	result := xxeScanner.Scan(ctx, targetURL)
+
+	if result == nil {
+		t.Fatal("XXE scan returned nil result")
+	}
+
+	t.Logf("XXE scan completed: %d tests, %d findings", result.Summary.TotalTests, len(result.Findings))
+	for _, f := range result.Findings {
+		t.Logf("  XXE false positive: url=%s param=%s type=%s evidence=%s",
+			f.URL, f.Parameter, f.Type, f.Evidence)
+	}
+
+	// Juice Shop doesn't parse XML vulnerably — zero findings expected.
+	if len(result.Findings) != 0 {
+		t.Errorf("XXE: expected 0 findings on Juice Shop (no vulnerable XML parsing), got %d (false positives)",
+			len(result.Findings))
+	} else {
+		t.Logf("XXE: 0 findings — PASS")
+	}
+}
+
 // TestJuiceShop_SQLi_NoFalsePositives asserts that the SQLi scanner produces zero
 // findings against Juice Shop. Juice Shop uses MongoDB, not MySQL/PostgreSQL, so
 // any SQLi finding would be a false positive.
@@ -393,6 +568,39 @@ func TestJuiceShop_FullScanSummary(t *testing.T) {
 	)
 	headersResult := headersScanner.Scan(ctx, juiceShopURL)
 
+	// --- PathTraversal on /ftp endpoint (expect >= 1) ---
+	ptScanner := scanner.NewPathTraversalScanner(
+		scanner.WithPathTraversalHTTPClient(newAuthHTTPClient(authCfg)),
+		scanner.WithPathTraversalTimeout(60*time.Second),
+		scanner.WithPathTraversalAuth(authCfg),
+	)
+	ptResult := ptScanner.Scan(ctx, juiceShopURL+"/ftp?file=test")
+
+	// --- CSRF on home page (expect 0 — REST+JWT SPA, no HTML forms) ---
+	csrfScanner := scanner.NewCSRFScanner(
+		scanner.WithCSRFHTTPClient(newAuthHTTPClient(authCfg)),
+		scanner.WithCSRFTimeout(60*time.Second),
+		scanner.WithCSRFAuth(authCfg),
+	)
+	csrfResult := csrfScanner.Scan(ctx, juiceShopURL)
+
+	// --- SSRF on search endpoint (expect 0) ---
+	ssrfScanner := scanner.NewSSRFScanner(
+		scanner.WithSSRFHTTPClient(newAuthHTTPClient(authCfg)),
+		scanner.WithSSRFTimeout(60*time.Second),
+		scanner.WithSSRFAuth(authCfg),
+		scanner.WithSSRFOnlyProvidedParams(true),
+	)
+	ssrfResult := ssrfScanner.Scan(ctx, juiceShopURL+"/rest/products/search?q=test")
+
+	// --- XXE on search endpoint (expect 0) ---
+	xxeScanner := scanner.NewXXEScanner(
+		scanner.WithXXEHTTPClient(newAuthHTTPClient(authCfg)),
+		scanner.WithXXETimeout(60*time.Second),
+		scanner.WithXXEAuth(authCfg),
+	)
+	xxeResult := xxeScanner.Scan(ctx, juiceShopURL+"/rest/products/search?q=test")
+
 	// ---- Summary ----
 	t.Logf("=== Juice Shop Full Scan Summary ===")
 
@@ -418,6 +626,30 @@ func TestJuiceShop_FullScanSummary(t *testing.T) {
 	}
 	t.Logf("Missing security headers: %d", missingHeaders)
 
+	ptCount := 0
+	if ptResult != nil {
+		ptCount = len(ptResult.Findings)
+	}
+	t.Logf("PathTraversal findings: %d (expect >= 1)", ptCount)
+
+	csrfCount := 0
+	if csrfResult != nil {
+		csrfCount = len(csrfResult.Findings)
+	}
+	t.Logf("CSRF findings: %d (expect 0)", csrfCount)
+
+	ssrfCount := 0
+	if ssrfResult != nil {
+		ssrfCount = len(ssrfResult.Findings)
+	}
+	t.Logf("SSRF findings: %d (expect 0)", ssrfCount)
+
+	xxeCount := 0
+	if xxeResult != nil {
+		xxeCount = len(xxeResult.Findings)
+	}
+	t.Logf("XXE findings: %d (expect 0)", xxeCount)
+
 	// ---- Assertions ----
 	if nosqliCount < 1 {
 		t.Errorf("NoSQLi: expected >= 1 finding on MongoDB-backed search endpoint, got 0")
@@ -427,6 +659,18 @@ func TestJuiceShop_FullScanSummary(t *testing.T) {
 	}
 	if missingHeaders < 3 {
 		t.Errorf("Headers: expected >= 3 missing security headers, got %d", missingHeaders)
+	}
+	if ptCount < 1 {
+		t.Errorf("PathTraversal: expected >= 1 finding on /ftp (known vulnerable endpoint), got 0")
+	}
+	if csrfCount != 0 {
+		t.Errorf("CSRF: expected 0 findings (REST+JWT SPA with no HTML forms), got %d false positives", csrfCount)
+	}
+	if ssrfCount != 0 {
+		t.Errorf("SSRF: expected 0 findings (no SSRF sink), got %d false positives", ssrfCount)
+	}
+	if xxeCount != 0 {
+		t.Errorf("XXE: expected 0 findings (no vulnerable XML parsing), got %d false positives", xxeCount)
 	}
 
 	// Summarise all errors from scanners
@@ -439,6 +683,18 @@ func TestJuiceShop_FullScanSummary(t *testing.T) {
 	}
 	if headersResult != nil {
 		errs = append(errs, headersResult.Errors...)
+	}
+	if ptResult != nil {
+		errs = append(errs, ptResult.Errors...)
+	}
+	if csrfResult != nil {
+		errs = append(errs, csrfResult.Errors...)
+	}
+	if ssrfResult != nil {
+		errs = append(errs, ssrfResult.Errors...)
+	}
+	if xxeResult != nil {
+		errs = append(errs, xxeResult.Errors...)
 	}
 	if len(errs) > 0 {
 		t.Logf("Scanner errors: %s", strings.Join(errs, "; "))
