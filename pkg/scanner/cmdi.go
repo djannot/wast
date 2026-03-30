@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -1001,14 +1002,22 @@ func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, par
 
 		bodyStr := string(body)
 
+		// Strip the injected payload (and HTML/URL-encoded variants) from the
+		// response body before running pattern matching.  This prevents reflected
+		// input (e.g., an XSS parameter echoing "localhost; cat /etc/passwd")
+		// from triggering output-based CMDi patterns like `/etc/passwd` or
+		// `root:x:0`.  Genuine command output that appears independently of the
+		// reflected payload is preserved.
+		strippedBody := stripCMDiPayloadFromBody(bodyStr, payloadValue)
+
 		// Perform differential analysis: check if command output patterns appear in the
 		// injected response but NOT in the baseline response (to avoid false positives)
 		for _, pattern := range cmdOutputPatterns {
-			if pattern.MatchString(bodyStr) {
+			if pattern.MatchString(strippedBody) {
 				// Pattern found in injected response - now check if it was also in baseline
 				if !pattern.MatchString(baseline.ContainsKey) {
 					// Pattern is NEW - this indicates command output from our injection!
-					match := pattern.FindString(bodyStr)
+					match := pattern.FindString(strippedBody)
 					finding := &CMDiFinding{
 						URL:         testURL.String(),
 						Parameter:   paramName,
@@ -1274,14 +1283,22 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 
 		bodyStr := string(body)
 
+		// Strip the injected payload (and HTML/URL-encoded variants) from the
+		// response body before running pattern matching.  This prevents reflected
+		// input (e.g., an XSS parameter echoing "localhost; cat /etc/passwd")
+		// from triggering output-based CMDi patterns like `/etc/passwd` or
+		// `root:x:0`.  Genuine command output that appears independently of the
+		// reflected payload is preserved.
+		strippedBody := stripCMDiPayloadFromBody(bodyStr, payloadValue)
+
 		// Perform differential analysis: check if command output patterns appear in the
 		// injected response but NOT in the baseline response (to avoid false positives)
 		if s.verbose {
-			log.Printf("[CMDi] testOutputBasedPOST: param=%q payload=%q injected_body_len=%d baseline_body_len=%d",
-				paramName, payloadValue, len(bodyStr), len(baseline.ContainsKey))
+			log.Printf("[CMDi] testOutputBasedPOST: param=%q payload=%q injected_body_len=%d baseline_body_len=%d stripped_body_len=%d",
+				paramName, payloadValue, len(bodyStr), len(baseline.ContainsKey), len(strippedBody))
 		}
 		for _, pattern := range cmdOutputPatterns {
-			inInjected := pattern.MatchString(bodyStr)
+			inInjected := pattern.MatchString(strippedBody)
 			inBaseline := pattern.MatchString(baseline.ContainsKey)
 			if s.verbose {
 				log.Printf("[CMDi] testOutputBasedPOST: pattern=%q inInjected=%v inBaseline=%v",
@@ -1291,7 +1308,7 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 				// Pattern found in injected response - now check if it was also in baseline
 				if !inBaseline {
 					// Pattern is NEW - this indicates command output from our injection!
-					match := pattern.FindString(bodyStr)
+					match := pattern.FindString(strippedBody)
 					finding := &CMDiFinding{
 						URL:         baseURL.String(),
 						Parameter:   paramName,
@@ -1733,4 +1750,60 @@ func (s *CMDiScanner) generateCMDiPayloadVariants(originalPayload, findingType s
 	}
 
 	return variants
+}
+
+// stripCMDiPayloadFromBody removes occurrences of the injected CMDi payload
+// (and common HTML-encoded / URL-encoded variants) from the response body.
+// This prevents reflected input (e.g., an XSS-vulnerable parameter that echoes
+// "localhost; cat /etc/passwd" back into the page) from triggering output-based
+// CMDi patterns like `root:x:0` or `/etc/passwd`.
+//
+// Only the payload string itself is stripped — genuine command output that appears
+// independently of the reflected payload is preserved so true positives are still
+// detected.
+func stripCMDiPayloadFromBody(body string, payload string) string {
+	if payload == "" {
+		return body
+	}
+
+	result := body
+
+	// Build a list of strings to strip: the raw payload plus common variants
+	toStrip := []string{payload}
+
+	// Add HTML-escaped variant (e.g., &lt; for < , &amp; for &, &#39; for ')
+	htmlEscaped := html.EscapeString(payload)
+	if htmlEscaped != payload {
+		toStrip = append(toStrip, htmlEscaped)
+	}
+
+	// Add URL-decoded variant (handles %3A%2F%2F, %20, etc.)
+	if decoded, err := url.QueryUnescape(payload); err == nil && decoded != payload {
+		toStrip = append(toStrip, decoded)
+	}
+
+	// Add URL-encoded variant
+	encoded := url.QueryEscape(payload)
+	if encoded != payload {
+		toStrip = append(toStrip, encoded)
+	}
+
+	// Remove all variants (case-insensitive)
+	for _, s := range toStrip {
+		if s == "" {
+			continue
+		}
+		sLower := strings.ToLower(s)
+		idx := 0
+		for {
+			pos := strings.Index(strings.ToLower(result[idx:]), sLower)
+			if pos == -1 {
+				break
+			}
+			result = result[:idx+pos] + result[idx+pos+len(s):]
+			// don't advance idx — the replacement may have brought new content to this position
+		}
+	}
+
+	return result
 }

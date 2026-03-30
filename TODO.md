@@ -25,7 +25,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 |---------|--------|---------|--------|
 | SQLi | 0 findings on non-injectable params | 0 FPs (content-routing pre-check) | **PASS** |
 | SSRF | 0 false positives on non-SSRF params | 0 FPs | **PASS** |
-| CMDi | 0 findings on non-injectable params | 4 FPs (`name`, `include`, `txtName`, `mtxMessage`) | **FAIL** |
+| CMDi | 0 findings on non-injectable params | 0 FPs (reflection stripping) | **PASS** |
 | All others | 0 false positives | 0 | **PASS** |
 
 ---
@@ -40,14 +40,9 @@ Fixed by stripping the SSRF payload (and its URL-encoded/decoded variants) from 
 
 Fixed by adding a content-routing pre-check to both `testBooleanBased()` and `testBooleanBasedPOST()`. Before running differential analysis, the scanner sends a request with a random non-SQL string (e.g., `randomstring_12345`) and compares the response against the baseline. If the random value also produces a significantly different response (using the same size-difference thresholds), the parameter is classified as content-routing and skipped. This eliminates all 8 false positives on DVWA's `doc` parameter (`instructions.php`) while preserving true positive detection on injectable parameters like `id`.
 
-### CMDi: 4 false positives on non-command params
+### ~~CMDi: 4 false positives on non-command params~~ ✅ RESOLVED
 
-`name` on `/xss_r/`, `include` on `/csp/`, `txtName`/`mtxMessage` on `/xss_s/` are flagged as output-based CMDi. These params reflect input into the response — when the scanner sends `localhost; cat /etc/passwd` and the response contains `root:`, it flags CMDi. But the `root:` match is from the param reflection or stored XSS, not from actual command execution.
-
-**What to do:** Output-based CMDi detection should verify the output is from command execution, not reflection. Options:
-1. Check if the command output appears in a different location than the injected param (reflection puts it where the param value goes; command execution appends it elsewhere)
-2. Use a unique canary in the command (e.g., `echo WAST_CANARY_12345`) and check for the canary — if reflected, both the command and canary appear; if executed, only the canary output appears
-3. Cross-reference with XSS findings — if a param is already flagged as reflected XSS, discount CMDi findings on the same param
+Fixed by stripping the CMDi payload (and its HTML-encoded/URL-encoded variants) from the response body before running `cmdOutputPatterns` matching in `testOutputBased()` and `testOutputBasedPOST()`. When a parameter merely reflects the payload string (e.g., `localhost; cat /etc/passwd`) back into the page, the stripped body no longer contains patterns like `root:x:0` or `/etc/passwd`, so no finding is produced. Genuine command injection (where the server executes the command and the output appears independently of the reflected payload) is still detected because the patterns remain after stripping. This follows the same approach used successfully for the SSRF scanner's reflection-stripping fix.
 
 ### CSRF: regression from 9 to 4
 
