@@ -174,234 +174,10 @@ func applyConfidenceFromResult(confidence *string, vr *VerificationResult) {
 
 // ─── option builders ──────────────────────────────────────────────────────────
 //
-// Each buildXxxOpts function constructs the full option slice for one scanner type
-// from a CommonScannerConfig. All cross-cutting concerns (auth, HTTP client,
-// rate-limiting, tracing) live here once, not scattered across four if-blocks.
-
-func buildHeaderOpts(c CommonScannerConfig) []Option {
-	opts := []Option{WithTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildXSSOpts(c CommonScannerConfig) []XSSOption {
-	opts := []XSSOption{WithXSSTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithXSSAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithXSSHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithXSSRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithXSSTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildSQLiOpts(c CommonScannerConfig) []SQLiOption {
-	opts := []SQLiOption{WithSQLiTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithSQLiAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithSQLiHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithSQLiRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithSQLiTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildNoSQLiOpts(c CommonScannerConfig) []NoSQLiOption {
-	opts := []NoSQLiOption{WithNoSQLiTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithNoSQLiAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithNoSQLiHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithNoSQLiRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithNoSQLiTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildCSRFOpts(c CommonScannerConfig) []CSRFOption {
-	opts := []CSRFOption{
-		WithCSRFTimeout(c.Timeout),
-		WithCSRFActiveMode(c.ActiveMode),
-	}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithCSRFAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithCSRFHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithCSRFRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithCSRFTracer(c.Tracer))
-	}
-	return opts
-}
-
-// buildSSRFOpts constructs the option slice for the SSRF scanner.
-//
-// Note on callback server instances: SSRF and XXE each receive their own
-// remoteCallbackClient (backed by a separate callback.Server). In the original
-// code a single instance was shared between the two scanners. Sharing is not
-// required because each scanner only waits on callback IDs it generated itself —
-// IDs are never cross-referenced between scanners. Having separate instances is
-// therefore semantically equivalent and keeps the builders self-contained.
-func buildSSRFOpts(c CommonScannerConfig, callbackURL string) []SSRFOption {
-	opts := []SSRFOption{WithSSRFTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithSSRFAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithSSRFHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithSSRFRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithSSRFTracer(c.Tracer))
-	}
-	if callbackURL != "" {
-		if cb := createCallbackServer(callbackURL); cb != nil {
-			opts = append(opts, WithSSRFCallbackServer(cb))
-		}
-	}
-	return opts
-}
-
-func buildRedirectOpts(c CommonScannerConfig) []RedirectOption {
-	opts := []RedirectOption{WithRedirectTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithRedirectAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		// The redirect scanner MUST use a no-redirect client: it detects open redirects
-		// by inspecting raw 3xx status codes and Location headers. Passing the shared
-		// client directly would silently disable redirect detection because the default
-		// client follows redirects and the scanner would only ever see a final 200.
-		// We share the cookie jar so session cookies remain valid, but override
-		// CheckRedirect to prevent automatic redirect-following.
-		noRedirectClient := &http.Client{
-			Jar:     c.HTTPClient.Jar,
-			Timeout: c.HTTPClient.Timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
-		opts = append(opts, WithRedirectHTTPClient(noRedirectClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithRedirectRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithRedirectTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildCMDiOpts(c CommonScannerConfig) []CMDiOption {
-	opts := []CMDiOption{WithCMDiTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithCMDiAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithCMDiHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithCMDiRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithCMDiTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildPathTraversalOpts(c CommonScannerConfig) []PathTraversalOption {
-	opts := []PathTraversalOption{WithPathTraversalTimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithPathTraversalAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithPathTraversalHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithPathTraversalRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithPathTraversalTracer(c.Tracer))
-	}
-	return opts
-}
-
-func buildSSTIOpts(c CommonScannerConfig) []SSTIOption {
-	opts := []SSTIOption{WithSSTITimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithSSTIAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithSSTIHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithSSTIRateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithSSTITracer(c.Tracer))
-	}
-	return opts
-}
-
-// buildXXEOpts constructs the option slice for the XXE scanner.
-//
-// See buildSSRFOpts for a note on why SSRF and XXE use separate callback server
-// instances rather than a shared one.
-func buildXXEOpts(c CommonScannerConfig, callbackURL string) []XXEOption {
-	opts := []XXEOption{WithXXETimeout(c.Timeout)}
-	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
-		opts = append(opts, WithXXEAuth(c.AuthConfig))
-	}
-	if c.HTTPClient != nil {
-		opts = append(opts, WithXXEHTTPClient(c.HTTPClient))
-	}
-	if c.RateLimitConfig.IsEnabled() {
-		opts = append(opts, WithXXERateLimitConfig(c.RateLimitConfig))
-	}
-	if c.Tracer != nil {
-		opts = append(opts, WithXXETracer(c.Tracer))
-	}
-	if callbackURL != "" {
-		if cb := createCallbackServer(callbackURL); cb != nil {
-			opts = append(opts, WithXXECallbackServer(cb))
-		}
-	}
-	return opts
-}
+// buildBaseOpts (defined in base.go) constructs the shared BaseOption slice
+// from a CommonScannerConfig. Scanner-specific extras (callback servers,
+// active mode, no-redirect client) are passed as extra options to the
+// NewXxxScannerFromBase constructors below.
 
 // ─── ExecuteScan ──────────────────────────────────────────────────────────────
 
@@ -418,11 +194,13 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ActiveMode:      !cfg.SafeMode,
 	}
 
+	baseOpts := buildBaseOpts(common)
+
 	// Perform the passive header scan (skipped when --scanners is set and
 	// does not include "headers").
 	var headerResult *HeaderScanResult
 	if isScannerEnabled("headers", cfg.Scanners) {
-		headerScanner := NewHTTPHeadersScanner(buildHeaderOpts(common)...)
+		headerScanner := NewHTTPHeadersScannerFromBase(baseOpts)
 		headerResult = headerScanner.Scan(ctx, cfg.Target)
 	}
 
@@ -442,16 +220,49 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	if !cfg.SafeMode {
 		// ── scanner instantiation ──────────────────────────────────────────
 		// Each scanner is created here (place 1 of 2 when adding a new scanner).
-		xssScanner := NewXSSScanner(buildXSSOpts(common)...)
-		sqliScanner := NewSQLiScanner(buildSQLiOpts(common)...)
-		nosqliScanner := NewNoSQLiScanner(buildNoSQLiOpts(common)...)
-		csrfScanner := NewCSRFScanner(buildCSRFOpts(common)...)
-		ssrfScanner := NewSSRFScanner(buildSSRFOpts(common, cfg.CallbackURL)...)
-		redirectScanner := NewRedirectScanner(buildRedirectOpts(common)...)
-		cmdiScanner := NewCMDiScanner(buildCMDiOpts(common)...)
-		pathtraversalScanner := NewPathTraversalScanner(buildPathTraversalOpts(common)...)
-		sstiScanner := NewSSTIScanner(buildSSTIOpts(common)...)
-		xxeScanner := NewXXEScanner(buildXXEOpts(common, cfg.CallbackURL)...)
+		// All scanners share the same baseOpts for cross-cutting concerns;
+		// scanner-specific extras are passed as additional options.
+		xssScanner := NewXSSScannerFromBase(baseOpts)
+		sqliScanner := NewSQLiScannerFromBase(baseOpts)
+		nosqliScanner := NewNoSQLiScannerFromBase(baseOpts)
+		csrfScanner := NewCSRFScannerFromBase(baseOpts, WithCSRFActiveMode(common.ActiveMode))
+
+		// SSRF: attach callback server if a callback URL is configured.
+		var ssrfExtraOpts []SSRFOption
+		if cfg.CallbackURL != "" {
+			if cb := createCallbackServer(cfg.CallbackURL); cb != nil {
+				ssrfExtraOpts = append(ssrfExtraOpts, WithSSRFCallbackServer(cb))
+			}
+		}
+		ssrfScanner := NewSSRFScannerFromBase(baseOpts, ssrfExtraOpts...)
+
+		// Redirect: override HTTP client to disable redirect-following so that
+		// 3xx status codes and Location headers are visible to the scanner.
+		var redirectExtraOpts []RedirectOption
+		if common.HTTPClient != nil {
+			noRedirectClient := &http.Client{
+				Jar:     common.HTTPClient.Jar,
+				Timeout: common.HTTPClient.Timeout,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+			redirectExtraOpts = append(redirectExtraOpts, WithRedirectHTTPClient(noRedirectClient))
+		}
+		redirectScanner := NewRedirectScannerFromBase(baseOpts, redirectExtraOpts...)
+
+		cmdiScanner := NewCMDiScannerFromBase(baseOpts)
+		pathtraversalScanner := NewPathTraversalScannerFromBase(baseOpts)
+		sstiScanner := NewSSTIScannerFromBase(baseOpts)
+
+		// XXE: attach callback server if a callback URL is configured.
+		var xxeExtraOpts []XXEOption
+		if cfg.CallbackURL != "" {
+			if cb := createCallbackServer(cfg.CallbackURL); cb != nil {
+				xxeExtraOpts = append(xxeExtraOpts, WithXXECallbackServer(cb))
+			}
+		}
+		xxeScanner := NewXXEScannerFromBase(baseOpts, xxeExtraOpts...)
 
 		// Typed result variables captured by the closure entries below.
 		var xssResult *XSSScanResult

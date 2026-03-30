@@ -70,12 +70,7 @@ var dynamicContentPatterns = []*regexp.Regexp{
 
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
-	client         HTTPClient
-	userAgent      string
-	timeout        time.Duration
-	authConfig     *auth.AuthConfig
-	rateLimiter    ratelimit.Limiter
-	tracer         trace.Tracer
+	BaseScanner
 	timeBasedDelay time.Duration // Delay duration for time-based detection (default 5 seconds)
 }
 
@@ -281,77 +276,69 @@ type SQLiOption func(*SQLiScanner)
 
 // WithSQLiHTTPClient sets a custom HTTP client for the SQL injection scanner.
 func WithSQLiHTTPClient(c HTTPClient) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.client = c
-	}
+	return func(s *SQLiScanner) { s.client = c }
 }
 
 // WithSQLiUserAgent sets the user agent string for the SQL injection scanner.
 func WithSQLiUserAgent(ua string) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.userAgent = ua
-	}
+	return func(s *SQLiScanner) { s.userAgent = ua }
 }
 
 // WithSQLiTimeout sets the timeout for HTTP requests.
 func WithSQLiTimeout(d time.Duration) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.timeout = d
-	}
+	return func(s *SQLiScanner) { s.timeout = d }
 }
 
 // WithSQLiAuth sets the authentication configuration for the SQL injection scanner.
 func WithSQLiAuth(config *auth.AuthConfig) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.authConfig = config
-	}
+	return func(s *SQLiScanner) { s.authConfig = config }
 }
 
 // WithSQLiRateLimiter sets a rate limiter for the SQL injection scanner.
 func WithSQLiRateLimiter(limiter ratelimit.Limiter) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *SQLiScanner) { s.rateLimiter = limiter }
 }
 
 // WithSQLiRateLimitConfig sets rate limiting from a configuration.
 func WithSQLiRateLimitConfig(cfg ratelimit.Config) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *SQLiScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithSQLiTracer sets the OpenTelemetry tracer for the SQL injection scanner.
 func WithSQLiTracer(tracer trace.Tracer) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.tracer = tracer
-	}
+	return func(s *SQLiScanner) { s.tracer = tracer }
 }
 
 // WithSQLiTimeBasedDelay sets the expected delay duration for time-based SQL injection detection.
 func WithSQLiTimeBasedDelay(d time.Duration) SQLiOption {
-	return func(s *SQLiScanner) {
-		s.timeBasedDelay = d
-	}
+	return func(s *SQLiScanner) { s.timeBasedDelay = d }
 }
 
 // NewSQLiScanner creates a new SQLiScanner with the given options.
 func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
 	s := &SQLiScanner{
-		userAgent:      "WAST/1.0 (Web Application Security Testing)",
-		timeout:        30 * time.Second,
-		timeBasedDelay: 5 * time.Second, // Default delay for time-based detection
+		BaseScanner:    DefaultBaseScanner(),
+		timeBasedDelay: 5 * time.Second,
 	}
-
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewSQLiScannerFromBase creates a new SQLiScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewSQLiScannerFromBase(baseOpts []BaseOption, extraOpts ...SQLiOption) *SQLiScanner {
+	s := &SQLiScanner{
+		BaseScanner:    DefaultBaseScanner(),
+		timeBasedDelay: 5 * time.Second,
 	}
-
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
+	}
+	s.InitDefaultClient()
 	return s
 }
 

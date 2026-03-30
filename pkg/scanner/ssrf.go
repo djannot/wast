@@ -29,12 +29,7 @@ type CallbackServer interface {
 
 // SSRFScanner performs active SSRF vulnerability detection.
 type SSRFScanner struct {
-	client             HTTPClient
-	userAgent          string
-	timeout            time.Duration
-	authConfig         *auth.AuthConfig
-	rateLimiter        ratelimit.Limiter
-	tracer             trace.Tracer
+	BaseScanner
 	callbackServer     CallbackServer
 	OnlyProvidedParams bool // If true, only test parameters that exist in the URL (don't invent parameters)
 }
@@ -228,86 +223,68 @@ type SSRFOption func(*SSRFScanner)
 
 // WithSSRFHTTPClient sets a custom HTTP client for the SSRF scanner.
 func WithSSRFHTTPClient(c HTTPClient) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.client = c
-	}
+	return func(s *SSRFScanner) { s.client = c }
 }
 
 // WithSSRFUserAgent sets the user agent string for the SSRF scanner.
 func WithSSRFUserAgent(ua string) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.userAgent = ua
-	}
+	return func(s *SSRFScanner) { s.userAgent = ua }
 }
 
 // WithSSRFTimeout sets the timeout for HTTP requests.
 func WithSSRFTimeout(d time.Duration) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.timeout = d
-	}
+	return func(s *SSRFScanner) { s.timeout = d }
 }
 
 // WithSSRFAuth sets the authentication configuration for the SSRF scanner.
 func WithSSRFAuth(config *auth.AuthConfig) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.authConfig = config
-	}
+	return func(s *SSRFScanner) { s.authConfig = config }
 }
 
 // WithSSRFRateLimiter sets a rate limiter for the SSRF scanner.
 func WithSSRFRateLimiter(limiter ratelimit.Limiter) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *SSRFScanner) { s.rateLimiter = limiter }
 }
 
 // WithSSRFRateLimitConfig sets rate limiting from a configuration.
 func WithSSRFRateLimitConfig(cfg ratelimit.Config) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *SSRFScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithSSRFTracer sets the OpenTelemetry tracer for the SSRF scanner.
 func WithSSRFTracer(tracer trace.Tracer) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.tracer = tracer
-	}
+	return func(s *SSRFScanner) { s.tracer = tracer }
 }
 
 // WithSSRFOnlyProvidedParams sets whether to only test provided parameters.
-// When true, the scanner will not invent common parameter names when none exist.
-// This reduces false positives when scanning URLs without query parameters.
 func WithSSRFOnlyProvidedParams(only bool) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.OnlyProvidedParams = only
-	}
+	return func(s *SSRFScanner) { s.OnlyProvidedParams = only }
 }
 
 // WithSSRFCallbackServer sets the callback server for out-of-band detection.
-// When set, the scanner will generate callback URLs and use them to verify SSRF vulnerabilities.
 func WithSSRFCallbackServer(server CallbackServer) SSRFOption {
-	return func(s *SSRFScanner) {
-		s.callbackServer = server
-	}
+	return func(s *SSRFScanner) { s.callbackServer = server }
 }
 
 // NewSSRFScanner creates a new SSRFScanner with the given options.
 func NewSSRFScanner(opts ...SSRFOption) *SSRFScanner {
-	s := &SSRFScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &SSRFScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewSSRFScannerFromBase creates a new SSRFScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewSSRFScannerFromBase(baseOpts []BaseOption, extraOpts ...SSRFOption) *SSRFScanner {
+	s := &SSRFScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

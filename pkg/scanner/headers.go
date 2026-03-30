@@ -263,12 +263,7 @@ var securityHeaders = []securityHeader{
 
 // HTTPHeadersScanner performs passive security analysis of HTTP response headers.
 type HTTPHeadersScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // Option is a function that configures an HTTPHeadersScanner.
@@ -276,69 +271,58 @@ type Option func(*HTTPHeadersScanner)
 
 // WithHTTPClient sets a custom HTTP client for the scanner.
 func WithHTTPClient(c HTTPClient) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.client = c
-	}
+	return func(s *HTTPHeadersScanner) { s.client = c }
 }
 
 // WithUserAgent sets the user agent string for the scanner.
 func WithUserAgent(ua string) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.userAgent = ua
-	}
+	return func(s *HTTPHeadersScanner) { s.userAgent = ua }
 }
 
 // WithTimeout sets the timeout for HTTP requests.
 func WithTimeout(d time.Duration) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.timeout = d
-	}
+	return func(s *HTTPHeadersScanner) { s.timeout = d }
 }
 
 // WithAuth sets the authentication configuration for the scanner.
 func WithAuth(config *auth.AuthConfig) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.authConfig = config
-	}
+	return func(s *HTTPHeadersScanner) { s.authConfig = config }
 }
 
 // WithRateLimiter sets a rate limiter for the scanner.
 func WithRateLimiter(limiter ratelimit.Limiter) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *HTTPHeadersScanner) { s.rateLimiter = limiter }
 }
 
 // WithRateLimitConfig sets rate limiting from a configuration.
 func WithRateLimitConfig(cfg ratelimit.Config) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *HTTPHeadersScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithTracer sets the OpenTelemetry tracer for the scanner.
 func WithTracer(tracer trace.Tracer) Option {
-	return func(s *HTTPHeadersScanner) {
-		s.tracer = tracer
-	}
+	return func(s *HTTPHeadersScanner) { s.tracer = tracer }
 }
 
 // NewHTTPHeadersScanner creates a new HTTPHeadersScanner with the given options.
 func NewHTTPHeadersScanner(opts ...Option) *HTTPHeadersScanner {
-	s := &HTTPHeadersScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &HTTPHeadersScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewHTTPHeadersScannerFromBase creates a new HTTPHeadersScanner from pre-built
+// BaseOptions plus any scanner-specific options. Used by executor to avoid duplication.
+func NewHTTPHeadersScannerFromBase(baseOpts []BaseOption, extraOpts ...Option) *HTTPHeadersScanner {
+	s := &HTTPHeadersScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

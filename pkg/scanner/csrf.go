@@ -20,13 +20,8 @@ import (
 
 // CSRFScanner performs CSRF vulnerability detection.
 type CSRFScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
-	activeMode  bool // when true, verify tokens server-side
+	BaseScanner
+	activeMode bool // when true, verify tokens server-side
 }
 
 // CSRFScanResult represents the result of a CSRF vulnerability scan.
@@ -101,78 +96,63 @@ type CSRFOption func(*CSRFScanner)
 
 // WithCSRFHTTPClient sets a custom HTTP client for the CSRF scanner.
 func WithCSRFHTTPClient(c HTTPClient) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.client = c
-	}
+	return func(s *CSRFScanner) { s.client = c }
 }
 
 // WithCSRFUserAgent sets the user agent string for the CSRF scanner.
 func WithCSRFUserAgent(ua string) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.userAgent = ua
-	}
+	return func(s *CSRFScanner) { s.userAgent = ua }
 }
 
 // WithCSRFTimeout sets the timeout for HTTP requests.
 func WithCSRFTimeout(d time.Duration) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.timeout = d
-	}
+	return func(s *CSRFScanner) { s.timeout = d }
 }
 
 // WithCSRFAuth sets the authentication configuration for the CSRF scanner.
 func WithCSRFAuth(config *auth.AuthConfig) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.authConfig = config
-	}
+	return func(s *CSRFScanner) { s.authConfig = config }
 }
 
 // WithCSRFRateLimiter sets a rate limiter for the CSRF scanner.
 func WithCSRFRateLimiter(limiter ratelimit.Limiter) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *CSRFScanner) { s.rateLimiter = limiter }
 }
 
 // WithCSRFRateLimitConfig sets rate limiting from a configuration.
 func WithCSRFRateLimitConfig(cfg ratelimit.Config) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *CSRFScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithCSRFTracer sets the OpenTelemetry tracer for the CSRF scanner.
 func WithCSRFTracer(tracer trace.Tracer) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.tracer = tracer
-	}
+	return func(s *CSRFScanner) { s.tracer = tracer }
 }
 
 // WithCSRFActiveMode enables active server-side token verification.
-// When active mode is on, the scanner submits forms without the CSRF token
-// to check if the server actually enforces the token.
 func WithCSRFActiveMode(active bool) CSRFOption {
-	return func(s *CSRFScanner) {
-		s.activeMode = active
-	}
+	return func(s *CSRFScanner) { s.activeMode = active }
 }
 
 // NewCSRFScanner creates a new CSRFScanner with the given options.
 func NewCSRFScanner(opts ...CSRFOption) *CSRFScanner {
-	s := &CSRFScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &CSRFScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewCSRFScannerFromBase creates a new CSRFScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewCSRFScannerFromBase(baseOpts []BaseOption, extraOpts ...CSRFOption) *CSRFScanner {
+	s := &CSRFScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

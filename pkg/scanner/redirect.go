@@ -18,12 +18,7 @@ import (
 
 // RedirectScanner performs active Open Redirect vulnerability detection.
 type RedirectScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // RedirectScanResult represents the result of an Open Redirect vulnerability scan.
@@ -202,70 +197,64 @@ type RedirectOption func(*RedirectScanner)
 
 // WithRedirectHTTPClient sets a custom HTTP client for the redirect scanner.
 func WithRedirectHTTPClient(c HTTPClient) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.client = c
-	}
+	return func(s *RedirectScanner) { s.client = c }
 }
 
 // WithRedirectUserAgent sets the user agent string for the redirect scanner.
 func WithRedirectUserAgent(ua string) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.userAgent = ua
-	}
+	return func(s *RedirectScanner) { s.userAgent = ua }
 }
 
 // WithRedirectTimeout sets the timeout for HTTP requests.
 func WithRedirectTimeout(d time.Duration) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.timeout = d
-	}
+	return func(s *RedirectScanner) { s.timeout = d }
 }
 
 // WithRedirectAuth sets the authentication configuration for the redirect scanner.
 func WithRedirectAuth(config *auth.AuthConfig) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.authConfig = config
-	}
+	return func(s *RedirectScanner) { s.authConfig = config }
 }
 
 // WithRedirectRateLimiter sets a rate limiter for the redirect scanner.
 func WithRedirectRateLimiter(limiter ratelimit.Limiter) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *RedirectScanner) { s.rateLimiter = limiter }
 }
 
 // WithRedirectRateLimitConfig sets rate limiting from a configuration.
 func WithRedirectRateLimitConfig(cfg ratelimit.Config) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *RedirectScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithRedirectTracer sets the OpenTelemetry tracer for the redirect scanner.
 func WithRedirectTracer(tracer trace.Tracer) RedirectOption {
-	return func(s *RedirectScanner) {
-		s.tracer = tracer
-	}
+	return func(s *RedirectScanner) { s.tracer = tracer }
 }
 
 // NewRedirectScanner creates a new RedirectScanner with the given options.
 func NewRedirectScanner(opts ...RedirectOption) *RedirectScanner {
-	s := &RedirectScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &RedirectScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
-
-	// Create default HTTP client if not set
-	// IMPORTANT: For redirect testing, we need a client that does NOT follow redirects automatically
+	// IMPORTANT: For redirect testing, we need a client that does NOT follow redirects
 	if s.client == nil {
 		s.client = NewNoRedirectHTTPClient(s.timeout)
 	}
+	return s
+}
 
+// NewRedirectScannerFromBase creates a new RedirectScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewRedirectScannerFromBase(baseOpts []BaseOption, extraOpts ...RedirectOption) *RedirectScanner {
+	s := &RedirectScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
+	}
+	// IMPORTANT: For redirect testing, we need a client that does NOT follow redirects
+	if s.client == nil {
+		s.client = NewNoRedirectHTTPClient(s.timeout)
+	}
 	return s
 }
 

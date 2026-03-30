@@ -19,12 +19,7 @@ import (
 
 // XSSScanner performs active XSS vulnerability detection.
 type XSSScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // XSSScanResult represents the result of an XSS vulnerability scan.
@@ -148,69 +143,58 @@ type XSSOption func(*XSSScanner)
 
 // WithXSSHTTPClient sets a custom HTTP client for the XSS scanner.
 func WithXSSHTTPClient(c HTTPClient) XSSOption {
-	return func(s *XSSScanner) {
-		s.client = c
-	}
+	return func(s *XSSScanner) { s.client = c }
 }
 
 // WithXSSUserAgent sets the user agent string for the XSS scanner.
 func WithXSSUserAgent(ua string) XSSOption {
-	return func(s *XSSScanner) {
-		s.userAgent = ua
-	}
+	return func(s *XSSScanner) { s.userAgent = ua }
 }
 
 // WithXSSTimeout sets the timeout for HTTP requests.
 func WithXSSTimeout(d time.Duration) XSSOption {
-	return func(s *XSSScanner) {
-		s.timeout = d
-	}
+	return func(s *XSSScanner) { s.timeout = d }
 }
 
 // WithXSSAuth sets the authentication configuration for the XSS scanner.
 func WithXSSAuth(config *auth.AuthConfig) XSSOption {
-	return func(s *XSSScanner) {
-		s.authConfig = config
-	}
+	return func(s *XSSScanner) { s.authConfig = config }
 }
 
 // WithXSSRateLimiter sets a rate limiter for the XSS scanner.
 func WithXSSRateLimiter(limiter ratelimit.Limiter) XSSOption {
-	return func(s *XSSScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *XSSScanner) { s.rateLimiter = limiter }
 }
 
 // WithXSSRateLimitConfig sets rate limiting from a configuration.
 func WithXSSRateLimitConfig(cfg ratelimit.Config) XSSOption {
-	return func(s *XSSScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *XSSScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithXSSTracer sets the OpenTelemetry tracer for the XSS scanner.
 func WithXSSTracer(tracer trace.Tracer) XSSOption {
-	return func(s *XSSScanner) {
-		s.tracer = tracer
-	}
+	return func(s *XSSScanner) { s.tracer = tracer }
 }
 
 // NewXSSScanner creates a new XSSScanner with the given options.
 func NewXSSScanner(opts ...XSSOption) *XSSScanner {
-	s := &XSSScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &XSSScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewXSSScannerFromBase creates a new XSSScanner from pre-built BaseOptions
+// plus any scanner-specific options. Used by executor to avoid duplication.
+func NewXSSScannerFromBase(baseOpts []BaseOption, extraOpts ...XSSOption) *XSSScanner {
+	s := &XSSScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 
