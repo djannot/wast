@@ -18,12 +18,7 @@ import (
 
 // XXEScanner performs active XXE (XML External Entity) vulnerability detection.
 type XXEScanner struct {
-	client         HTTPClient
-	userAgent      string
-	timeout        time.Duration
-	authConfig     *auth.AuthConfig
-	rateLimiter    ratelimit.Limiter
-	tracer         trace.Tracer
+	BaseScanner
 	callbackServer CallbackServer // For OOB detection
 	safeMode       bool
 }
@@ -180,85 +175,62 @@ type XXEOption func(*XXEScanner)
 
 // WithXXEHTTPClient sets a custom HTTP client for the XXE scanner.
 func WithXXEHTTPClient(c HTTPClient) XXEOption {
-	return func(s *XXEScanner) {
-		s.client = c
-	}
+	return func(s *XXEScanner) { s.client = c }
 }
 
 // WithXXEUserAgent sets a custom user agent for the XXE scanner.
 func WithXXEUserAgent(ua string) XXEOption {
-	return func(s *XXEScanner) {
-		s.userAgent = ua
-	}
+	return func(s *XXEScanner) { s.userAgent = ua }
 }
 
 // WithXXETimeout sets the timeout for XXE scanner requests.
 func WithXXETimeout(d time.Duration) XXEOption {
-	return func(s *XXEScanner) {
-		s.timeout = d
-	}
+	return func(s *XXEScanner) { s.timeout = d }
 }
 
 // WithXXEAuth sets authentication configuration for the XXE scanner.
 func WithXXEAuth(config *auth.AuthConfig) XXEOption {
-	return func(s *XXEScanner) {
-		s.authConfig = config
-	}
+	return func(s *XXEScanner) { s.authConfig = config }
 }
 
 // WithXXERateLimiter sets a rate limiter for the XXE scanner.
 func WithXXERateLimiter(limiter ratelimit.Limiter) XXEOption {
-	return func(s *XXEScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *XXEScanner) { s.rateLimiter = limiter }
 }
 
 // WithXXERateLimitConfig sets a rate limiter from config for the XXE scanner.
 func WithXXERateLimitConfig(cfg ratelimit.Config) XXEOption {
-	return func(s *XXEScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *XXEScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithXXETracer sets an OpenTelemetry tracer for the XXE scanner.
 func WithXXETracer(tracer trace.Tracer) XXEOption {
-	return func(s *XXEScanner) {
-		s.tracer = tracer
-	}
+	return func(s *XXEScanner) { s.tracer = tracer }
 }
 
 // WithXXECallbackServer sets the callback server for out-of-band XXE detection.
 func WithXXECallbackServer(server CallbackServer) XXEOption {
-	return func(s *XXEScanner) {
-		s.callbackServer = server
-	}
+	return func(s *XXEScanner) { s.callbackServer = server }
 }
 
 // WithXXESafeMode sets safe mode for the XXE scanner.
 func WithXXESafeMode(safe bool) XXEOption {
-	return func(s *XXEScanner) {
-		s.safeMode = safe
-	}
+	return func(s *XXEScanner) { s.safeMode = safe }
 }
 
 // NewXXEScanner creates a new XXEScanner with the given options.
 func NewXXEScanner(opts ...XXEOption) *XXEScanner {
-	s := &XXEScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   10 * time.Second,
-		safeMode:  false,
-	}
-
+	base := DefaultBaseScanner()
+	base.timeout = 10 * time.Second // XXE uses shorter default timeout
+	s := &XXEScanner{BaseScanner: base}
 	for _, opt := range opts {
 		opt(s)
 	}
-
 	// Create default HTTP client if none provided
 	if s.client == nil {
 		s.client = &http.Client{
 			Timeout: s.timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Follow redirects but limit to 10
 				if len(via) >= 10 {
 					return http.ErrUseLastResponse
 				}
@@ -266,7 +238,30 @@ func NewXXEScanner(opts ...XXEOption) *XXEScanner {
 			},
 		}
 	}
+	return s
+}
 
+// NewXXEScannerFromBase creates a new XXEScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewXXEScannerFromBase(baseOpts []BaseOption, extraOpts ...XXEOption) *XXEScanner {
+	base := DefaultBaseScanner()
+	base.timeout = 10 * time.Second
+	s := &XXEScanner{BaseScanner: base}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
+	}
+	if s.client == nil {
+		s.client = &http.Client{
+			Timeout: s.timeout,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return http.ErrUseLastResponse
+				}
+				return nil
+			},
+		}
+	}
 	return s
 }
 

@@ -19,12 +19,7 @@ import (
 
 // NoSQLiScanner performs active NoSQL injection vulnerability detection.
 type NoSQLiScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // NoSQLiScanResult represents the result of a NoSQL injection vulnerability scan.
@@ -247,69 +242,58 @@ type NoSQLiOption func(*NoSQLiScanner)
 
 // WithNoSQLiHTTPClient sets a custom HTTP client for the NoSQL injection scanner.
 func WithNoSQLiHTTPClient(c HTTPClient) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.client = c
-	}
+	return func(s *NoSQLiScanner) { s.client = c }
 }
 
 // WithNoSQLiUserAgent sets the user agent string for the NoSQL injection scanner.
 func WithNoSQLiUserAgent(ua string) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.userAgent = ua
-	}
+	return func(s *NoSQLiScanner) { s.userAgent = ua }
 }
 
 // WithNoSQLiTimeout sets the timeout for HTTP requests.
 func WithNoSQLiTimeout(d time.Duration) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.timeout = d
-	}
+	return func(s *NoSQLiScanner) { s.timeout = d }
 }
 
 // WithNoSQLiAuth sets the authentication configuration for the NoSQL injection scanner.
 func WithNoSQLiAuth(config *auth.AuthConfig) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.authConfig = config
-	}
+	return func(s *NoSQLiScanner) { s.authConfig = config }
 }
 
 // WithNoSQLiRateLimiter sets a rate limiter for the NoSQL injection scanner.
 func WithNoSQLiRateLimiter(limiter ratelimit.Limiter) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *NoSQLiScanner) { s.rateLimiter = limiter }
 }
 
 // WithNoSQLiRateLimitConfig sets rate limiting from a configuration.
 func WithNoSQLiRateLimitConfig(cfg ratelimit.Config) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *NoSQLiScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithNoSQLiTracer sets the OpenTelemetry tracer for the NoSQL injection scanner.
 func WithNoSQLiTracer(tracer trace.Tracer) NoSQLiOption {
-	return func(s *NoSQLiScanner) {
-		s.tracer = tracer
-	}
+	return func(s *NoSQLiScanner) { s.tracer = tracer }
 }
 
 // NewNoSQLiScanner creates a new NoSQLiScanner with the given options.
 func NewNoSQLiScanner(opts ...NoSQLiOption) *NoSQLiScanner {
-	s := &NoSQLiScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &NoSQLiScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewNoSQLiScannerFromBase creates a new NoSQLiScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewNoSQLiScannerFromBase(baseOpts []BaseOption, extraOpts ...NoSQLiOption) *NoSQLiScanner {
+	s := &NoSQLiScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

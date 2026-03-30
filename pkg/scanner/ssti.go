@@ -20,12 +20,7 @@ import (
 
 // SSTIScanner performs active SSTI (Server-Side Template Injection) vulnerability detection.
 type SSTIScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // SSTIScanResult represents the result of an SSTI vulnerability scan.
@@ -168,69 +163,58 @@ type SSTIOption func(*SSTIScanner)
 
 // WithSSTIHTTPClient sets a custom HTTP client for the SSTI scanner.
 func WithSSTIHTTPClient(c HTTPClient) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.client = c
-	}
+	return func(s *SSTIScanner) { s.client = c }
 }
 
 // WithSSTIUserAgent sets the user agent string for the SSTI scanner.
 func WithSSTIUserAgent(ua string) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.userAgent = ua
-	}
+	return func(s *SSTIScanner) { s.userAgent = ua }
 }
 
 // WithSSTITimeout sets the timeout for HTTP requests.
 func WithSSTITimeout(d time.Duration) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.timeout = d
-	}
+	return func(s *SSTIScanner) { s.timeout = d }
 }
 
 // WithSSTIAuth sets the authentication configuration for the SSTI scanner.
 func WithSSTIAuth(config *auth.AuthConfig) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.authConfig = config
-	}
+	return func(s *SSTIScanner) { s.authConfig = config }
 }
 
 // WithSSTIRateLimiter sets a rate limiter for the SSTI scanner.
 func WithSSTIRateLimiter(limiter ratelimit.Limiter) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *SSTIScanner) { s.rateLimiter = limiter }
 }
 
 // WithSSTIRateLimitConfig sets rate limiting from a configuration.
 func WithSSTIRateLimitConfig(cfg ratelimit.Config) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *SSTIScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithSSTITracer sets the OpenTelemetry tracer for the SSTI scanner.
 func WithSSTITracer(tracer trace.Tracer) SSTIOption {
-	return func(s *SSTIScanner) {
-		s.tracer = tracer
-	}
+	return func(s *SSTIScanner) { s.tracer = tracer }
 }
 
 // NewSSTIScanner creates a new SSTIScanner with the given options.
 func NewSSTIScanner(opts ...SSTIOption) *SSTIScanner {
-	s := &SSTIScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &SSTIScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewSSTIScannerFromBase creates a new SSTIScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewSSTIScannerFromBase(baseOpts []BaseOption, extraOpts ...SSTIOption) *SSTIScanner {
+	s := &SSTIScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

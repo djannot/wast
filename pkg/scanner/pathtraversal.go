@@ -21,12 +21,7 @@ import (
 
 // PathTraversalScanner performs active Path Traversal/LFI vulnerability detection.
 type PathTraversalScanner struct {
-	client      HTTPClient
-	userAgent   string
-	timeout     time.Duration
-	authConfig  *auth.AuthConfig
-	rateLimiter ratelimit.Limiter
-	tracer      trace.Tracer
+	BaseScanner
 }
 
 // PathTraversalScanResult represents the result of a Path Traversal vulnerability scan.
@@ -271,69 +266,58 @@ type PathTraversalOption func(*PathTraversalScanner)
 
 // WithPathTraversalHTTPClient sets a custom HTTP client for the Path Traversal scanner.
 func WithPathTraversalHTTPClient(c HTTPClient) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.client = c
-	}
+	return func(s *PathTraversalScanner) { s.client = c }
 }
 
 // WithPathTraversalUserAgent sets the user agent string for the Path Traversal scanner.
 func WithPathTraversalUserAgent(ua string) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.userAgent = ua
-	}
+	return func(s *PathTraversalScanner) { s.userAgent = ua }
 }
 
 // WithPathTraversalTimeout sets the timeout for HTTP requests.
 func WithPathTraversalTimeout(d time.Duration) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.timeout = d
-	}
+	return func(s *PathTraversalScanner) { s.timeout = d }
 }
 
 // WithPathTraversalAuth sets the authentication configuration for the Path Traversal scanner.
 func WithPathTraversalAuth(config *auth.AuthConfig) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.authConfig = config
-	}
+	return func(s *PathTraversalScanner) { s.authConfig = config }
 }
 
 // WithPathTraversalRateLimiter sets a rate limiter for the Path Traversal scanner.
 func WithPathTraversalRateLimiter(limiter ratelimit.Limiter) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *PathTraversalScanner) { s.rateLimiter = limiter }
 }
 
 // WithPathTraversalRateLimitConfig sets rate limiting from a configuration.
 func WithPathTraversalRateLimitConfig(cfg ratelimit.Config) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *PathTraversalScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithPathTraversalTracer sets the OpenTelemetry tracer for the Path Traversal scanner.
 func WithPathTraversalTracer(tracer trace.Tracer) PathTraversalOption {
-	return func(s *PathTraversalScanner) {
-		s.tracer = tracer
-	}
+	return func(s *PathTraversalScanner) { s.tracer = tracer }
 }
 
 // NewPathTraversalScanner creates a new PathTraversalScanner with the given options.
 func NewPathTraversalScanner(opts ...PathTraversalOption) *PathTraversalScanner {
-	s := &PathTraversalScanner{
-		userAgent: "WAST/1.0 (Web Application Security Testing)",
-		timeout:   30 * time.Second,
-	}
-
+	s := &PathTraversalScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewPathTraversalScannerFromBase creates a new PathTraversalScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewPathTraversalScannerFromBase(baseOpts []BaseOption, extraOpts ...PathTraversalOption) *PathTraversalScanner {
+	s := &PathTraversalScanner{BaseScanner: DefaultBaseScanner()}
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
 	}
-
+	s.InitDefaultClient()
 	return s
 }
 

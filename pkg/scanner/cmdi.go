@@ -22,12 +22,7 @@ import (
 
 // CMDiScanner performs active command injection vulnerability detection.
 type CMDiScanner struct {
-	client         HTTPClient
-	userAgent      string
-	timeout        time.Duration
-	authConfig     *auth.AuthConfig
-	rateLimiter    ratelimit.Limiter
-	tracer         trace.Tracer
+	BaseScanner
 	timeBasedDelay time.Duration // Default 5 seconds
 	verbose        bool          // Enable verbose debug logging
 }
@@ -410,65 +405,47 @@ type CMDiOption func(*CMDiScanner)
 
 // WithCMDiHTTPClient sets a custom HTTP client for the command injection scanner.
 func WithCMDiHTTPClient(c HTTPClient) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.client = c
-	}
+	return func(s *CMDiScanner) { s.client = c }
 }
 
 // WithCMDiUserAgent sets the user agent string for the command injection scanner.
 func WithCMDiUserAgent(ua string) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.userAgent = ua
-	}
+	return func(s *CMDiScanner) { s.userAgent = ua }
 }
 
 // WithCMDiTimeout sets the timeout for HTTP requests.
 func WithCMDiTimeout(d time.Duration) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.timeout = d
-	}
+	return func(s *CMDiScanner) { s.timeout = d }
 }
 
 // WithCMDiAuth sets the authentication configuration for the command injection scanner.
 func WithCMDiAuth(config *auth.AuthConfig) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.authConfig = config
-	}
+	return func(s *CMDiScanner) { s.authConfig = config }
 }
 
 // WithCMDiRateLimiter sets a rate limiter for the command injection scanner.
 func WithCMDiRateLimiter(limiter ratelimit.Limiter) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.rateLimiter = limiter
-	}
+	return func(s *CMDiScanner) { s.rateLimiter = limiter }
 }
 
 // WithCMDiRateLimitConfig sets rate limiting from a configuration.
 func WithCMDiRateLimitConfig(cfg ratelimit.Config) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg)
-	}
+	return func(s *CMDiScanner) { s.rateLimiter = ratelimit.NewLimiterFromConfig(cfg) }
 }
 
 // WithCMDiTracer sets the OpenTelemetry tracer for the command injection scanner.
 func WithCMDiTracer(tracer trace.Tracer) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.tracer = tracer
-	}
+	return func(s *CMDiScanner) { s.tracer = tracer }
 }
 
 // WithCMDiTimeBasedDelay sets the expected delay duration for time-based command injection detection.
 func WithCMDiTimeBasedDelay(d time.Duration) CMDiOption {
-	return func(s *CMDiScanner) {
-		s.timeBasedDelay = d
-	}
+	return func(s *CMDiScanner) { s.timeBasedDelay = d }
 }
 
 // WithCMDiVerbose enables verbose debug logging for the command injection scanner.
 func WithCMDiVerbose() CMDiOption {
-	return func(s *CMDiScanner) {
-		s.verbose = true
-	}
+	return func(s *CMDiScanner) { s.verbose = true }
 }
 
 // submitButtonExactPatterns lists parameter names that are submit-button indicators when
@@ -509,20 +486,28 @@ func isSubmitButton(paramName string) bool {
 // NewCMDiScanner creates a new CMDiScanner with the given options.
 func NewCMDiScanner(opts ...CMDiOption) *CMDiScanner {
 	s := &CMDiScanner{
-		userAgent:      "WAST/1.0 (Web Application Security Testing)",
-		timeout:        30 * time.Second,
-		timeBasedDelay: 5 * time.Second, // Default delay for time-based detection
+		BaseScanner:    DefaultBaseScanner(),
+		timeBasedDelay: 5 * time.Second,
 	}
-
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.InitDefaultClient()
+	return s
+}
 
-	// Create default HTTP client if not set
-	if s.client == nil {
-		s.client = NewDefaultHTTPClient(s.timeout)
+// NewCMDiScannerFromBase creates a new CMDiScanner from pre-built BaseOptions
+// plus any scanner-specific options.
+func NewCMDiScannerFromBase(baseOpts []BaseOption, extraOpts ...CMDiOption) *CMDiScanner {
+	s := &CMDiScanner{
+		BaseScanner:    DefaultBaseScanner(),
+		timeBasedDelay: 5 * time.Second,
 	}
-
+	ApplyBaseOptions(&s.BaseScanner, baseOpts)
+	for _, opt := range extraOpts {
+		opt(s)
+	}
+	s.InitDefaultClient()
 	return s
 }
 
