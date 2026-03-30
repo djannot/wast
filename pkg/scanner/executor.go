@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,12 +15,58 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ValidScannerNames lists all recognized scanner names (lowercase).
+// Used for validation and help text.
+var ValidScannerNames = []string{
+	"xss", "sqli", "nosqli", "csrf", "ssrf",
+	"redirect", "cmdi", "pathtraversal", "ssti", "xxe", "headers",
+}
+
+// ValidateScanners checks that every name in the provided slice is a known
+// scanner name (case-insensitive). If any name is invalid it returns an error
+// that lists all valid names.
+func ValidateScanners(names []string) error {
+	valid := make(map[string]bool, len(ValidScannerNames))
+	for _, n := range ValidScannerNames {
+		valid[n] = true
+	}
+	var invalid []string
+	for _, n := range names {
+		if !valid[strings.ToLower(n)] {
+			invalid = append(invalid, n)
+		}
+	}
+	if len(invalid) > 0 {
+		return fmt.Errorf("unknown scanner(s): %s. Valid scanners: %s",
+			strings.Join(invalid, ", "),
+			strings.Join(ValidScannerNames, ", "))
+	}
+	return nil
+}
+
+// isScannerEnabled returns true when the given scanner name is enabled
+// according to the Scanners filter. If the filter is empty every scanner
+// is enabled (backward-compatible default).
+func isScannerEnabled(name string, scanners []string) bool {
+	if len(scanners) == 0 {
+		return true
+	}
+	lower := strings.ToLower(name)
+	for _, s := range scanners {
+		if strings.ToLower(s) == lower {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanConfig encapsulates all parameters needed for scan execution.
 type ScanConfig struct {
 	Target          string
 	Timeout         int
 	SafeMode        bool
 	VerifyFindings  bool
+	Scanners        []string // optional list of scanner names to run; empty means all
 	AuthConfig      *auth.AuthConfig
 	RateLimitConfig ratelimit.Config
 	Tracer          trace.Tracer // optional, for MCP tracing
@@ -371,9 +418,13 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		ActiveMode:      !cfg.SafeMode,
 	}
 
-	// Perform the (always-active) passive header scan.
-	headerScanner := NewHTTPHeadersScanner(buildHeaderOpts(common)...)
-	headerResult := headerScanner.Scan(ctx, cfg.Target)
+	// Perform the passive header scan (skipped when --scanners is set and
+	// does not include "headers").
+	var headerResult *HeaderScanResult
+	if isScannerEnabled("headers", cfg.Scanners) {
+		headerScanner := NewHTTPHeadersScanner(buildHeaderOpts(common)...)
+		headerResult = headerScanner.Scan(ctx, cfg.Target)
+	}
 
 	intermediateResult := IntermediateScanResult{
 		Target:      cfg.Target,
@@ -381,7 +432,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		Headers:     headerResult,
 		Errors:      make([]string, 0),
 	}
-	if len(headerResult.Errors) > 0 {
+	if headerResult != nil && len(headerResult.Errors) > 0 {
 		intermediateResult.Errors = append(intermediateResult.Errors, headerResult.Errors...)
 	}
 
@@ -700,6 +751,18 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				getErrors:     func() []string { return xxeResult.Errors },
 				totalFindings: func() int { return len(xxeResult.Findings) },
 			},
+		}
+
+		// ── scanner filtering ─────────────────────────────────────────────
+		// If the caller specified a subset of scanners, keep only matching entries.
+		if len(cfg.Scanners) > 0 {
+			filtered := make([]activeScanEntry, 0, len(entries))
+			for _, e := range entries {
+				if isScannerEnabled(e.name, cfg.Scanners) {
+					filtered = append(filtered, e)
+				}
+			}
+			entries = filtered
 		}
 
 		// ── parallel scan ──────────────────────────────────────────────────

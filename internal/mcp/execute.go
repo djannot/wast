@@ -80,7 +80,7 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback scanner.ProgressCallback, callbackURL string) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, scanners []string, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback scanner.ProgressCallback, callbackURL string) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -96,6 +96,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 				Timeout:         timeout,
 				SafeMode:        safeMode,
 				VerifyFindings:  verifyFindings,
+				Scanners:        scanners,
 				AuthConfig:      authConfig,
 				RateLimitConfig: rateLimitConfig,
 				Tracer:          tracer,
@@ -117,6 +118,7 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 		Timeout:         timeout,
 		SafeMode:        safeMode,
 		VerifyFindings:  verifyFindings,
+		Scanners:        scanners,
 		AuthConfig:      authConfig,
 		RateLimitConfig: rateLimitConfig,
 		Tracer:          tracer,

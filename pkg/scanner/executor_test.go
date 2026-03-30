@@ -425,6 +425,179 @@ func TestVerifiedCountFromUnified(t *testing.T) {
 
 // TestCalculateFilteredCount_WithSSTI verifies that SSTI findings are correctly
 // included in the filtered count calculation.
+// ─── Scanner filtering tests ────────────────────────────────────────────────
+
+func TestValidateScanners_Valid(t *testing.T) {
+	err := ValidateScanners([]string{"xss", "sqli", "CSRF", "Headers"})
+	if err != nil {
+		t.Errorf("expected nil error for valid scanners, got: %v", err)
+	}
+}
+
+func TestValidateScanners_Invalid(t *testing.T) {
+	err := ValidateScanners([]string{"xss", "foobar", "baz"})
+	if err == nil {
+		t.Fatal("expected error for invalid scanners, got nil")
+	}
+	if !contains(err.Error(), "foobar") || !contains(err.Error(), "baz") {
+		t.Errorf("error should mention invalid names, got: %v", err)
+	}
+}
+
+func TestValidateScanners_Empty(t *testing.T) {
+	err := ValidateScanners(nil)
+	if err != nil {
+		t.Errorf("expected nil error for empty scanners, got: %v", err)
+	}
+}
+
+func TestIsScannerEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		scanner  string
+		list     []string
+		expected bool
+	}{
+		{"empty list enables all", "XSS", nil, true},
+		{"matching case-insensitive", "xss", []string{"XSS", "sqli"}, true},
+		{"not in list", "csrf", []string{"xss", "sqli"}, false},
+		{"exact match", "SQLi", []string{"sqli"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isScannerEnabled(tt.scanner, tt.list)
+			if got != tt.expected {
+				t.Errorf("isScannerEnabled(%q, %v) = %v, want %v", tt.scanner, tt.list, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExecuteScan_WithScannersFilter(t *testing.T) {
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         30,
+		SafeMode:        false,
+		VerifyFindings:  false,
+		Scanners:        []string{"xss", "sqli"},
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+	}
+
+	ctx := context.Background()
+	result, _ := ExecuteScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// XSS and SQLi should be present
+	if result.XSS == nil {
+		t.Error("Expected XSS result when xss scanner is selected")
+	}
+	if result.SQLi == nil {
+		t.Error("Expected SQLi result when sqli scanner is selected")
+	}
+
+	// Other active scanners should NOT be present
+	if result.CSRF != nil {
+		t.Error("Expected CSRF to be nil when not in scanners list")
+	}
+	if result.SSRF != nil {
+		t.Error("Expected SSRF to be nil when not in scanners list")
+	}
+	if result.NoSQLi != nil {
+		t.Error("Expected NoSQLi to be nil when not in scanners list")
+	}
+	if result.Redirect != nil {
+		t.Error("Expected Redirect to be nil when not in scanners list")
+	}
+	if result.CMDi != nil {
+		t.Error("Expected CMDi to be nil when not in scanners list")
+	}
+	if result.PathTraversal != nil {
+		t.Error("Expected PathTraversal to be nil when not in scanners list")
+	}
+	if result.SSTI != nil {
+		t.Error("Expected SSTI to be nil when not in scanners list")
+	}
+	if result.XXE != nil {
+		t.Error("Expected XXE to be nil when not in scanners list")
+	}
+
+	// Headers should also be nil (not in the list)
+	if result.Headers != nil {
+		t.Error("Expected Headers to be nil when not in scanners list")
+	}
+}
+
+func TestExecuteScan_ScannersFilterIncludesHeaders(t *testing.T) {
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         30,
+		SafeMode:        true,
+		Scanners:        []string{"headers"},
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+	}
+
+	ctx := context.Background()
+	result, _ := ExecuteScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	if result.Headers == nil {
+		t.Error("Expected Headers result when headers scanner is selected")
+	}
+}
+
+func TestExecuteScan_EmptyScannersRunsAll(t *testing.T) {
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         30,
+		SafeMode:        false,
+		Scanners:        nil, // empty = run all
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+	}
+
+	ctx := context.Background()
+	result, _ := ExecuteScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// All active scanners should run
+	if result.XSS == nil {
+		t.Error("Expected XSS result when no scanner filter")
+	}
+	if result.SQLi == nil {
+		t.Error("Expected SQLi result when no scanner filter")
+	}
+	if result.CSRF == nil {
+		t.Error("Expected CSRF result when no scanner filter")
+	}
+	if result.Headers == nil {
+		t.Error("Expected Headers result when no scanner filter")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCalculateFilteredCount_WithSSTI(t *testing.T) {
 	stats := &ScanStats{
 		TotalSSTIFindings: 4,
