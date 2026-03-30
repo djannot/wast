@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1393,10 +1394,60 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 	}, nil
 }
 
+// isContentRouting checks whether a GET parameter is used for content routing rather than
+// SQL injection. It sends a random non-SQL string and compares the response against the
+// baseline. If the random value also produces a significantly different response, the
+// parameter routes to different content pages and should not be tested for boolean-based SQLi.
+func (s *SQLiScanner) isContentRouting(ctx context.Context, baseURL *url.URL, paramName string, baseline *baselineResponse) bool {
+	randomValue := fmt.Sprintf("randomstring_%d", rand.Intn(99999))
+	resp, err := s.makeRequest(ctx, baseURL, paramName, randomValue)
+	if err != nil {
+		return false // On error, assume not content-routing and proceed with testing
+	}
+	return responseSignificantlyDiffers(resp, baseline)
+}
+
+// isContentRoutingPOST checks whether a POST parameter is used for content routing rather than
+// SQL injection. Same logic as isContentRouting but for POST requests.
+func (s *SQLiScanner) isContentRoutingPOST(ctx context.Context, baseURL *url.URL, paramName string, baseline *baselineResponse, allParameters map[string]string) bool {
+	randomValue := fmt.Sprintf("randomstring_%d", rand.Intn(99999))
+	resp, err := s.makeRequestPOST(ctx, baseURL, paramName, randomValue, allParameters)
+	if err != nil {
+		return false
+	}
+	return responseSignificantlyDiffers(resp, baseline)
+}
+
+// responseSignificantlyDiffers returns true if the response differs significantly from the
+// baseline, using the same thresholds as the boolean-based differential analysis.
+func responseSignificantlyDiffers(resp *responseCharacteristics, baseline *baselineResponse) bool {
+	// Status code difference
+	if resp.StatusCode != baseline.StatusCode {
+		return true
+	}
+
+	// Length difference using the same 10% threshold used in single-payload analysis
+	if baseline.BodyLength > 0 {
+		lengthDiff := abs(resp.BodyLength - baseline.BodyLength)
+		if lengthDiff > baseline.BodyLength/10 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // testBooleanBased tests a single parameter with a boolean-based SQL injection payload.
 // It now performs differential analysis with complementary payloads to reduce false positives.
 func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse) *SQLiFinding {
 	if baseline == nil {
+		return nil
+	}
+
+	// Content-routing pre-check: send a random non-SQL string and compare against the baseline.
+	// If a random value also produces a significantly different response, the parameter is used
+	// for content routing (e.g., switching between documentation pages), not SQL injection.
+	if s.isContentRouting(ctx, baseURL, paramName, baseline) {
 		return nil
 	}
 
@@ -1823,6 +1874,13 @@ func (s *SQLiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 // testBooleanBasedPOST tests a single parameter with a boolean-based SQL injection payload using POST.
 func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL, paramName string, payload sqliPayload, baseline *baselineResponse, allParameters map[string]string) *SQLiFinding {
 	if baseline == nil {
+		return nil
+	}
+
+	// Content-routing pre-check: send a random non-SQL string and compare against the baseline.
+	// If a random value also produces a significantly different response, the parameter is used
+	// for content routing (e.g., switching between documentation pages), not SQL injection.
+	if s.isContentRoutingPOST(ctx, baseURL, paramName, baseline, allParameters) {
 		return nil
 	}
 
