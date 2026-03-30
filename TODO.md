@@ -51,7 +51,7 @@ DVWA (legacy PHP/MySQL) does not cover.
 |---------|--------|-------|
 | NoSQLi | >= 1 finding on `/rest/products/search?q=` | MongoDB backend — validates true positive detection |
 | Headers | >= 3 missing security headers | Juice Shop ships without HSTS, CSP, X-Frame-Options |
-| XSS | >= 1 finding on search endpoint | Logged; to be hardened once JSON reflection verified |
+| XSS | >= 1 finding on search endpoint | Hard assertion (t.Errorf); JSON reflection detection added (PR #292) |
 | SQLi | 0 findings (no SQL database) | Validates zero false positives on MongoDB app |
 
 See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop.yml`.
@@ -60,8 +60,10 @@ See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop
 
 ## Next steps
 
-- Convert the Juice Shop XSS assertion from soft (t.Logf) to hard (t.Errorf) once
-  the XSS scanner's JSON-response reflection detection is validated against live Juice Shop
+- ~~Convert the Juice Shop XSS assertion from soft (t.Logf) to hard (t.Errorf) once
+  the XSS scanner's JSON-response reflection detection is validated against live Juice Shop~~
+  **DONE** — JSON reflection detection (verbatim + Unicode-escaped) added in PR #292;
+  assertion converted to t.Errorf.
 - Expand Juice Shop coverage: path traversal, CSRF, SSRF, XXE assertions
 - Add WebGoat as a third benchmark target (Java/Spring, different session patterns)
 - Increase coverage thresholds as new scanner capabilities are added

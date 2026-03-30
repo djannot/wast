@@ -3381,3 +3381,138 @@ var startMarker = "Use <!-- to open an HTML comment";
 		t.Errorf("Found vulnerabilities but none for the expected payload %q", testPayload)
 	}
 }
+
+// TestAnalyzeJSONContext_VerbatimReflection verifies that a payload reflected
+// verbatim inside a JSON response body is detected with medium confidence.
+func TestAnalyzeJSONContext_VerbatimReflection(t *testing.T) {
+	payload := "<script>alert('XSS')</script>"
+	// JSON body containing the payload verbatim inside a string value.
+	body := `{"data":[{"id":1,"name":"` + payload + `","description":"test"}]}`
+
+	reflected, confidence := analyzeJSONContext(body, payload)
+
+	if !reflected {
+		t.Error("analyzeJSONContext: expected reflected=true for verbatim payload in JSON string value, got false")
+	}
+	if confidence != "medium" {
+		t.Errorf("analyzeJSONContext: expected confidence 'medium' for JSON reflection, got %q", confidence)
+	}
+}
+
+// TestAnalyzeJSONContext_UnicodeEscapedReflection verifies that a payload whose
+// angle-bracket characters have been JSON Unicode-escaped (\\u003c / \\u003e) is
+// still detected, because Node.js and Go's encoding/json both apply this escaping
+// by default.
+func TestAnalyzeJSONContext_UnicodeEscapedReflection(t *testing.T) {
+	payload := "<script>alert('XSS')</script>"
+	// JSON body with angle brackets Unicode-escaped as \u003c / \u003e —
+	// the typical output of Node.js JSON.stringify and Go's encoding/json.
+	body := `{"data":[{"id":1,"name":"\u003cscript\u003ealert('XSS')\u003c/script\u003e","description":"test"}]}`
+
+	reflected, confidence := analyzeJSONContext(body, payload)
+
+	if !reflected {
+		t.Error("analyzeJSONContext: expected reflected=true for Unicode-escaped payload in JSON body, got false")
+	}
+	if confidence != "medium" {
+		t.Errorf("analyzeJSONContext: expected confidence 'medium' for JSON reflection, got %q", confidence)
+	}
+}
+
+// TestAnalyzeJSONContext_NoReflection is the no-reflection baseline: a JSON body
+// that does not contain the payload (verbatim or encoded) must return reflected=false.
+func TestAnalyzeJSONContext_NoReflection(t *testing.T) {
+	payload := "<script>alert('XSS')</script>"
+	body := `{"data":[{"id":1,"name":"safe product","description":"nothing here"}]}`
+
+	reflected, confidence := analyzeJSONContext(body, payload)
+
+	if reflected {
+		t.Errorf("analyzeJSONContext: expected reflected=false for body without payload, got true (confidence=%q)", confidence)
+	}
+}
+
+// TestXSSScanner_Scan_JSONResponseVerbatim verifies that the XSS scanner reports a
+// finding when the response Content-Type is application/json and the payload is
+// reflected verbatim in a JSON string value.
+func TestXSSScanner_Scan_JSONResponseVerbatim(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert('XSS')</script>"
+	jsonBody := `{"data":[{"id":1,"name":"` + testPayload + `"}]}`
+
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	mock.responses["https://example.com/api/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(jsonBody)),
+		Header:     header,
+	}
+
+	sc := NewXSSScanner(WithXSSHTTPClient(mock))
+	ctx := context.Background()
+	result := sc.Scan(ctx, "https://example.com/api/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected >=1 XSS finding for verbatim payload in JSON response, got 0 (tests: %d)", result.Summary.TotalTests)
+	}
+
+	for _, f := range result.Findings {
+		if f.Payload == testPayload {
+			if f.Confidence != "medium" {
+				t.Errorf("Expected confidence 'medium' for JSON-reflected XSS, got %q", f.Confidence)
+			}
+			return
+		}
+	}
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Findings present but none match expected payload %q", testPayload)
+	}
+}
+
+// TestXSSScanner_Scan_JSONResponseUnicodeEscaped verifies that the XSS scanner reports
+// a finding when the JSON response contains the payload with angle brackets Unicode-escaped
+// (\\u003c / \\u003e), as produced by Node.js JSON.stringify and Go encoding/json.
+func TestXSSScanner_Scan_JSONResponseUnicodeEscaped(t *testing.T) {
+	mock := newMockXSSHTTPClient()
+
+	testPayload := "<script>alert('XSS')</script>"
+	// Simulate Node.js JSON.stringify output with Unicode-escaped angle brackets.
+	jsonBody := `{"data":[{"id":1,"name":"\u003cscript\u003ealert('XSS')\u003c/script\u003e"}]}`
+
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	mock.responses["https://example.com/api/search?q=%3Cscript%3Ealert%28%27XSS%27%29%3C%2Fscript%3E"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(jsonBody)),
+		Header:     header,
+	}
+
+	sc := NewXSSScanner(WithXSSHTTPClient(mock))
+	ctx := context.Background()
+	result := sc.Scan(ctx, "https://example.com/api/search?q=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected >=1 XSS finding for Unicode-escaped payload in JSON response, got 0 (tests: %d)", result.Summary.TotalTests)
+	}
+
+	for _, f := range result.Findings {
+		if f.Payload == testPayload {
+			if f.Confidence != "medium" {
+				t.Errorf("Expected confidence 'medium' for JSON-reflected XSS, got %q", f.Confidence)
+			}
+			return
+		}
+	}
+	if result.Summary.VulnerabilitiesFound > 0 {
+		t.Errorf("Findings present but none match expected payload %q", testPayload)
+	}
+}
