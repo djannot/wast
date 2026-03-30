@@ -72,6 +72,14 @@ test-juiceshop:
 	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/juiceshop/...
 	@echo "Juice Shop integration tests complete"
 
+# Run WebGoat integration tests
+.PHONY: test-webgoat
+test-webgoat:
+	@echo "Running WebGoat integration tests..."
+	@echo "Starting WebGoat container (this may take a minute)..."
+	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/webgoat/...
+	@echo "WebGoat integration tests complete"
+
 # Run tests with coverage report
 .PHONY: test-coverage
 test-coverage: test
@@ -154,6 +162,7 @@ help:
 	@echo "  test-integration Run integration tests"
 	@echo "  test-dvwa        Run DVWA integration tests"
 	@echo "  test-juiceshop   Run Juice Shop integration tests"
+	@echo "  test-webgoat     Run WebGoat integration tests"
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  fmt-check        Check code formatting"

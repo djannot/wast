@@ -147,3 +147,27 @@ jobs:
       - name: Stop Juice Shop containers
         if: always()
         run: docker compose -f docker-compose.juiceshop.yml down -v
+
+  integration-webgoat:
+    name: WebGoat Integration Tests
+    runs-on: ubuntu-latest
+    if: ${{ vars.RUN_WEBGOAT_TESTS == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Download dependencies
+        run: make deps
+
+      - name: Run WebGoat integration tests
+        run: make test-webgoat
+
+      - name: Stop WebGoat containers
+        if: always()
+        run: docker compose -f docker-compose.webgoat.yml down -v

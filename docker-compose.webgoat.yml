@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  webgoat:
+    image: webgoat/webgoat:latest
+    container_name: webgoat-test
+    ports:
+      - "8888:8888"
+    environment:
+      - WEBGOAT_PORT=8888
+      - WEBWOLF_PORT=9090
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8888/WebGoat/login"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
