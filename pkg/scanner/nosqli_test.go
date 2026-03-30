@@ -950,3 +950,54 @@ func TestNoSQLiScanner_ConfirmVarianceIsInjection_Unit(t *testing.T) {
 		}
 	})
 }
+
+// TestNoSQLiScanner_BaselineDrift_POST verifies that the POST differential
+// analysis discards findings when the baseline has drifted due to external
+// modifications (e.g., concurrent scanners storing content on the same page).
+func TestNoSQLiScanner_BaselineDrift_POST(t *testing.T) {
+	// Simulate a stored-content page: every POST stores content, making the
+	// response body grow monotonically.  The scanner's baseline was captured
+	// early (body=1000).  By the time the payload is tested, concurrent
+	// activity has grown the page to 1400 (+40%).  A fresh baseline re-capture
+	// also returns ~1400, proving the drift is external — not injection.
+	requestCount := 0
+	mockClient := &handlerNoSQLiHTTPClient{
+		handler: func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			// First request: baseline capture (body=1000)
+			// Subsequent requests: page has grown due to concurrent activity
+			var bodyLen int
+			if requestCount <= 1 {
+				bodyLen = 1000
+			} else {
+				bodyLen = 1400 // 40% larger — significant drift
+			}
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", bodyLen))),
+			}, nil
+		},
+	}
+
+	s := NewNoSQLiScanner(WithNoSQLiHTTPClient(mockClient))
+
+	parsedURL, err := url.Parse("http://example.com/guestbook")
+	if err != nil {
+		t.Fatalf("Failed to parse URL: %v", err)
+	}
+
+	params := map[string]string{"txtName": "test", "btnSign": "Sign"}
+
+	result := s.ScanPOST(context.Background(), parsedURL.String(), params)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// No findings should be reported because the baseline drifted significantly,
+	// indicating external page modifications rather than injection.
+	for _, f := range result.Findings {
+		if f.Confidence == "medium" && strings.Contains(f.Evidence, "Response changed significantly") {
+			t.Errorf("Expected no differential-analysis findings on a drifting page, but got: param=%s payload=%s", f.Parameter, f.Payload)
+		}
+	}
+}
