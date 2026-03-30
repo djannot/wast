@@ -2,6 +2,8 @@ package commands
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/output"
@@ -33,6 +35,7 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var crawlDepth int
 	var concurrency int
 	var scanConcurrency int
+	var scanners []string
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -82,7 +85,8 @@ Examples:
   wast scan https://example.com --output json      # JSON output for AI
   wast scan https://example.com --timeout 60       # Custom timeout
   wast scan https://example.com --rate-limit 1     # 1 request per second
-  wast scan https://example.com --discover --active # Crawl then scan discovered endpoints`,
+  wast scan https://example.com --discover --active # Crawl then scan discovered endpoints
+  wast scan https://example.com --active --scanners xss,sqli  # Run only XSS and SQLi scanners`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
 			authConfig := getAuthConfig()
@@ -154,6 +158,17 @@ Examples:
 			}
 			target = validatedURL
 
+			// Validate scanner names if provided
+			if len(scanners) > 0 {
+				if err := scanner.ValidateScanners(scanners); err != nil {
+					formatter.Failure("scan", "Invalid --scanners flag", map[string]interface{}{
+						"error":          err.Error(),
+						"valid_scanners": strings.Join(scanner.ValidScannerNames, ", "),
+					})
+					return
+				}
+			}
+
 			// Display warning when active testing is enabled (only in text mode)
 			if !safeMode && formatter.Format() == output.FormatText {
 				formatter.Info("⚠️  ACTIVE TESTING ENABLED: Sending potentially dangerous payloads to " + target + ". Ensure you have permission to test this target.")
@@ -173,6 +188,7 @@ Examples:
 						Timeout:         timeout,
 						SafeMode:        safeMode,
 						VerifyFindings:  verify,
+						Scanners:        scanners,
 						AuthConfig:      authConfig,
 						RateLimitConfig: rateLimitConfig,
 						Tracer:          nil, // CLI doesn't use tracing
@@ -189,6 +205,7 @@ Examples:
 					Timeout:         timeout,
 					SafeMode:        safeMode,
 					VerifyFindings:  verify,
+					Scanners:        scanners,
 					AuthConfig:      authConfig,
 					RateLimitConfig: rateLimitConfig,
 					Tracer:          nil, // CLI doesn't use tracing
@@ -237,6 +254,7 @@ Examples:
 	cmd.Flags().IntVar(&crawlDepth, "depth", 2, "Maximum crawl depth for discovery mode (used with --discover)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for the crawl phase (used with --discover)")
 	cmd.Flags().IntVar(&scanConcurrency, "scan-concurrency", 5, "Number of concurrent workers for scanning discovered targets (used with --discover)")
+	cmd.Flags().StringSliceVar(&scanners, "scanners", nil, fmt.Sprintf("Comma-separated list of scanners to run (e.g. xss,sqli,csrf). Valid: %s. Default: all", strings.Join(scanner.ValidScannerNames, ", ")))
 
 	return cmd
 }

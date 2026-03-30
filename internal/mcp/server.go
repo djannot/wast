@@ -14,6 +14,7 @@ import (
 
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/ratelimit"
+	"github.com/djannot/wast/pkg/scanner"
 	"github.com/djannot/wast/pkg/urlutil"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -510,6 +511,13 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"type":        "string",
 				"description": "Callback server base URL for out-of-band SSRF detection (e.g., http://callback.example.com:8888)",
 			},
+			"scanners": map[string]interface{}{
+				"type":        "array",
+				"description": "List of scanner names to run (e.g. [\"xss\",\"sqli\"]). Valid: xss, sqli, nosqli, csrf, ssrf, redirect, cmdi, pathtraversal, ssti, xxe, headers. Default: all scanners",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
 		},
 		"required": []string{"target"},
 	}
@@ -538,6 +546,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		LoginTokenField   string   `json:"login_token_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 		CallbackURL       string   `json:"callback_url"`
+		Scanners          []string `json:"scanners"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -608,7 +617,14 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 	}
 
 	// Execute scan command logic
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, authConfig, rateLimitConfig, t.server.tracer, progressCallback, args.CallbackURL)
+	// Validate scanner names if provided
+	if len(args.Scanners) > 0 {
+		if err := scanner.ValidateScanners(args.Scanners); err != nil {
+			return nil, err
+		}
+	}
+
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, args.Scanners, authConfig, rateLimitConfig, t.server.tracer, progressCallback, args.CallbackURL)
 
 	return result, nil
 }
