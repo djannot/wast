@@ -200,7 +200,7 @@ func TestBaseScanner_GetBaselineWithTimingPOST(t *testing.T) {
 
 	parsedURL, _ := url.Parse("http://example.com/submit")
 	allParams := map[string]string{"ip": "127.0.0.1", "submit": "Submit"}
-	baseline, _ := b.getBaselineWithTimingPOST(context.Background(), parsedURL, "ip", allParams, "test")
+	baseline, _ := b.getBaselineWithTimingPOST(context.Background(), parsedURL, allParams, "test")
 	if baseline == nil {
 		t.Fatal("expected non-nil baseline")
 	}
@@ -219,7 +219,7 @@ func TestBaseScanner_GetBaselineWithTimingPOST_DefaultParamValue(t *testing.T) {
 	parsedURL, _ := url.Parse("http://example.com/cmd")
 	// The "cmd" parameter starts empty; the default "test" should be used.
 	allParams := map[string]string{"cmd": "", "submit": "Submit"}
-	b.getBaselineWithTimingPOST(context.Background(), parsedURL, "cmd", allParams, "test")
+	b.getBaselineWithTimingPOST(context.Background(), parsedURL, allParams, "test")
 
 	if mock.lastRequest == nil {
 		t.Fatal("no request was made")
@@ -228,6 +228,63 @@ func TestBaseScanner_GetBaselineWithTimingPOST_DefaultParamValue(t *testing.T) {
 	bodyStr := string(bodyBytes)
 	if !strings.Contains(bodyStr, "cmd=test") {
 		t.Errorf("expected cmd=test in body (empty replaced by default), got %q", bodyStr)
+	}
+}
+
+// TestBaseScanner_GetBaselineWithTimingPOST_AllEmptyParamsReplaced verifies that ALL
+// empty parameter values (not just the target parameter) are replaced with the default.
+// This documents the intentional scope expansion vs. the original CMDi implementation
+// that only substituted the target parameter.
+func TestBaseScanner_GetBaselineWithTimingPOST_AllEmptyParamsReplaced(t *testing.T) {
+	mock := &mockBaseHTTPClient{statusCode: 200, body: "ok"}
+	b := newBaseScanner()
+	b.client = mock
+
+	parsedURL, _ := url.Parse("http://example.com/cmd")
+	// "cmd" is the scan target; "extra" is an unrelated optional field — both empty.
+	allParams := map[string]string{"cmd": "", "extra": "", "submit": "Submit"}
+	b.getBaselineWithTimingPOST(context.Background(), parsedURL, allParams, "test")
+
+	if mock.lastRequest == nil {
+		t.Fatal("no request was made")
+	}
+	bodyBytes, _ := io.ReadAll(mock.lastRequest.Body)
+	bodyStr := string(bodyBytes)
+	// Both empty parameters should be replaced, not just the target.
+	if !strings.Contains(bodyStr, "cmd=test") {
+		t.Errorf("expected cmd=test in body, got %q", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "extra=test") {
+		t.Errorf("expected extra=test in body (non-target empty param also replaced), got %q", bodyStr)
+	}
+}
+
+// TestBaseScanner_GetBaselineWithTimingPOST_PopulatesDataFields verifies that the POST
+// baseline populates DataWordCount, DataContent, and DataRowCount via analyzeResponse.
+// This is a regression test for the behavioral fix that restores parity with the
+// original SQLiScanner.getBaselineWithTimingPOST implementation.
+func TestBaseScanner_GetBaselineWithTimingPOST_PopulatesDataFields(t *testing.T) {
+	// Use a body that will produce non-zero DataWordCount via analyzeResponse.
+	// A simple HTML table gives us table rows with data cells.
+	tableBody := `<html><body><table>
+		<tr><td>user1</td><td>password1</td></tr>
+		<tr><td>user2</td><td>password2</td></tr>
+	</table></body></html>`
+	mock := &mockBaseHTTPClient{statusCode: 200, body: tableBody}
+	b := newBaseScanner()
+	b.client = mock
+
+	parsedURL, _ := url.Parse("http://example.com/submit")
+	allParams := map[string]string{"id": "1"}
+	baseline, _ := b.getBaselineWithTimingPOST(context.Background(), parsedURL, allParams, "")
+	if baseline == nil {
+		t.Fatal("expected non-nil baseline")
+	}
+	if baseline.DataWordCount == 0 {
+		t.Error("expected non-zero DataWordCount in POST baseline (regression: analyzeResponse must be called)")
+	}
+	if baseline.DataContent == "" {
+		t.Error("expected non-empty DataContent in POST baseline")
 	}
 }
 
@@ -240,7 +297,7 @@ func TestBaseScanner_GetBaselineWithTimingPOST_NoDefaultParamValue(t *testing.T)
 
 	parsedURL, _ := url.Parse("http://example.com/form")
 	allParams := map[string]string{"field": ""}
-	b.getBaselineWithTimingPOST(context.Background(), parsedURL, "field", allParams, "")
+	b.getBaselineWithTimingPOST(context.Background(), parsedURL, allParams, "")
 
 	bodyBytes, _ := io.ReadAll(mock.lastRequest.Body)
 	bodyStr := string(bodyBytes)

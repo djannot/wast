@@ -671,7 +671,7 @@ func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
 	// Pass "" as defaultParamValue: SQLi parameters should already be non-empty; no
 	// substitution is required.
-	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, paramName, allParameters, "")
+	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, allParameters, "")
 }
 
 // testErrorBased tests a single parameter with an error-based SQL injection payload.

@@ -64,6 +64,9 @@ type responseCharacteristics struct {
 
 // makeRequest is a helper to make a GET request with a specific payload value
 // injected into the named query parameter.
+//
+// Note: Rate limiting is the caller's responsibility — apply rateLimiter.Wait
+// before calling this method.
 func (b *BaseScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string) (*responseCharacteristics, error) {
 	testURL := *baseURL
 	q := testURL.Query()
@@ -116,6 +119,9 @@ func (b *BaseScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 // makeRequestPOST is a helper to make a POST request with a specific payload value
 // injected into the named form parameter. allParameters provides the full set of
 // form fields; paramName is overridden with payloadValue.
+//
+// Note: Rate limiting is the caller's responsibility — apply rateLimiter.Wait
+// before calling this method.
 func (b *BaseScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string, allParameters map[string]string) (*responseCharacteristics, error) {
 	// Build form data from all parameters, then override the target parameter.
 	formData := url.Values{}
@@ -175,6 +181,14 @@ func (b *BaseScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 // defaultValue controls what placeholder is used when the parameter is absent from
 // the URL – pass "1" for numeric contexts (e.g. SQLi) or "test" for string contexts
 // (e.g. CMDi).
+//
+// Note: BodyHash uses a length-based fingerprint (not MD5) because GET-path detection
+// relies on ContainsKey/word-count comparisons rather than hash equality — a length
+// fingerprint is sufficient. The POST baseline uses MD5 for stricter deduplication.
+// This intentional asymmetry is inherited from the original scanner implementations.
+//
+// Note: Rate limiting is the caller's responsibility — apply rateLimiter.Wait
+// before calling this method.
 func (b *BaseScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.URL, paramName, defaultValue string) (*baselineResponse, time.Duration) {
 	testURL := *baseURL
 	q := testURL.Query()
@@ -231,13 +245,26 @@ func (b *BaseScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 // getBaselineWithTimingPOST makes a POST request using the supplied parameters to
 // establish a baseline and measures the request duration for time-based detection.
 //
-// defaultParamValue, when non-empty, is substituted for any parameter whose value
-// is the empty string – this prevents apps that require a valid prefix from
-// returning an unrepresentative baseline. Pass "" to disable the substitution
-// (e.g. for SQLi where parameter values are always non-empty).
-func (b *BaseScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string, defaultParamValue string) (*baselineResponse, time.Duration) {
+// defaultParamValue, when non-empty, is substituted for every parameter whose value
+// is the empty string. This intentionally applies to ALL empty parameters (not just
+// the target parameter) to stabilise the baseline when a form has optional or
+// hidden fields with empty defaults. Pass "" to disable the substitution (e.g. for
+// SQLi where parameter values are always non-empty).
+//
+// Note: Rate limiting is the caller's responsibility. makeRequest and makeRequestPOST
+// are intentionally thin — apply rateLimiter.Wait before calling these methods to
+// avoid overloading the target server.
+//
+// Note: BodyHash uses MD5 (unlike the GET baseline which uses a length fingerprint).
+// This asymmetry is inherited from the original scanner implementations: GET detection
+// relies on ContainsKey/word-count comparisons, so a length fingerprint is sufficient;
+// POST detection uses hash-based deduplication where content equality matters more.
+func (b *BaseScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, allParameters map[string]string, defaultParamValue string) (*baselineResponse, time.Duration) {
 	formData := url.Values{}
 	for k, v := range allParameters {
+		// Intentionally replace all empty parameter values (not just the target
+		// parameter) so that optional/hidden fields don't produce an
+		// unrepresentative baseline. See function doc for rationale.
 		if v == "" && defaultParamValue != "" {
 			v = defaultParamValue
 		}
@@ -271,13 +298,18 @@ func (b *BaseScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 		return nil, 0
 	}
 
+	bodyStr := string(body)
+	_, _, _, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
 	hash := md5.Sum(body)
 
 	baseline := &baselineResponse{
-		StatusCode:  resp.StatusCode,
-		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", hash),
-		ContainsKey: string(body),
+		StatusCode:    resp.StatusCode,
+		BodyLength:    len(body),
+		BodyHash:      fmt.Sprintf("%x", hash),
+		ContainsKey:   bodyStr,
+		DataWordCount: dataWordCount,
+		DataContent:   dataContent,
+		DataRowCount:  dataRowCount,
 	}
 
 	return baseline, duration

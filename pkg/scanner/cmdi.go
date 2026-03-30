@@ -740,7 +740,7 @@ func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 // substituted with "test" so that apps requiring a non-empty prefix still produce a
 // representative baseline response.
 func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
-	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, paramName, allParameters, "test")
+	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, allParameters, "test")
 }
 
 // buildPrependedPayloads returns payload variants to try for a given parameter.
