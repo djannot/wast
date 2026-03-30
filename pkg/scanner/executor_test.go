@@ -318,3 +318,122 @@ func TestIntermediateScanResult(t *testing.T) {
 		t.Errorf("Expected 2 errors, got %d", len(result.Errors))
 	}
 }
+
+// TestApplyConfidenceFromResult exercises every branch of the helper, including
+// the previously-uncovered edge case where Verified is true but Confidence ≤ 0.5.
+func TestApplyConfidenceFromResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		vr         VerificationResult
+		wantConf   string
+	}{
+		{
+			name:     "high confidence",
+			vr:       VerificationResult{Verified: true, Confidence: 0.9},
+			wantConf: "high",
+		},
+		{
+			name:     "high confidence boundary (exactly 0.8 is not high)",
+			vr:       VerificationResult{Verified: true, Confidence: 0.8},
+			wantConf: "medium",
+		},
+		{
+			name:     "medium confidence",
+			vr:       VerificationResult{Verified: true, Confidence: 0.7},
+			wantConf: "medium",
+		},
+		{
+			name:     "medium confidence boundary (exactly 0.5 is not medium)",
+			vr:       VerificationResult{Verified: true, Confidence: 0.5},
+			wantConf: "low",
+		},
+		{
+			name:     "verified but low confidence",
+			vr:       VerificationResult{Verified: true, Confidence: 0.3},
+			wantConf: "low",
+		},
+		{
+			name:     "not verified",
+			vr:       VerificationResult{Verified: false, Confidence: 0.9},
+			wantConf: "low",
+		},
+		{
+			name:     "not verified zero confidence",
+			vr:       VerificationResult{Verified: false, Confidence: 0.0},
+			wantConf: "low",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := "unchanged"
+			applyConfidenceFromResult(&got, &tt.vr)
+			if got != tt.wantConf {
+				t.Errorf("applyConfidenceFromResult() confidence = %q, want %q", got, tt.wantConf)
+			}
+		})
+	}
+}
+
+// TestVerifiedCountFromUnified checks that the helper counts all scanner result
+// types, including SSTI which was previously omitted.
+func TestVerifiedCountFromUnified(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *UnifiedScanResult
+		want   int
+	}{
+		{
+			name:   "nil result fields",
+			result: &UnifiedScanResult{},
+			want:   0,
+		},
+		{
+			name: "counts all scanner types including SSTI",
+			result: &UnifiedScanResult{
+				XSS:           &XSSScanResult{Findings: []XSSFinding{{}, {}}},            // 2
+				SQLi:          &SQLiScanResult{Findings: []SQLiFinding{{}}},                // 1
+				NoSQLi:        &NoSQLiScanResult{Findings: []NoSQLiFinding{{}, {}, {}}},   // 3
+				CSRF:          &CSRFScanResult{Findings: []CSRFFinding{}},                  // 0
+				SSRF:          &SSRFScanResult{Findings: []SSRFFinding{{}}},                // 1
+				Redirect:      &RedirectScanResult{Findings: []RedirectFinding{{}}},        // 1
+				CMDi:          &CMDiScanResult{Findings: []CMDiFinding{{}}},                // 1
+				PathTraversal: &PathTraversalScanResult{Findings: []PathTraversalFinding{{}}}, // 1
+				SSTI:          &SSTIScanResult{Findings: []SSTIFinding{{}, {}}},            // 2
+				XXE:           &XXEScanResult{Findings: []XXEFinding{{}}},                  // 1
+			},
+			want: 13,
+		},
+		{
+			name: "only SSTI findings",
+			result: &UnifiedScanResult{
+				SSTI: &SSTIScanResult{Findings: []SSTIFinding{{}, {}, {}}},
+			},
+			want: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := verifiedCountFromUnified(tt.result)
+			if got != tt.want {
+				t.Errorf("verifiedCountFromUnified() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCalculateFilteredCount_WithSSTI verifies that SSTI findings are correctly
+// included in the filtered count calculation.
+func TestCalculateFilteredCount_WithSSTI(t *testing.T) {
+	stats := &ScanStats{
+		TotalSSTIFindings: 4,
+	}
+	result := &UnifiedScanResult{
+		SSTI: &SSTIScanResult{Findings: []SSTIFinding{{}}}, // 1 verified out of 4
+	}
+	got := CalculateFilteredCount(stats, result)
+	if got != 3 {
+		t.Errorf("CalculateFilteredCount() with SSTI = %d, want 3", got)
+	}
+}

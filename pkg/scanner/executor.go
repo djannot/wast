@@ -108,12 +108,18 @@ type activeScanEntry struct {
 // applyConfidenceFromResult updates a finding's Confidence string using the standard
 // three-tier logic (high/medium/low) derived from a VerificationResult. It is shared
 // by all scanners that expose a Confidence field.
+//
+// Mapping:
+//   - Verified && Confidence > 0.8  → "high"
+//   - Verified && Confidence > 0.5  → "medium"
+//   - all other cases (not verified, or verified with Confidence ≤ 0.5) → "low"
 func applyConfidenceFromResult(confidence *string, vr *VerificationResult) {
 	if vr.Verified && vr.Confidence > 0.8 {
 		*confidence = "high"
 	} else if vr.Verified && vr.Confidence > 0.5 {
 		*confidence = "medium"
-	} else if !vr.Verified {
+	} else {
+		// Covers !vr.Verified and the edge case vr.Verified && vr.Confidence <= 0.5.
 		*confidence = "low"
 	}
 }
@@ -209,6 +215,14 @@ func buildCSRFOpts(c CommonScannerConfig) []CSRFOption {
 	return opts
 }
 
+// buildSSRFOpts constructs the option slice for the SSRF scanner.
+//
+// Note on callback server instances: SSRF and XXE each receive their own
+// remoteCallbackClient (backed by a separate callback.Server). In the original
+// code a single instance was shared between the two scanners. Sharing is not
+// required because each scanner only waits on callback IDs it generated itself —
+// IDs are never cross-referenced between scanners. Having separate instances is
+// therefore semantically equivalent and keeps the builders self-contained.
 func buildSSRFOpts(c CommonScannerConfig, callbackURL string) []SSRFOption {
 	opts := []SSRFOption{WithSSRFTimeout(c.Timeout)}
 	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
@@ -312,6 +326,10 @@ func buildSSTIOpts(c CommonScannerConfig) []SSTIOption {
 	return opts
 }
 
+// buildXXEOpts constructs the option slice for the XXE scanner.
+//
+// See buildSSRFOpts for a note on why SSRF and XXE use separate callback server
+// instances rather than a shared one.
 func buildXXEOpts(c CommonScannerConfig, callbackURL string) []XXEOption {
 	opts := []XXEOption{WithXXETimeout(c.Timeout)}
 	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
@@ -699,19 +717,30 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				Delay:      500 * time.Millisecond,
 			}
 
+			// Build a name→entry map so that pre-verification finding counts
+			// are looked up by scanner name rather than by slice position.
+			// This makes the stats block resilient to insertion or reordering of
+			// entries — a mismatched mapping now fails loudly (nil-map lookup
+			// returning the zero activeScanEntry) rather than silently corrupting
+			// statistics.
+			entryByName := make(map[string]*activeScanEntry, len(entries))
+			for i := range entries {
+				entryByName[entries[i].name] = &entries[i]
+			}
+
 			// Capture pre-verification finding counts for stats reporting.
 			// NoSQLi also records its TotalTests from the summary (scanner-specific stat).
-			stats.TotalXSSFindings = entries[0].totalFindings()
-			stats.TotalSQLiFindings = entries[1].totalFindings()
-			stats.TotalNoSQLiFindings = entries[2].totalFindings()
-			stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
-			stats.TotalCSRFFindings = entries[3].totalFindings()
-			stats.TotalSSRFFindings = entries[4].totalFindings()
-			stats.TotalRedirectFindings = entries[5].totalFindings()
-			stats.TotalCMDiFindings = entries[6].totalFindings()
-			stats.TotalPathTraversalFindings = entries[7].totalFindings()
-			stats.TotalSSTIFindings = entries[8].totalFindings()
-			stats.TotalXXEFindings = entries[9].totalFindings()
+			stats.TotalXSSFindings           = entryByName["XSS"].totalFindings()
+			stats.TotalSQLiFindings          = entryByName["SQLi"].totalFindings()
+			stats.TotalNoSQLiFindings        = entryByName["NoSQLi"].totalFindings()
+			stats.TotalNoSQLiTests           = nosqliResult.Summary.TotalTests
+			stats.TotalCSRFFindings          = entryByName["CSRF"].totalFindings()
+			stats.TotalSSRFFindings          = entryByName["SSRF"].totalFindings()
+			stats.TotalRedirectFindings      = entryByName["Redirect"].totalFindings()
+			stats.TotalCMDiFindings          = entryByName["CMDi"].totalFindings()
+			stats.TotalPathTraversalFindings = entryByName["PathTraversal"].totalFindings()
+			stats.TotalSSTIFindings          = entryByName["SSTI"].totalFindings()
+			stats.TotalXXEFindings           = entryByName["XXE"].totalFindings()
 
 			// Verify and filter all scanners uniformly.
 			for _, e := range entries {
@@ -796,6 +825,11 @@ func verifiedCountFromUnified(r *UnifiedScanResult) int {
 	if r.PathTraversal != nil {
 		count += len(r.PathTraversal.Findings)
 	}
+	// SSTI findings are included so that verified SSTI results are correctly
+	// subtracted from the pre-verification total in CalculateFilteredCount.
+	if r.SSTI != nil {
+		count += len(r.SSTI.Findings)
+	}
 	if r.XXE != nil {
 		count += len(r.XXE.Findings)
 	}
@@ -816,6 +850,7 @@ func CalculateFilteredCount(stats *ScanStats, result *UnifiedScanResult) int {
 		stats.TotalRedirectFindings +
 		stats.TotalCMDiFindings +
 		stats.TotalPathTraversalFindings +
+		stats.TotalSSTIFindings +
 		stats.TotalXXEFindings
 
 	totalAfter := verifiedCountFromUnified(result)
