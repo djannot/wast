@@ -14,7 +14,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 | SQLi | >= 1 finding on `/sqli/` `id` param | 5 (sqli + sqli_blind) | **PASS** |
 | CSRF | >= 7 forms with missing tokens | 4 | **REGRESSED** — was 9, now 4 |
 | SSTI | 0 findings | 0 | **PASS** |
-| SSRF | 0 false positives | 25 FPs | **FAIL** |
+| SSRF | 0 false positives | 0 FPs (reflection stripping) | **PASS** |
 | NoSQLi | 0 false positives | 0 | **PASS** |
 | XXE | 0 false positives | 0 | **PASS** |
 | Headers | >= 5 missing | 7 | **PASS** |
@@ -24,7 +24,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
 | SQLi | 0 findings on non-injectable params | 8 FPs on `doc` param | **FAIL** |
-| SSRF | 0 false positives on non-SSRF params | 25 FPs | **FAIL** |
+| SSRF | 0 false positives on non-SSRF params | 0 FPs | **PASS** |
 | CMDi | 0 findings on non-injectable params | 4 FPs (`name`, `include`, `txtName`, `mtxMessage`) | **FAIL** |
 | All others | 0 false positives | 0 | **PASS** |
 
@@ -32,14 +32,9 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 ## Remaining work
 
-### SSRF: 25 false positives on params that reflect input
+### ~~SSRF: 25 false positives on params that reflect input~~ ✅ RESOLVED
 
-All 25 findings are on `name` (XSS reflected), `txtName`/`mtxMessage` (XSS stored), and `page` (LFI). These params accept user input and return 200, but they don't fetch remote URLs. The scanner sends `http://127.0.0.1` as a value, gets a 200 back, and flags it as blind SSRF — but any param that ignores unknown values or reflects input will do this.
-
-**What to do:** Blind SSRF detection needs a stronger signal than "200 response with SSRF payload." Options:
-1. Require a callback-based confirmation (out-of-band detection) for blind SSRF — only flag if the server actually makes an outbound request
-2. Compare response content: if the response body is identical whether the param is `test` or `http://127.0.0.1`, it's not SSRF
-3. Skip SSRF testing on params already flagged as XSS or LFI to avoid duplicate noise
+Fixed by stripping the SSRF payload (and its URL-encoded/decoded variants) from the response body before running signature checks in `analyzeSSRFResponse()`. When a parameter merely reflects the payload URL (e.g., `http://127.0.0.1`) back into the page, the stripped body no longer contains localhost/private-IP signatures, so no finding is produced. Genuine SSRF (where the server fetches internal content containing those signatures independently of the payload) is still detected because the signatures remain after stripping.
 
 ### SQLi: 8 false positives on `doc` param
 

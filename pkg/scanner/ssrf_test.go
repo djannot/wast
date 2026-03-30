@@ -1602,3 +1602,236 @@ func TestSSRFScanner_OnlyProvidedParams_POST_WithParams(t *testing.T) {
 		t.Errorf("Expected %d tests (1 param × %d payloads) in POST, got %d", expectedTests, len(ssrfPayloads), result.Summary.TotalTests)
 	}
 }
+
+// --- Tests for stripPayloadFromBody and reflection false-positive elimination ---
+
+func TestStripPayloadFromBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		payload  string
+		expected string
+	}{
+		{
+			name:     "strips full URL payload",
+			body:     `<html><body>You searched for: http://127.0.0.1</body></html>`,
+			payload:  "http://127.0.0.1",
+			expected: `<html><body>You searched for: </body></html>`,
+		},
+		{
+			name:     "strips URL-encoded payload",
+			body:     `<html><body>Value: http%3A%2F%2F127.0.0.1</body></html>`,
+			payload:  "http://127.0.0.1",
+			expected: `<html><body>Value: </body></html>`,
+		},
+		{
+			name:     "strips multiple occurrences",
+			body:     `http://127.0.0.1 was sent. Result: http://127.0.0.1`,
+			payload:  "http://127.0.0.1",
+			expected: ` was sent. Result: `,
+		},
+		{
+			name:     "case insensitive stripping",
+			body:     `You entered: HTTP://127.0.0.1 and http://127.0.0.1`,
+			payload:  "http://127.0.0.1",
+			expected: `You entered:  and `,
+		},
+		{
+			name:     "preserves bare IP when only full URL is payload",
+			body:     `Server at 192.168.1.1 returned: http://192.168.1.1`,
+			payload:  "http://192.168.1.1",
+			expected: `Server at 192.168.1.1 returned: `,
+		},
+		{
+			name:     "empty payload returns body unchanged",
+			body:     `<html>127.0.0.1</html>`,
+			payload:  "",
+			expected: `<html>127.0.0.1</html>`,
+		},
+		{
+			name:     "strips localhost URL",
+			body:     `Reflected: http://localhost/admin`,
+			payload:  "http://localhost/admin",
+			expected: `Reflected: `,
+		},
+		{
+			name:     "preserves unrelated content",
+			body:     `<html><body>Hello World</body></html>`,
+			payload:  "http://127.0.0.1",
+			expected: `<html><body>Hello World</body></html>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripPayloadFromBody(tt.body, tt.payload)
+			if result != tt.expected {
+				t.Errorf("stripPayloadFromBody() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSSRFScanner_FalsePositive_ReflectedPayload(t *testing.T) {
+	// Simulates a parameter that reflects user input (like DVWA XSS reflected page).
+	// The parameter echoes the full payload URL back into the page, which should
+	// NOT be flagged as SSRF.
+	mock := newMockSSRFHTTPClient()
+
+	// Baseline response with benign URL reflected
+	baselineBody := `<html><body>Hello https://example.com! Welcome.</body></html>`
+
+	// When SSRF payload is sent, the page reflects the payload URL
+	reflectedBody := `<html><body>Hello http://127.0.0.1! Welcome.</body></html>`
+
+	// Configure baseline response
+	mock.responses["https://example.com/xss_r/?name=https%3A%2F%2Fexample.com"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineBody)),
+		Header:     make(http.Header),
+	}
+
+	// Configure all payload responses to reflect the payload
+	for _, p := range ssrfPayloads {
+		encoded := url.QueryEscape(p.Payload)
+		key := "https://example.com/xss_r/?name=" + encoded
+		// Build a reflected body with the payload reflected
+		body := fmt.Sprintf(`<html><body>Hello %s! Welcome.</body></html>`, p.Payload)
+		mock.responses[key] = &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}
+	}
+
+	// Also handle the exact 127.0.0.1 payload specifically
+	_ = reflectedBody
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/xss_r/?name=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound > 0 {
+		for _, f := range result.Findings {
+			t.Errorf("Unexpected SSRF finding on reflecting parameter: %s (confidence: %s, payload: %s)",
+				f.Description, f.Confidence, f.Evidence)
+		}
+	}
+}
+
+func TestSSRFScanner_TruePositive_NotReflection(t *testing.T) {
+	// Simulates a real SSRF where the server actually fetches the URL and
+	// returns content from the internal service (containing localhost signatures
+	// that are NOT simply the reflected payload).
+	mock := newMockSSRFHTTPClient()
+
+	// Baseline with benign URL — server fetches example.com and returns its content
+	baselineBody := `<html><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples.</p></body></html>`
+	mock.responses["https://example.com/fetch?url=https%3A%2F%2Fexample.com"] = &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(baselineBody)),
+		Header:     make(http.Header),
+	}
+
+	// When localhost payload is sent, server fetches localhost and returns its content
+	localhostContent := `<html><body><h1>Apache2 Default Page</h1><p>It works! Server running on localhost port 80.</p></body></html>`
+	for _, p := range ssrfPayloads {
+		encoded := url.QueryEscape(p.Payload)
+		key := "https://example.com/fetch?url=" + encoded
+		mock.responses[key] = &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(localhostContent)),
+			Header:     make(http.Header),
+		}
+	}
+
+	scanner := NewSSRFScanner(WithSSRFHTTPClient(mock))
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/fetch?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected to find SSRF vulnerability for actual server-side fetch, but got none")
+	}
+}
+
+func TestSSRFScanner_AnalyzeSSRFResponse_ReflectedPayloadStripped(t *testing.T) {
+	// Directly test analyzeSSRFResponse with a body that only contains
+	// the reflected payload — should produce no finding.
+	scanner := NewSSRFScanner()
+
+	payload := ssrfPayload{
+		Payload:  "http://127.0.0.1",
+		Type:     "blind",
+		Severity: SeverityHigh,
+		Target:   "localhost",
+	}
+
+	// Body that reflects the payload
+	body := `<html><body>You entered: http://127.0.0.1</body></html>`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+	}
+
+	baseline := &ssrfBaselineResponse{
+		StatusCode:         200,
+		BodyLength:         len(`<html><body>You entered: https://example.com</body></html>`),
+		Body:               `<html><body>You entered: https://example.com</body></html>`,
+		Signatures:         []string{},
+		ContentHash:        "different",
+		WordCount:          5,
+		StructuralElements: 2,
+	}
+
+	confidence, _ := scanner.analyzeSSRFResponse(resp, body, payload, 0, baseline)
+
+	if confidence != "" {
+		t.Errorf("Expected empty confidence for reflected payload, got %q", confidence)
+	}
+}
+
+func TestSSRFScanner_AnalyzeSSRFResponse_RealSSRFNotStripped(t *testing.T) {
+	// Directly test analyzeSSRFResponse with a body that contains localhost
+	// signatures that are NOT the payload — should produce a finding.
+	scanner := NewSSRFScanner()
+
+	payload := ssrfPayload{
+		Payload:  "http://127.0.0.1",
+		Type:     "blind",
+		Severity: SeverityHigh,
+		Target:   "localhost",
+	}
+
+	// Body from an actual SSRF — the server fetched localhost and returned its page
+	body := `<html><body><h1>Welcome to localhost</h1><p>Apache running on 127.0.0.1:80</p></body></html>`
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+	}
+
+	baseline := &ssrfBaselineResponse{
+		StatusCode:         200,
+		BodyLength:         60,
+		Body:               `<html><body>External page content here</body></html>`,
+		Signatures:         []string{},
+		ContentHash:        "different-hash",
+		WordCount:          5,
+		StructuralElements: 2,
+	}
+
+	confidence, _ := scanner.analyzeSSRFResponse(resp, body, payload, 0, baseline)
+
+	if confidence == "" {
+		t.Error("Expected non-empty confidence for real SSRF with localhost signatures, got empty")
+	}
+}
