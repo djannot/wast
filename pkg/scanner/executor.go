@@ -74,8 +74,8 @@ type ScanStats struct {
 // scanner instances. It is derived from ScanConfig and used by buildXxxOpts helpers
 // to avoid duplicating the same auth/client/rate-limit/tracer logic for each scanner.
 type CommonScannerConfig struct {
-	Timeout         time.Duration
-	AuthConfig      *auth.AuthConfig
+	Timeout    time.Duration
+	AuthConfig *auth.AuthConfig
 	// HTTPClient is the shared client (with cookie jar). The redirect scanner receives a
 	// special no-redirect variant; all other scanners receive this client as-is.
 	HTTPClient      *http.Client
@@ -730,17 +730,17 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 
 			// Capture pre-verification finding counts for stats reporting.
 			// NoSQLi also records its TotalTests from the summary (scanner-specific stat).
-			stats.TotalXSSFindings           = entryByName["XSS"].totalFindings()
-			stats.TotalSQLiFindings          = entryByName["SQLi"].totalFindings()
-			stats.TotalNoSQLiFindings        = entryByName["NoSQLi"].totalFindings()
-			stats.TotalNoSQLiTests           = nosqliResult.Summary.TotalTests
-			stats.TotalCSRFFindings          = entryByName["CSRF"].totalFindings()
-			stats.TotalSSRFFindings          = entryByName["SSRF"].totalFindings()
-			stats.TotalRedirectFindings      = entryByName["Redirect"].totalFindings()
-			stats.TotalCMDiFindings          = entryByName["CMDi"].totalFindings()
+			stats.TotalXSSFindings = entryByName["XSS"].totalFindings()
+			stats.TotalSQLiFindings = entryByName["SQLi"].totalFindings()
+			stats.TotalNoSQLiFindings = entryByName["NoSQLi"].totalFindings()
+			stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
+			stats.TotalCSRFFindings = entryByName["CSRF"].totalFindings()
+			stats.TotalSSRFFindings = entryByName["SSRF"].totalFindings()
+			stats.TotalRedirectFindings = entryByName["Redirect"].totalFindings()
+			stats.TotalCMDiFindings = entryByName["CMDi"].totalFindings()
 			stats.TotalPathTraversalFindings = entryByName["PathTraversal"].totalFindings()
-			stats.TotalSSTIFindings          = entryByName["SSTI"].totalFindings()
-			stats.TotalXXEFindings           = entryByName["XXE"].totalFindings()
+			stats.TotalSSTIFindings = entryByName["SSTI"].totalFindings()
+			stats.TotalXXEFindings = entryByName["XXE"].totalFindings()
 
 			// Verify and filter all scanners uniformly.
 			for _, e := range entries {

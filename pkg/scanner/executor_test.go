@@ -323,9 +323,9 @@ func TestIntermediateScanResult(t *testing.T) {
 // the previously-uncovered edge case where Verified is true but Confidence ≤ 0.5.
 func TestApplyConfidenceFromResult(t *testing.T) {
 	tests := []struct {
-		name       string
-		vr         VerificationResult
-		wantConf   string
+		name     string
+		vr       VerificationResult
+		wantConf string
 	}{
 		{
 			name:     "high confidence",
@@ -391,16 +391,16 @@ func TestVerifiedCountFromUnified(t *testing.T) {
 		{
 			name: "counts all scanner types including SSTI",
 			result: &UnifiedScanResult{
-				XSS:           &XSSScanResult{Findings: []XSSFinding{{}, {}}},            // 2
-				SQLi:          &SQLiScanResult{Findings: []SQLiFinding{{}}},                // 1
-				NoSQLi:        &NoSQLiScanResult{Findings: []NoSQLiFinding{{}, {}, {}}},   // 3
-				CSRF:          &CSRFScanResult{Findings: []CSRFFinding{}},                  // 0
-				SSRF:          &SSRFScanResult{Findings: []SSRFFinding{{}}},                // 1
-				Redirect:      &RedirectScanResult{Findings: []RedirectFinding{{}}},        // 1
-				CMDi:          &CMDiScanResult{Findings: []CMDiFinding{{}}},                // 1
+				XSS:           &XSSScanResult{Findings: []XSSFinding{{}, {}}},                 // 2
+				SQLi:          &SQLiScanResult{Findings: []SQLiFinding{{}}},                   // 1
+				NoSQLi:        &NoSQLiScanResult{Findings: []NoSQLiFinding{{}, {}, {}}},       // 3
+				CSRF:          &CSRFScanResult{Findings: []CSRFFinding{}},                     // 0
+				SSRF:          &SSRFScanResult{Findings: []SSRFFinding{{}}},                   // 1
+				Redirect:      &RedirectScanResult{Findings: []RedirectFinding{{}}},           // 1
+				CMDi:          &CMDiScanResult{Findings: []CMDiFinding{{}}},                   // 1
 				PathTraversal: &PathTraversalScanResult{Findings: []PathTraversalFinding{{}}}, // 1
-				SSTI:          &SSTIScanResult{Findings: []SSTIFinding{{}, {}}},            // 2
-				XXE:           &XXEScanResult{Findings: []XXEFinding{{}}},                  // 1
+				SSTI:          &SSTIScanResult{Findings: []SSTIFinding{{}, {}}},               // 2
+				XXE:           &XXEScanResult{Findings: []XXEFinding{{}}},                     // 1
 			},
 			want: 13,
 		},
