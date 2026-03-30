@@ -1,74 +1,63 @@
 # WAST - TODO
 
-## Goal: Pass DVWA benchmark with zero false positives
+## Goal: Pass all benchmarks with zero false positives
 
-The CI runs a full discovery scan against DVWA (security=low) via `TestDVWA_FullDiscoveryScanAssertions`. All targets are met and assertions use hard failures (`t.Errorf`) so regressions break the build.
+The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every scanner must hit its target score **and** produce no false positives. All assertions use hard failures (`t.Errorf`) so regressions break the build.
 
-### Target scores
+### DVWA target scores (latest live scan 2026-03-30)
 
-| Scanner | Target | Current | Gap |
-|---------|--------|---------|-----|
-| XSS | >= 1 finding on `/xss_r/` `name` param | >= 1 | **PASS** (PR #280) |
-| CMDi | >= 1 finding on `/exec/` `ip` param (POST) | >= 1 | **PASS** (PR #280) |
-| Path Traversal | >= 1 finding on `/fi/` `page` param | >= 1 | **PASS** (PR #280) |
-| SQLi | >= 1 finding on `/sqli/` or `/brute/` `id`/`username` param | 5 (including `id`) | **PASS** (PR #276) |
-| CSRF | >= 7 forms with missing tokens | 9 | **PASS** |
-| SSTI | 0 findings (no template engines in DVWA) | 0 | **PASS** |
-| SSRF | 0 findings | 0 | **PASS** |
-| NoSQLi | 0 false positives on non-MongoDB app | 0 | **PASS** |
-| XXE | 0 false positives (no XXE in DVWA) | 0 | **PASS** |
-| Headers | >= 5 missing security headers | 7 | **PASS** |
+| Scanner | Target | Current | Status |
+|---------|--------|---------|--------|
+| XSS | >= 1 finding on `/xss_r/` `name` param | 26 (reflected + DOM + stored) | **PASS** |
+| CMDi | >= 1 finding on `/exec/` `ip` param (POST) | 17 (time-based + output-based) | **PASS** |
+| Path Traversal | >= 1 finding on `/fi/` `page` param | 3 | **PASS** |
+| SQLi | >= 1 finding on `/sqli/` `id` param | 5 (sqli + sqli_blind) | **PASS** |
+| CSRF | >= 7 forms with missing tokens | 4 | **REGRESSED** — was 9, now 4 |
+| SSTI | 0 findings | 0 | **PASS** |
+| SSRF | 0 false positives | 25 FPs | **FAIL** |
+| NoSQLi | 0 false positives | 0 | **PASS** |
+| XXE | 0 false positives | 0 | **PASS** |
+| Headers | >= 5 missing | 7 | **PASS** |
 
 ### False positive targets
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 0 FPs | **PASS** (PR #282) — `Change` on `/csrf/` fixed by adding `"change"` to `submitPatterns`; `ip` on `/exec/` fixed by `normalizeResponseContent()` correctly stripping `user_token` single-quoted hidden fields (the `['"]` delimiters in the named-token patterns already covered single quotes — the CSRF token noise was making `contentHashDiffers=true`, causing the FP) |
+| SQLi | 0 findings on non-injectable params | 8 FPs on `doc` param | **FAIL** |
+| SSRF | 0 false positives on non-SSRF params | 25 FPs | **FAIL** |
+| CMDi | 0 findings on non-injectable params | 4 FPs (`name`, `include`, `txtName`, `mtxMessage`) | **FAIL** |
 | All others | 0 false positives | 0 | **PASS** |
 
 ---
 
-## Completed
+## Remaining work
 
-All original DVWA benchmark targets have been achieved:
+### SSRF: 25 false positives on params that reflect input
 
-- **XSS** — `analyzeContext()` correctly identifies reflected payloads (PR #280)
-- **CMDi** — Detection logic matches live DVWA output (PR #280)
-- **Path Traversal** — Payloads reach PHP's `include()` correctly (PR #280)
-- **SQLi** — Zero false positives; CSRF token noise resolved via `normalizeResponseContent()` (PR #282)
-- All assertions in `test/integration/dvwa_test.go` use hard failures (`t.Errorf`) so regressions break the build.
-- **Open Redirect & XXE** — Zero-false-positive assertions added to `TestDVWA_FullDiscoveryScanAssertions` (PR #286)
+All 25 findings are on `name` (XSS reflected), `txtName`/`mtxMessage` (XSS stored), and `page` (LFI). These params accept user input and return 200, but they don't fetch remote URLs. The scanner sends `http://127.0.0.1` as a value, gets a 200 back, and flags it as blind SSRF — but any param that ignores unknown values or reflects input will do this.
 
----
+**What to do:** Blind SSRF detection needs a stronger signal than "200 response with SSRF payload." Options:
+1. Require a callback-based confirmation (out-of-band detection) for blind SSRF — only flag if the server actually makes an outbound request
+2. Compare response content: if the response body is identical whether the param is `test` or `http://127.0.0.1`, it's not SSRF
+3. Skip SSRF testing on params already flagged as XSS or LFI to avoid duplicate noise
 
-## Juice Shop benchmark (PR #290)
+### SQLi: 8 false positives on `doc` param
 
-Added OWASP Juice Shop as a second integration test target alongside DVWA.
-Juice Shop (Node.js/Angular + MongoDB + JWT) exercises scanner capabilities that
-DVWA (legacy PHP/MySQL) does not cover.
+The `doc` param on `instructions.php` switches between documentation pages (readme, PDF, changelog, copying). Different values produce different response sizes — this is normal content routing, not injection. The boolean-based differential analysis sees different content and flags it.
 
-| Scanner | Target | Notes |
-|---------|--------|-------|
-| NoSQLi | >= 1 finding on `/rest/products/search?q=` | MongoDB backend — validates true positive detection |
-| Headers | >= 3 missing security headers | Juice Shop ships without HSTS, CSP, X-Frame-Options |
-| XSS | >= 1 finding on search endpoint | Hard assertion (t.Errorf); JSON reflection detection added (PR #292) |
-| SQLi | 0 findings (no SQL database) | Validates zero false positives on MongoDB app |
+**What to do:** The differential analysis needs to distinguish between "response changes because input is injectable" vs "response changes because the app serves different content for different values." One approach: if the baseline value and a non-SQL value (e.g., `randomstring123`) also produce different responses, the param is content-routing, not injectable.
 
-See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop.yml`.
+### CMDi: 4 false positives on non-command params
 
----
+`name` on `/xss_r/`, `include` on `/csp/`, `txtName`/`mtxMessage` on `/xss_s/` are flagged as output-based CMDi. These params reflect input into the response — when the scanner sends `localhost; cat /etc/passwd` and the response contains `root:`, it flags CMDi. But the `root:` match is from the param reflection or stored XSS, not from actual command execution.
 
-## Next steps
+**What to do:** Output-based CMDi detection should verify the output is from command execution, not reflection. Options:
+1. Check if the command output appears in a different location than the injected param (reflection puts it where the param value goes; command execution appends it elsewhere)
+2. Use a unique canary in the command (e.g., `echo WAST_CANARY_12345`) and check for the canary — if reflected, both the command and canary appear; if executed, only the canary output appears
+3. Cross-reference with XSS findings — if a param is already flagged as reflected XSS, discount CMDi findings on the same param
 
-- ~~Convert the Juice Shop XSS assertion from soft (t.Logf) to hard (t.Errorf) once
-  the XSS scanner's JSON-response reflection detection is validated against live Juice Shop~~
-  **DONE** — JSON reflection detection (verbatim + Unicode-escaped) added in PR #292;
-  assertion converted to t.Errorf.
-- ~~Expand Juice Shop coverage: path traversal, CSRF, SSRF, XXE assertions~~
-  **DONE** — `TestJuiceShop_PathTraversal`, `TestJuiceShop_CSRF`, `TestJuiceShop_SSRF_NoFalsePositives`, and `TestJuiceShop_XXE_NoFalsePositives` added in PR #294; all four scanners also wired into `TestJuiceShop_FullScanSummary`.
-- ~~Add WebGoat as a third benchmark target (Java/Spring, different session patterns)~~
-  **DONE** — `docker-compose.webgoat.yml`, `test/integration/webgoat/webgoat_test.go`, `make test-webgoat`, and optional CI job added in PR #297; covers SQLi, XSS, PathTraversal, Headers assertions plus NoSQLi/XXE zero-false-positive checks.
-- ~~Increase coverage thresholds as new scanner capabilities are added~~
-  **DONE** — Minimum coverage threshold (MIN_COVERAGE=74%) enforced in CI via `make coverage-check`; initial threshold set ~5 pp below current total coverage of 78.8% (PR #300).
-- ~~Explore authenticated scanning improvements for other session management patterns~~
-  **DONE** — JWT-in-response-body authentication added to `PerformLogin` in PR #298; `LoginConfig.TokenField` allows custom dot-separated JSON paths; `LooksLikeJWT` exported from `pkg/api/jwt.go`; unit tests and `docs/authentication.md` updated.
+### CSRF: regression from 9 to 4
+
+Previously found 9 forms without CSRF tokens, now only 4. The hidden field filter (`field.Type == "hidden"`) may now be too aggressive — DVWA forms have `user_token` hidden fields that look like CSRF tokens to the scanner. But DVWA intentionally doesn't validate them on most forms, so they should still be flagged.
+
+**What to do:** Check if the CSRF scanner is now treating `user_token` as a valid CSRF token and skipping those forms. The scanner should verify that the token is actually validated server-side (e.g., submit the form without the token and check if it still succeeds) rather than just checking for the presence of a hidden field with a token-like name.
