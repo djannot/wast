@@ -41,8 +41,28 @@ All original DVWA benchmark targets have been achieved:
 
 ---
 
+## Juice Shop benchmark (PR #290)
+
+Added OWASP Juice Shop as a second integration test target alongside DVWA.
+Juice Shop (Node.js/Angular + MongoDB + JWT) exercises scanner capabilities that
+DVWA (legacy PHP/MySQL) does not cover.
+
+| Scanner | Target | Notes |
+|---------|--------|-------|
+| NoSQLi | >= 1 finding on `/rest/products/search?q=` | MongoDB backend — validates true positive detection |
+| Headers | >= 3 missing security headers | Juice Shop ships without HSTS, CSP, X-Frame-Options |
+| XSS | >= 1 finding on search endpoint | Logged; to be hardened once JSON reflection verified |
+| SQLi | 0 findings (no SQL database) | Validates zero false positives on MongoDB app |
+
+See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop.yml`.
+
+---
+
 ## Next steps
 
-- Expand the benchmark beyond DVWA to other test targets (e.g., WebGoat, Juice Shop)
+- Convert the Juice Shop XSS assertion from soft (t.Logf) to hard (t.Errorf) once
+  the XSS scanner's JSON-response reflection detection is validated against live Juice Shop
+- Expand Juice Shop coverage: path traversal, CSRF, SSRF, XXE assertions
+- Add WebGoat as a third benchmark target (Java/Spring, different session patterns)
 - Increase coverage thresholds as new scanner capabilities are added
 - Explore authenticated scanning improvements for other session management patterns
