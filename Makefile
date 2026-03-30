@@ -90,13 +90,21 @@ test-coverage: test
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
-# Check coverage meets minimum threshold
-.PHONY: coverage-check
-coverage-check: test
+# Check coverage against existing coverage.out (no test re-run)
+.PHONY: check-coverage
+check-coverage:
 	@echo "Checking coverage threshold (minimum: $(MIN_COVERAGE)%)..."
-	@COVERAGE=$$($(GOCMD) tool cover -func=coverage.out | grep total | awk '{print substr($$3, 1, length($$3)-1)}'); \
+	@COVERAGE=$$($(GOCMD) tool cover -func=coverage.out | grep "^total:" | awk '{print substr($$3, 1, length($$3)-1)}'); \
+	if [ -z "$${COVERAGE}" ]; then \
+		echo "ERROR: could not extract coverage from coverage.out"; \
+		exit 1; \
+	fi; \
 	echo "Total coverage: $${COVERAGE}%"; \
-	awk "BEGIN {if ($${COVERAGE}+0 < $(MIN_COVERAGE)) {print \"FAIL: coverage $${COVERAGE}% < $(MIN_COVERAGE)%\"; exit 1} else {print \"PASS\"}}"
+	awk -v cov="$${COVERAGE}" -v min="$(MIN_COVERAGE)" 'BEGIN {if (cov+0 < min+0) {print "FAIL: coverage " cov "% < " min "%"; exit 1} else {print "PASS"}}'
+
+# Run tests then check coverage threshold
+.PHONY: coverage-check
+coverage-check: test check-coverage
 
 # Run linters
 .PHONY: lint
@@ -170,7 +178,8 @@ help:
 	@echo "  build-all        Build for multiple platforms"
 	@echo "  test             Run tests with coverage"
 	@echo "  test-coverage    Generate HTML coverage report"
-	@echo "  coverage-check   Check coverage meets minimum threshold (MIN_COVERAGE=$(MIN_COVERAGE)%)"
+	@echo "  check-coverage   Check coverage against existing coverage.out (no test re-run, MIN_COVERAGE=$(MIN_COVERAGE)%)"
+	@echo "  coverage-check   Run tests then check coverage threshold (MIN_COVERAGE=$(MIN_COVERAGE)%)"
 	@echo "  test-integration Run integration tests"
 	@echo "  test-dvwa        Run DVWA integration tests"
 	@echo "  test-juiceshop   Run Juice Shop integration tests"

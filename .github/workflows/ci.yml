@@ -27,10 +27,7 @@ jobs:
         run: make test
 
       - name: Check coverage threshold
-        run: |
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
-          echo "Total coverage: ${COVERAGE}%"
-          awk "BEGIN {if (${COVERAGE}+0 < ${MIN_COVERAGE:-74}) {print \"FAIL: coverage ${COVERAGE}% < ${MIN_COVERAGE:-74}%\"; exit 1} else {print \"PASS\"}}"
+        run: make check-coverage
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
