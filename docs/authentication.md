@@ -261,11 +261,15 @@ wast scan https://app.example.com/admin \
 4. Subsequent requests include the captured session cookies
 5. WAST detects login failures (wrong status codes, error messages)
 
+If no cookies are received, WAST automatically falls back to looking for a JWT bearer
+token in the JSON response body (see [JWT-in-response-body Login](#jwt-in-response-body-login) below).
+
 #### Supported Login Types
 
 - **Form-based authentication** (default, `Content-Type: application/x-www-form-urlencoded`)
 - **JSON API authentication** (`Content-Type: application/json`)
 - **Redirects after successful login** (302/303 status codes)
+- **JWT-in-response-body authentication** (automatic fallback when no cookies are received)
 
 #### Login Flow Example
 
@@ -285,6 +289,59 @@ Host: api.example.com
 Content-Type: application/json
 
 {"username":"testuser","password":"password123"}
+```
+
+#### JWT-in-response-body Login
+
+Many modern SPAs and REST APIs return a JWT bearer token in the JSON response body instead of
+setting session cookies. WAST automatically detects this pattern as a fallback when no cookies
+are received after a successful login.
+
+The following well-known JSON fields are checked (in order):
+
+| Field path | Example API |
+|---|---|
+| `token` | Generic REST APIs |
+| `access_token` | OAuth2 token endpoint |
+| `accessToken` | camelCase variant |
+| `jwt` | Custom JWT field |
+| `id_token` | OpenID Connect |
+| `authentication.token` | OWASP Juice Shop |
+| `data.token` | Nested data wrapper pattern |
+
+You can also specify a custom dot-separated path with `token_field`:
+
+**OWASP Juice Shop example (MCP):**
+
+```json
+{
+  "name": "wast_scan",
+  "arguments": {
+    "target": "https://juice-shop.example.com",
+    "login_url": "https://juice-shop.example.com/rest/user/login",
+    "login_user": "admin@juice-sh.op",
+    "login_pass": "admin123",
+    "login_content_type": "json",
+    "login_token_field": "authentication.token"
+  }
+}
+```
+
+**OWASP Juice Shop example (CLI):**
+
+```bash
+export WAST_LOGIN_PASS="admin123"
+wast scan https://juice-shop.example.com \
+  --login-url https://juice-shop.example.com/rest/user/login \
+  --login-user admin@juice-sh.op \
+  --login-content-type json \
+  --login-token-field "authentication.token"
+```
+
+The extracted token is used as a `Bearer` token in all subsequent requests:
+
+```
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ---

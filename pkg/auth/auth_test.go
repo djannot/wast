@@ -674,3 +674,223 @@ func TestAuthConfig_IsEmpty_WithLogin(t *testing.T) {
 		t.Error("Expected IsEmpty() to return false when login config is set")
 	}
 }
+
+// fakeJWT is a syntactically valid-looking JWT (3 dot-separated non-empty parts).
+const fakeJWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+
+func TestAuthConfig_PerformLogin_JWTInTokenField(t *testing.T) {
+	// Server returns a JWT in {"token": "..."} with no cookies.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"token":"` + fakeJWT + `"}`))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL:    server.URL,
+			Username:    "user",
+			Password:    "pass",
+			ContentType: "json",
+		},
+	}
+
+	ctx := context.Background()
+	if err := config.PerformLogin(ctx); err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	if config.BearerToken != fakeJWT {
+		t.Errorf("BearerToken = %q, want %q", config.BearerToken, fakeJWT)
+	}
+	if len(config.Cookies) != 0 {
+		t.Errorf("Expected no cookies, got: %v", config.Cookies)
+	}
+}
+
+func TestAuthConfig_PerformLogin_JWTNestedCustomTokenField(t *testing.T) {
+	// OWASP Juice Shop-style: {"authentication":{"token":"..."}}
+	// with TokenField = "authentication.token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"authentication":{"token":"` + fakeJWT + `","umail":"user@example.com"}}`))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL:    server.URL,
+			Username:    "user@example.com",
+			Password:    "pass",
+			ContentType: "json",
+			TokenField:  "authentication.token",
+		},
+	}
+
+	ctx := context.Background()
+	if err := config.PerformLogin(ctx); err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	if config.BearerToken != fakeJWT {
+		t.Errorf("BearerToken = %q, want %q", config.BearerToken, fakeJWT)
+	}
+}
+
+func TestAuthConfig_PerformLogin_CookiesTakePriorityOverJWT(t *testing.T) {
+	// When the server sets both a cookie AND returns a JWT in the body,
+	// cookies should be captured (primary path) and BearerToken left empty.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{
+			Name:  "session",
+			Value: "cookieval",
+			Path:  "/",
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"token":"` + fakeJWT + `"}`))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL:    server.URL,
+			Username:    "user",
+			Password:    "pass",
+			ContentType: "json",
+		},
+	}
+
+	ctx := context.Background()
+	if err := config.PerformLogin(ctx); err != nil {
+		t.Fatalf("PerformLogin failed: %v", err)
+	}
+
+	// Cookies should be captured; BearerToken must remain empty.
+	if len(config.Cookies) == 0 {
+		t.Error("Expected cookies to be captured")
+	}
+	if config.BearerToken != "" {
+		t.Errorf("Expected BearerToken to be empty when cookies were received, got %q", config.BearerToken)
+	}
+}
+
+func TestAuthConfig_PerformLogin_NeitherCookiesNorJWT(t *testing.T) {
+	// Server returns 200 with a JSON body that has no recognisable token field.
+	// PerformLogin must still return an error.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok","message":"welcome"}`))
+	}))
+	defer server.Close()
+
+	config := &AuthConfig{
+		Login: &LoginConfig{
+			LoginURL: server.URL,
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	ctx := context.Background()
+	err := config.PerformLogin(ctx)
+	if err == nil {
+		t.Fatal("Expected error when neither cookies nor JWT token received, got nil")
+	}
+	if !strings.Contains(err.Error(), "no cookies were received") {
+		t.Errorf("Expected 'no cookies were received' error, got: %v", err)
+	}
+}
+
+func TestExtractBearerTokenFromBody(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             []byte
+		customTokenField string
+		wantToken        string
+		wantErr          bool
+	}{
+		{
+			name:      "token field",
+			body:      []byte(`{"token":"` + fakeJWT + `"}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "access_token field",
+			body:      []byte(`{"access_token":"` + fakeJWT + `"}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "accessToken camelCase field",
+			body:      []byte(`{"accessToken":"` + fakeJWT + `"}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "jwt field",
+			body:      []byte(`{"jwt":"` + fakeJWT + `"}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "id_token field",
+			body:      []byte(`{"id_token":"` + fakeJWT + `"}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "authentication.token nested",
+			body:      []byte(`{"authentication":{"token":"` + fakeJWT + `"}}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:      "data.token nested",
+			body:      []byte(`{"data":{"token":"` + fakeJWT + `"}}`),
+			wantToken: fakeJWT,
+		},
+		{
+			name:             "custom token field",
+			body:             []byte(`{"auth":{"bearer":"` + fakeJWT + `"}}`),
+			customTokenField: "auth.bearer",
+			wantToken:        fakeJWT,
+		},
+		{
+			name:    "empty body",
+			body:    []byte{},
+			wantErr: true,
+		},
+		{
+			name:    "non-JSON body",
+			body:    []byte("Login successful"),
+			wantErr: true,
+		},
+		{
+			name:    "JSON without token fields",
+			body:    []byte(`{"status":"ok"}`),
+			wantErr: true,
+		},
+		{
+			name:    "token value not a JWT",
+			body:    []byte(`{"token":"plainstring"}`),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := extractBearerTokenFromBody(tt.body, tt.customTokenField)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got token %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantToken {
+				t.Errorf("got token %q, want %q", got, tt.wantToken)
+			}
+		})
+	}
+}

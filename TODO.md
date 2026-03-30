@@ -69,4 +69,5 @@ See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop
 - ~~Add WebGoat as a third benchmark target (Java/Spring, different session patterns)~~
   **DONE** — `docker-compose.webgoat.yml`, `test/integration/webgoat/webgoat_test.go`, `make test-webgoat`, and optional CI job added in PR #297; covers SQLi, XSS, PathTraversal, Headers assertions plus NoSQLi/XXE zero-false-positive checks.
 - Increase coverage thresholds as new scanner capabilities are added
-- Explore authenticated scanning improvements for other session management patterns
+- ~~Explore authenticated scanning improvements for other session management patterns~~
+  **DONE** — JWT-in-response-body authentication added to `PerformLogin` in PR #298; `LoginConfig.TokenField` allows custom dot-separated JSON paths; `LooksLikeJWT` exported from `pkg/api/jwt.go`; unit tests and `docs/authentication.md` updated.

@@ -40,6 +40,12 @@ type LoginConfig struct {
 
 	// ContentType specifies the request content type: "form" (default) or "json"
 	ContentType string `json:"content_type,omitempty" yaml:"content_type,omitempty"`
+
+	// TokenField is an optional dot-separated JSON path to extract a bearer token
+	// from the login response body (e.g., "authentication.token" for OWASP Juice Shop).
+	// When empty, well-known fields are tried: token, access_token, accessToken, jwt,
+	// id_token, authentication.token, data.token.
+	TokenField string `json:"token_field,omitempty" yaml:"token_field,omitempty"`
 }
 
 // AuthConfig holds authentication configuration for HTTP requests.
@@ -319,6 +325,13 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 	}
 
 	if len(cookies) == 0 {
+		// Fallback: attempt to extract a JWT bearer token from the JSON response body.
+		// This handles modern SPAs and REST APIs (e.g. OWASP Juice Shop) that return
+		// tokens in the response body rather than setting session cookies.
+		if token, err := extractBearerTokenFromBody(body, c.Login.TokenField); err == nil {
+			c.BearerToken = token
+			return nil
+		}
 		return fmt.Errorf("login succeeded but no cookies were received (check if login was actually successful)")
 	}
 
@@ -329,4 +342,72 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// extractBearerTokenFromBody attempts to extract a JWT bearer token from a JSON response body.
+// It checks a custom field path first (if provided), then falls back to well-known field names.
+// Only strings that look like a JWT (three dot-separated parts) are accepted.
+func extractBearerTokenFromBody(body []byte, customTokenField string) (string, error) {
+	if len(body) == 0 {
+		return "", fmt.Errorf("empty response body")
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return "", fmt.Errorf("response body is not valid JSON: %w", err)
+	}
+
+	// Build ordered list of field paths to check.
+	// User-supplied TokenField takes priority, followed by well-known names.
+	fieldPaths := make([]string, 0, 10)
+	if customTokenField != "" {
+		fieldPaths = append(fieldPaths, customTokenField)
+	}
+	fieldPaths = append(fieldPaths,
+		"token",
+		"access_token",
+		"accessToken",
+		"jwt",
+		"id_token",
+		"authentication.token",
+		"data.token",
+	)
+
+	for _, path := range fieldPaths {
+		if token := extractNestedStringField(data, path); token != "" && looksLikeJWT(token) {
+			return token, nil
+		}
+	}
+
+	return "", fmt.Errorf("no JWT token found in response body")
+}
+
+// extractNestedStringField traverses a JSON map using a dot-separated path and returns
+// the string value at that path, or an empty string if not found or not a string.
+func extractNestedStringField(data map[string]interface{}, path string) string {
+	parts := strings.SplitN(path, ".", 2)
+	val, ok := data[parts[0]]
+	if !ok {
+		return ""
+	}
+	if len(parts) == 1 {
+		// Leaf — must be a string
+		s, ok := val.(string)
+		if !ok {
+			return ""
+		}
+		return s
+	}
+	// Recurse into nested object
+	nested, ok := val.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return extractNestedStringField(nested, parts[1])
+}
+
+// looksLikeJWT performs a quick check if a string looks like a JWT.
+func looksLikeJWT(s string) bool {
+	parts := strings.Split(s, ".")
+	return len(parts) == 3 && len(parts[0]) > 0
 }
