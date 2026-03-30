@@ -105,7 +105,14 @@ wast scan https://example.com --safe-mode=false
 **Active testing includes:**
 - Cross-Site Scripting (XSS) payload injection
 - SQL Injection (SQLi) testing with various payloads
+- NoSQL Injection (NoSQLi) testing
+- Command Injection (CMDi) testing
 - Cross-Site Request Forgery (CSRF) token analysis
+- Server-Side Request Forgery (SSRF) testing
+- Open Redirect detection
+- Path Traversal / Local File Inclusion (LFI) testing
+- Server-Side Template Injection (SSTI) testing
+- XML External Entity (XXE) injection testing
 
 ⚠️ **WARNING**: Active testing sends attack payloads to the target. Only use `--active` on systems you own or have written permission to test. Unauthorized testing may be illegal and could trigger security alerts.
 
@@ -163,7 +170,13 @@ wast scan https://example.com --output sarif > scan.sarif && code scan.sarif
 | Cross-Site Scripting (XSS) | WAST-XSS-001 | CWE-79 |
 | SQL Injection | WAST-SQLI-001 | CWE-89 |
 | NoSQL Injection | WAST-NOSQLI-001 | CWE-943 |
+| Command Injection (CMDi) | WAST-CMDI-001 | CWE-78 |
 | Cross-Site Request Forgery (CSRF) | WAST-CSRF-001 | CWE-352 |
+| Server-Side Request Forgery (SSRF) | WAST-SSRF-001 | CWE-918 |
+| Open Redirect | WAST-REDIRECT-001 | CWE-601 |
+| Path Traversal / LFI | WAST-LFI-001 | CWE-22 |
+| Server-Side Template Injection (SSTI) | WAST-SSTI-001 | CWE-94 |
+| XML External Entity (XXE) | WAST-XXE-001 | CWE-611 |
 | Missing HSTS Header | WAST-HDR-001 | CWE-693 |
 | Missing CSP Header | WAST-HDR-002 | CWE-693 |
 | Missing X-Frame-Options | WAST-HDR-003 | CWE-693 |

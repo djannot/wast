@@ -177,8 +177,14 @@ wast scan
 **Active Testing (--active)**:
 - Cross-Site Scripting (XSS) payload injection
 - SQL Injection (SQLi) testing
+- NoSQL Injection (NoSQLi) testing
+- Command Injection (CMDi) testing
 - Cross-Site Request Forgery (CSRF) token analysis
 - Server-Side Request Forgery (SSRF) testing
+- Open Redirect detection
+- Path Traversal / Local File Inclusion (LFI) testing
+- Server-Side Template Injection (SSTI) testing
+- XML External Entity (XXE) injection testing
 
 ⚠️ **WARNING**: Active testing sends attack payloads. Only use on systems you own or have permission to test.
 
