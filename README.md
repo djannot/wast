@@ -401,6 +401,9 @@ wast --mcp
 | `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_headers` | Passive-only security header analysis | `target`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |
+| `wast_intercept` | Intercept and analyze HTTP/HTTPS traffic via proxy | `port`, `duration`, `save_file`, `https_interception`, `max_requests` |
+| `wast_verify` | Verify individual security findings to reduce false positives | `finding_type`, `finding_url`, `parameter`, `payload`, `max_retries`, `delay`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
+| `wast_websocket` | WebSocket security scanning (CSWSH, insecure protocols) | `target`, `active`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |
 
 **MCP Integration Example (Claude Desktop):**
 
