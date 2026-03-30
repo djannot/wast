@@ -70,71 +70,173 @@ type ScanStats struct {
 	TotalXXETests              int
 }
 
-// ExecuteScan performs the complete scan workflow.
-// It orchestrates the execution of all security scans (headers, XSS, SQLi, CSRF, SSRF),
-// performs verification if enabled, and returns a unified result.
-func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *ScanStats) {
-	// Create scanner options
-	headerOpts := []Option{
-		WithTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	xssOpts := []XSSOption{
-		WithXSSTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	sqliOpts := []SQLiOption{
-		WithSQLiTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	nosqliOpts := []NoSQLiOption{
-		WithNoSQLiTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	csrfOpts := []CSRFOption{
-		WithCSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	ssrfOpts := []SSRFOption{
-		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	redirectOpts := []RedirectOption{
-		WithRedirectTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	cmdiOpts := []CMDiOption{
-		WithCMDiTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	pathtraversalOpts := []PathTraversalOption{
-		WithPathTraversalTimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	sstiOpts := []SSTIOption{
-		WithSSTITimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
-	xxeOpts := []XXEOption{
-		WithXXETimeout(time.Duration(cfg.Timeout) * time.Second),
-	}
+// CommonScannerConfig holds shared configuration that applies uniformly to all active
+// scanner instances. It is derived from ScanConfig and used by buildXxxOpts helpers
+// to avoid duplicating the same auth/client/rate-limit/tracer logic for each scanner.
+type CommonScannerConfig struct {
+	Timeout         time.Duration
+	AuthConfig      *auth.AuthConfig
+	// HTTPClient is the shared client (with cookie jar). The redirect scanner receives a
+	// special no-redirect variant; all other scanners receive this client as-is.
+	HTTPClient      *http.Client
+	RateLimitConfig ratelimit.Config
+	Tracer          trace.Tracer
+}
 
-	// Add authentication if configured
-	if cfg.AuthConfig != nil && !cfg.AuthConfig.IsEmpty() {
-		headerOpts = append(headerOpts, WithAuth(cfg.AuthConfig))
-		xssOpts = append(xssOpts, WithXSSAuth(cfg.AuthConfig))
-		sqliOpts = append(sqliOpts, WithSQLiAuth(cfg.AuthConfig))
-		nosqliOpts = append(nosqliOpts, WithNoSQLiAuth(cfg.AuthConfig))
-		csrfOpts = append(csrfOpts, WithCSRFAuth(cfg.AuthConfig))
-		ssrfOpts = append(ssrfOpts, WithSSRFAuth(cfg.AuthConfig))
-		redirectOpts = append(redirectOpts, WithRedirectAuth(cfg.AuthConfig))
-		cmdiOpts = append(cmdiOpts, WithCMDiAuth(cfg.AuthConfig))
-		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalAuth(cfg.AuthConfig))
-		sstiOpts = append(sstiOpts, WithSSTIAuth(cfg.AuthConfig))
-		xxeOpts = append(xxeOpts, WithXXEAuth(cfg.AuthConfig))
-	}
+// activeScanEntry bundles the per-scanner closures needed for the common execution
+// pipeline. Each scanner type creates one entry; the slice of entries is then used
+// for parallel scanning, verification, filtering, and error aggregation without
+// any per-type switch/if chains.
+type activeScanEntry struct {
+	name string
+	// scan executes the scanner against target and stores the typed result
+	// inside the closure-captured variable.
+	scan func(ctx context.Context, target string)
+	// verifyAll verifies every finding for this scanner, updating Verified /
+	// VerificationAttempts / Confidence fields in the captured result.
+	verifyAll func(ctx context.Context, cfg VerificationConfig)
+	// filterVerified removes unverified findings from the captured result and
+	// updates the summary count.
+	filterVerified func()
+	// getErrors returns any scan-time errors from the captured result.
+	getErrors func() []string
+	// totalFindings returns the total number of raw findings (before filtering).
+	// Must be called after scan() and before filterVerified().
+	totalFindings func() int
+}
 
-	// Propagate shared HTTP client (with cookie jar) to all scanners when provided.
-	// This ensures session cookies (e.g. PHPSESSID) and rotating CSRF tokens are
-	// handled correctly across all scanner invocations instead of using stale
-	// per-request Cookie headers.
-	if cfg.HTTPClient != nil {
-		headerOpts = append(headerOpts, WithHTTPClient(cfg.HTTPClient))
-		xssOpts = append(xssOpts, WithXSSHTTPClient(cfg.HTTPClient))
-		sqliOpts = append(sqliOpts, WithSQLiHTTPClient(cfg.HTTPClient))
-		nosqliOpts = append(nosqliOpts, WithNoSQLiHTTPClient(cfg.HTTPClient))
-		csrfOpts = append(csrfOpts, WithCSRFHTTPClient(cfg.HTTPClient))
-		ssrfOpts = append(ssrfOpts, WithSSRFHTTPClient(cfg.HTTPClient))
+// applyConfidenceFromResult updates a finding's Confidence string using the standard
+// three-tier logic (high/medium/low) derived from a VerificationResult. It is shared
+// by all scanners that expose a Confidence field.
+func applyConfidenceFromResult(confidence *string, vr *VerificationResult) {
+	if vr.Verified && vr.Confidence > 0.8 {
+		*confidence = "high"
+	} else if vr.Verified && vr.Confidence > 0.5 {
+		*confidence = "medium"
+	} else if !vr.Verified {
+		*confidence = "low"
+	}
+}
+
+// ─── option builders ──────────────────────────────────────────────────────────
+//
+// Each buildXxxOpts function constructs the full option slice for one scanner type
+// from a CommonScannerConfig. All cross-cutting concerns (auth, HTTP client,
+// rate-limiting, tracing) live here once, not scattered across four if-blocks.
+
+func buildHeaderOpts(c CommonScannerConfig) []Option {
+	opts := []Option{WithTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildXSSOpts(c CommonScannerConfig) []XSSOption {
+	opts := []XSSOption{WithXSSTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithXSSAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithXSSHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithXSSRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithXSSTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildSQLiOpts(c CommonScannerConfig) []SQLiOption {
+	opts := []SQLiOption{WithSQLiTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithSQLiAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithSQLiHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithSQLiRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithSQLiTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildNoSQLiOpts(c CommonScannerConfig) []NoSQLiOption {
+	opts := []NoSQLiOption{WithNoSQLiTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithNoSQLiAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithNoSQLiHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithNoSQLiRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithNoSQLiTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildCSRFOpts(c CommonScannerConfig) []CSRFOption {
+	opts := []CSRFOption{WithCSRFTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithCSRFAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithCSRFHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithCSRFRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithCSRFTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildSSRFOpts(c CommonScannerConfig, callbackURL string) []SSRFOption {
+	opts := []SSRFOption{WithSSRFTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithSSRFAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithSSRFHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithSSRFRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithSSRFTracer(c.Tracer))
+	}
+	if callbackURL != "" {
+		if cb := createCallbackServer(callbackURL); cb != nil {
+			opts = append(opts, WithSSRFCallbackServer(cb))
+		}
+	}
+	return opts
+}
+
+func buildRedirectOpts(c CommonScannerConfig) []RedirectOption {
+	opts := []RedirectOption{WithRedirectTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithRedirectAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
 		// The redirect scanner MUST use a no-redirect client: it detects open redirects
 		// by inspecting raw 3xx status codes and Location headers. Passing the shared
 		// client directly would silently disable redirect detection because the default
@@ -142,95 +244,142 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		// We share the cookie jar so session cookies remain valid, but override
 		// CheckRedirect to prevent automatic redirect-following.
 		noRedirectClient := &http.Client{
-			Jar:     cfg.HTTPClient.Jar,
-			Timeout: cfg.HTTPClient.Timeout,
+			Jar:     c.HTTPClient.Jar,
+			Timeout: c.HTTPClient.Timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
-		redirectOpts = append(redirectOpts, WithRedirectHTTPClient(noRedirectClient))
-		cmdiOpts = append(cmdiOpts, WithCMDiHTTPClient(cfg.HTTPClient))
-		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalHTTPClient(cfg.HTTPClient))
-		sstiOpts = append(sstiOpts, WithSSTIHTTPClient(cfg.HTTPClient))
-		xxeOpts = append(xxeOpts, WithXXEHTTPClient(cfg.HTTPClient))
+		opts = append(opts, WithRedirectHTTPClient(noRedirectClient))
 	}
-
-	// Add rate limiting if configured
-	if cfg.RateLimitConfig.IsEnabled() {
-		headerOpts = append(headerOpts, WithRateLimitConfig(cfg.RateLimitConfig))
-		xssOpts = append(xssOpts, WithXSSRateLimitConfig(cfg.RateLimitConfig))
-		sqliOpts = append(sqliOpts, WithSQLiRateLimitConfig(cfg.RateLimitConfig))
-		nosqliOpts = append(nosqliOpts, WithNoSQLiRateLimitConfig(cfg.RateLimitConfig))
-		csrfOpts = append(csrfOpts, WithCSRFRateLimitConfig(cfg.RateLimitConfig))
-		ssrfOpts = append(ssrfOpts, WithSSRFRateLimitConfig(cfg.RateLimitConfig))
-		redirectOpts = append(redirectOpts, WithRedirectRateLimitConfig(cfg.RateLimitConfig))
-		cmdiOpts = append(cmdiOpts, WithCMDiRateLimitConfig(cfg.RateLimitConfig))
-		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalRateLimitConfig(cfg.RateLimitConfig))
-		sstiOpts = append(sstiOpts, WithSSTIRateLimitConfig(cfg.RateLimitConfig))
-		xxeOpts = append(xxeOpts, WithXXERateLimitConfig(cfg.RateLimitConfig))
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithRedirectRateLimitConfig(c.RateLimitConfig))
 	}
-
-	// Add tracer if configured (for MCP)
-	if cfg.Tracer != nil {
-		headerOpts = append(headerOpts, WithTracer(cfg.Tracer))
-		xssOpts = append(xssOpts, WithXSSTracer(cfg.Tracer))
-		sqliOpts = append(sqliOpts, WithSQLiTracer(cfg.Tracer))
-		nosqliOpts = append(nosqliOpts, WithNoSQLiTracer(cfg.Tracer))
-		csrfOpts = append(csrfOpts, WithCSRFTracer(cfg.Tracer))
-		ssrfOpts = append(ssrfOpts, WithSSRFTracer(cfg.Tracer))
-		redirectOpts = append(redirectOpts, WithRedirectTracer(cfg.Tracer))
-		cmdiOpts = append(cmdiOpts, WithCMDiTracer(cfg.Tracer))
-		pathtraversalOpts = append(pathtraversalOpts, WithPathTraversalTracer(cfg.Tracer))
-		sstiOpts = append(sstiOpts, WithSSTITracer(cfg.Tracer))
-		xxeOpts = append(xxeOpts, WithXXETracer(cfg.Tracer))
+	if c.Tracer != nil {
+		opts = append(opts, WithRedirectTracer(c.Tracer))
 	}
+	return opts
+}
 
-	// Add callback server if configured (for out-of-band SSRF and XXE detection)
-	if cfg.CallbackURL != "" {
-		// Parse callback URL to create callback server configuration
-		callbackServer := createCallbackServer(cfg.CallbackURL)
-		if callbackServer != nil {
-			ssrfOpts = append(ssrfOpts, WithSSRFCallbackServer(callbackServer))
-			xxeOpts = append(xxeOpts, WithXXECallbackServer(callbackServer))
+func buildCMDiOpts(c CommonScannerConfig) []CMDiOption {
+	opts := []CMDiOption{WithCMDiTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithCMDiAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithCMDiHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithCMDiRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithCMDiTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildPathTraversalOpts(c CommonScannerConfig) []PathTraversalOption {
+	opts := []PathTraversalOption{WithPathTraversalTimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithPathTraversalAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithPathTraversalHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithPathTraversalRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithPathTraversalTracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildSSTIOpts(c CommonScannerConfig) []SSTIOption {
+	opts := []SSTIOption{WithSSTITimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithSSTIAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithSSTIHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithSSTIRateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithSSTITracer(c.Tracer))
+	}
+	return opts
+}
+
+func buildXXEOpts(c CommonScannerConfig, callbackURL string) []XXEOption {
+	opts := []XXEOption{WithXXETimeout(c.Timeout)}
+	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
+		opts = append(opts, WithXXEAuth(c.AuthConfig))
+	}
+	if c.HTTPClient != nil {
+		opts = append(opts, WithXXEHTTPClient(c.HTTPClient))
+	}
+	if c.RateLimitConfig.IsEnabled() {
+		opts = append(opts, WithXXERateLimitConfig(c.RateLimitConfig))
+	}
+	if c.Tracer != nil {
+		opts = append(opts, WithXXETracer(c.Tracer))
+	}
+	if callbackURL != "" {
+		if cb := createCallbackServer(callbackURL); cb != nil {
+			opts = append(opts, WithXXECallbackServer(cb))
 		}
 	}
+	return opts
+}
 
-	// Create scanners
-	headerScanner := NewHTTPHeadersScanner(headerOpts...)
+// ─── ExecuteScan ──────────────────────────────────────────────────────────────
 
-	// Perform the header scan
+// ExecuteScan performs the complete scan workflow.
+// It orchestrates the execution of all security scans (headers, XSS, SQLi, CSRF, SSRF),
+// performs verification if enabled, and returns a unified result.
+func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *ScanStats) {
+	common := CommonScannerConfig{
+		Timeout:         time.Duration(cfg.Timeout) * time.Second,
+		AuthConfig:      cfg.AuthConfig,
+		HTTPClient:      cfg.HTTPClient,
+		RateLimitConfig: cfg.RateLimitConfig,
+		Tracer:          cfg.Tracer,
+	}
+
+	// Perform the (always-active) passive header scan.
+	headerScanner := NewHTTPHeadersScanner(buildHeaderOpts(common)...)
 	headerResult := headerScanner.Scan(ctx, cfg.Target)
 
-	// Initialize result structure
 	intermediateResult := IntermediateScanResult{
 		Target:      cfg.Target,
 		PassiveOnly: cfg.SafeMode,
 		Headers:     headerResult,
 		Errors:      make([]string, 0),
 	}
-
-	// Aggregate errors from header scan
 	if len(headerResult.Errors) > 0 {
 		intermediateResult.Errors = append(intermediateResult.Errors, headerResult.Errors...)
 	}
 
-	// Initialize stats
 	stats := &ScanStats{}
 
-	// Only perform active scans if safe mode is disabled
+	// Only perform active scans if safe mode is disabled.
 	if !cfg.SafeMode {
-		xssScanner := NewXSSScanner(xssOpts...)
-		sqliScanner := NewSQLiScanner(sqliOpts...)
-		nosqliScanner := NewNoSQLiScanner(nosqliOpts...)
-		csrfScanner := NewCSRFScanner(csrfOpts...)
-		ssrfScanner := NewSSRFScanner(ssrfOpts...)
-		redirectScanner := NewRedirectScanner(redirectOpts...)
-		cmdiScanner := NewCMDiScanner(cmdiOpts...)
-		pathtraversalScanner := NewPathTraversalScanner(pathtraversalOpts...)
-		sstiScanner := NewSSTIScanner(sstiOpts...)
-		xxeScanner := NewXXEScanner(xxeOpts...)
+		// ── scanner instantiation ──────────────────────────────────────────
+		// Each scanner is created here (place 1 of 2 when adding a new scanner).
+		xssScanner := NewXSSScanner(buildXSSOpts(common)...)
+		sqliScanner := NewSQLiScanner(buildSQLiOpts(common)...)
+		nosqliScanner := NewNoSQLiScanner(buildNoSQLiOpts(common)...)
+		csrfScanner := NewCSRFScanner(buildCSRFOpts(common)...)
+		ssrfScanner := NewSSRFScanner(buildSSRFOpts(common, cfg.CallbackURL)...)
+		redirectScanner := NewRedirectScanner(buildRedirectOpts(common)...)
+		cmdiScanner := NewCMDiScanner(buildCMDiOpts(common)...)
+		pathtraversalScanner := NewPathTraversalScanner(buildPathTraversalOpts(common)...)
+		sstiScanner := NewSSTIScanner(buildSSTIOpts(common)...)
+		xxeScanner := NewXXEScanner(buildXXEOpts(common, cfg.CallbackURL)...)
 
-		var wg sync.WaitGroup
+		// Typed result variables captured by the closure entries below.
 		var xssResult *XSSScanResult
 		var sqliResult *SQLiScanResult
 		var nosqliResult *NoSQLiScanResult
@@ -242,51 +391,307 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		var sstiResult *SSTIScanResult
 		var xxeResult *XXEScanResult
 
-		// Run scans in parallel
-		wg.Add(10)
-		go func() {
-			defer wg.Done()
-			xssResult = xssScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			sqliResult = sqliScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			nosqliResult = nosqliScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			csrfResult = csrfScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			ssrfResult = ssrfScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			redirectResult = redirectScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			cmdiResult = cmdiScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			pathtraversalResult = pathtraversalScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			sstiResult = sstiScanner.Scan(ctx, cfg.Target)
-		}()
-		go func() {
-			defer wg.Done()
-			xxeResult = xxeScanner.Scan(ctx, cfg.Target)
-		}()
+		// ── activeScanEntry registry ───────────────────────────────────────
+		// Each entry encapsulates all operations for one scanner.  The unified
+		// pipeline below iterates this slice for parallel scanning, verification,
+		// filtering, and error aggregation — no per-type code duplication needed.
+		entries := []activeScanEntry{
+			{
+				name: "XSS",
+				scan: func(ctx context.Context, target string) {
+					xssResult = xssScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range xssResult.Findings {
+						vr, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							xssResult.Findings[i].Verified = vr.Verified
+							xssResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&xssResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]XSSFinding, 0, len(xssResult.Findings))
+					for _, f := range xssResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					xssResult.Findings = verified
+					xssResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return xssResult.Errors },
+				totalFindings: func() int { return len(xssResult.Findings) },
+			},
+			{
+				name: "SQLi",
+				scan: func(ctx context.Context, target string) {
+					sqliResult = sqliScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range sqliResult.Findings {
+						vr, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							sqliResult.Findings[i].Verified = vr.Verified
+							sqliResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&sqliResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]SQLiFinding, 0, len(sqliResult.Findings))
+					for _, f := range sqliResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					sqliResult.Findings = verified
+					sqliResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return sqliResult.Errors },
+				totalFindings: func() int { return len(sqliResult.Findings) },
+			},
+			{
+				name: "NoSQLi",
+				scan: func(ctx context.Context, target string) {
+					nosqliResult = nosqliScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range nosqliResult.Findings {
+						vr, err := nosqliScanner.VerifyFinding(ctx, &nosqliResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							nosqliResult.Findings[i].Verified = vr.Verified
+							nosqliResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&nosqliResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]NoSQLiFinding, 0, len(nosqliResult.Findings))
+					for _, f := range nosqliResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					nosqliResult.Findings = verified
+					nosqliResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return nosqliResult.Errors },
+				totalFindings: func() int { return len(nosqliResult.Findings) },
+			},
+			{
+				// CSRF findings do not have a Confidence field; only Verified and
+				// VerificationAttempts are updated. Summary uses VulnerableForms.
+				name: "CSRF",
+				scan: func(ctx context.Context, target string) {
+					csrfResult = csrfScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range csrfResult.Findings {
+						vr, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							csrfResult.Findings[i].Verified = vr.Verified
+							csrfResult.Findings[i].VerificationAttempts = vr.Attempts
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]CSRFFinding, 0, len(csrfResult.Findings))
+					for _, f := range csrfResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					csrfResult.Findings = verified
+					csrfResult.Summary.VulnerableForms = len(verified)
+				},
+				getErrors:     func() []string { return csrfResult.Errors },
+				totalFindings: func() int { return len(csrfResult.Findings) },
+			},
+			{
+				name: "SSRF",
+				scan: func(ctx context.Context, target string) {
+					ssrfResult = ssrfScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range ssrfResult.Findings {
+						vr, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							ssrfResult.Findings[i].Verified = vr.Verified
+							ssrfResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&ssrfResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]SSRFFinding, 0, len(ssrfResult.Findings))
+					for _, f := range ssrfResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					ssrfResult.Findings = verified
+					ssrfResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return ssrfResult.Errors },
+				totalFindings: func() int { return len(ssrfResult.Findings) },
+			},
+			{
+				name: "Redirect",
+				scan: func(ctx context.Context, target string) {
+					redirectResult = redirectScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range redirectResult.Findings {
+						vr, err := redirectScanner.VerifyFinding(ctx, &redirectResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							redirectResult.Findings[i].Verified = vr.Verified
+							redirectResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&redirectResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]RedirectFinding, 0, len(redirectResult.Findings))
+					for _, f := range redirectResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					redirectResult.Findings = verified
+					redirectResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return redirectResult.Errors },
+				totalFindings: func() int { return len(redirectResult.Findings) },
+			},
+			{
+				name: "CMDi",
+				scan: func(ctx context.Context, target string) {
+					cmdiResult = cmdiScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range cmdiResult.Findings {
+						vr, err := cmdiScanner.VerifyFinding(ctx, &cmdiResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							cmdiResult.Findings[i].Verified = vr.Verified
+							cmdiResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&cmdiResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]CMDiFinding, 0, len(cmdiResult.Findings))
+					for _, f := range cmdiResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					cmdiResult.Findings = verified
+					cmdiResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return cmdiResult.Errors },
+				totalFindings: func() int { return len(cmdiResult.Findings) },
+			},
+			{
+				name: "PathTraversal",
+				scan: func(ctx context.Context, target string) {
+					pathtraversalResult = pathtraversalScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range pathtraversalResult.Findings {
+						vr, err := pathtraversalScanner.VerifyFinding(ctx, &pathtraversalResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							pathtraversalResult.Findings[i].Verified = vr.Verified
+							pathtraversalResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&pathtraversalResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]PathTraversalFinding, 0, len(pathtraversalResult.Findings))
+					for _, f := range pathtraversalResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					pathtraversalResult.Findings = verified
+					pathtraversalResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return pathtraversalResult.Errors },
+				totalFindings: func() int { return len(pathtraversalResult.Findings) },
+			},
+			{
+				// SSTI findings have Confidence but no VerificationAttempts field.
+				name: "SSTI",
+				scan: func(ctx context.Context, target string) {
+					sstiResult = sstiScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range sstiResult.Findings {
+						vr, err := sstiScanner.VerifyFinding(ctx, &sstiResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							sstiResult.Findings[i].Verified = vr.Verified
+							applyConfidenceFromResult(&sstiResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]SSTIFinding, 0, len(sstiResult.Findings))
+					for _, f := range sstiResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					sstiResult.Findings = verified
+					sstiResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return sstiResult.Errors },
+				totalFindings: func() int { return len(sstiResult.Findings) },
+			},
+			{
+				name: "XXE",
+				scan: func(ctx context.Context, target string) {
+					xxeResult = xxeScanner.Scan(ctx, target)
+				},
+				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
+					for i := range xxeResult.Findings {
+						vr, err := xxeScanner.VerifyFinding(ctx, &xxeResult.Findings[i], cfg)
+						if err == nil && vr != nil {
+							xxeResult.Findings[i].Verified = vr.Verified
+							xxeResult.Findings[i].VerificationAttempts = vr.Attempts
+							applyConfidenceFromResult(&xxeResult.Findings[i].Confidence, vr)
+						}
+					}
+				},
+				filterVerified: func() {
+					verified := make([]XXEFinding, 0, len(xxeResult.Findings))
+					for _, f := range xxeResult.Findings {
+						if f.Verified {
+							verified = append(verified, f)
+						}
+					}
+					xxeResult.Findings = verified
+					xxeResult.Summary.VulnerabilitiesFound = len(verified)
+				},
+				getErrors:     func() []string { return xxeResult.Errors },
+				totalFindings: func() int { return len(xxeResult.Findings) },
+			},
+		}
+
+		// ── parallel scan ──────────────────────────────────────────────────
+		var wg sync.WaitGroup
+		wg.Add(len(entries))
+		for i := range entries {
+			e := &entries[i]
+			go func() {
+				defer wg.Done()
+				e.scan(ctx, cfg.Target)
+			}()
+		}
 		wg.Wait()
 
-		// Verify findings if enabled
+		// ── verification ───────────────────────────────────────────────────
 		if cfg.VerifyFindings {
 			verifyConfig := VerificationConfig{
 				Enabled:    true,
@@ -294,273 +699,30 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				Delay:      500 * time.Millisecond,
 			}
 
-			// Track findings before verification for reporting
-			stats.TotalXSSFindings = len(xssResult.Findings)
-			stats.TotalSQLiFindings = len(sqliResult.Findings)
-			stats.TotalNoSQLiFindings = len(nosqliResult.Findings)
+			// Capture pre-verification finding counts for stats reporting.
+			// NoSQLi also records its TotalTests from the summary (scanner-specific stat).
+			stats.TotalXSSFindings = entries[0].totalFindings()
+			stats.TotalSQLiFindings = entries[1].totalFindings()
+			stats.TotalNoSQLiFindings = entries[2].totalFindings()
 			stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
-			stats.TotalCSRFFindings = len(csrfResult.Findings)
-			stats.TotalSSRFFindings = len(ssrfResult.Findings)
-			stats.TotalRedirectFindings = len(redirectResult.Findings)
-			stats.TotalCMDiFindings = len(cmdiResult.Findings)
-			stats.TotalPathTraversalFindings = len(pathtraversalResult.Findings)
-			stats.TotalSSTIFindings = len(sstiResult.Findings)
-			stats.TotalXXEFindings = len(xxeResult.Findings)
+			stats.TotalCSRFFindings = entries[3].totalFindings()
+			stats.TotalSSRFFindings = entries[4].totalFindings()
+			stats.TotalRedirectFindings = entries[5].totalFindings()
+			stats.TotalCMDiFindings = entries[6].totalFindings()
+			stats.TotalPathTraversalFindings = entries[7].totalFindings()
+			stats.TotalSSTIFindings = entries[8].totalFindings()
+			stats.TotalXXEFindings = entries[9].totalFindings()
 
-			// Verify XSS findings
-			for i := range xssResult.Findings {
-				result, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					xssResult.Findings[i].Verified = result.Verified
-					xssResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						xssResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						xssResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						xssResult.Findings[i].Confidence = "low"
-					}
-				}
+			// Verify and filter all scanners uniformly.
+			for _, e := range entries {
+				e.verifyAll(ctx, verifyConfig)
+				e.filterVerified()
 			}
-
-			// Verify SQLi findings
-			for i := range sqliResult.Findings {
-				result, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					sqliResult.Findings[i].Verified = result.Verified
-					sqliResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						sqliResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						sqliResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						sqliResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify NoSQLi findings
-			for i := range nosqliResult.Findings {
-				result, err := nosqliScanner.VerifyFinding(ctx, &nosqliResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					nosqliResult.Findings[i].Verified = result.Verified
-					nosqliResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						nosqliResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						nosqliResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						nosqliResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify CSRF findings
-			// Note: CSRF findings don't have a confidence field like other vulnerability types
-			for i := range csrfResult.Findings {
-				result, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					csrfResult.Findings[i].Verified = result.Verified
-					csrfResult.Findings[i].VerificationAttempts = result.Attempts
-				}
-			}
-
-			// Verify SSRF findings
-			for i := range ssrfResult.Findings {
-				result, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					ssrfResult.Findings[i].Verified = result.Verified
-					ssrfResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						ssrfResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						ssrfResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						ssrfResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify Redirect findings
-			for i := range redirectResult.Findings {
-				result, err := redirectScanner.VerifyFinding(ctx, &redirectResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					redirectResult.Findings[i].Verified = result.Verified
-					redirectResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						redirectResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						redirectResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						redirectResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify CMDi findings
-			for i := range cmdiResult.Findings {
-				result, err := cmdiScanner.VerifyFinding(ctx, &cmdiResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					cmdiResult.Findings[i].Verified = result.Verified
-					cmdiResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						cmdiResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						cmdiResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						cmdiResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify PathTraversal findings
-			for i := range pathtraversalResult.Findings {
-				result, err := pathtraversalScanner.VerifyFinding(ctx, &pathtraversalResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					pathtraversalResult.Findings[i].Verified = result.Verified
-					pathtraversalResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						pathtraversalResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						pathtraversalResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						pathtraversalResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify SSTI findings
-			for i := range sstiResult.Findings {
-				result, err := sstiScanner.VerifyFinding(ctx, &sstiResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					sstiResult.Findings[i].Verified = result.Verified
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						sstiResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						sstiResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						sstiResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Verify XXE findings
-			for i := range xxeResult.Findings {
-				result, err := xxeScanner.VerifyFinding(ctx, &xxeResult.Findings[i], verifyConfig)
-				if err == nil && result != nil {
-					xxeResult.Findings[i].Verified = result.Verified
-					xxeResult.Findings[i].VerificationAttempts = result.Attempts
-					// Update confidence based on verification
-					if result.Verified && result.Confidence > 0.8 {
-						xxeResult.Findings[i].Confidence = "high"
-					} else if result.Verified && result.Confidence > 0.5 {
-						xxeResult.Findings[i].Confidence = "medium"
-					} else if !result.Verified {
-						xxeResult.Findings[i].Confidence = "low"
-					}
-				}
-			}
-
-			// Filter out unverified findings when verification is enabled
-			verifiedXSSFindings := make([]XSSFinding, 0)
-			for _, finding := range xssResult.Findings {
-				if finding.Verified {
-					verifiedXSSFindings = append(verifiedXSSFindings, finding)
-				}
-			}
-			xssResult.Findings = verifiedXSSFindings
-			xssResult.Summary.VulnerabilitiesFound = len(verifiedXSSFindings)
-
-			verifiedSQLiFindings := make([]SQLiFinding, 0)
-			for _, finding := range sqliResult.Findings {
-				if finding.Verified {
-					verifiedSQLiFindings = append(verifiedSQLiFindings, finding)
-				}
-			}
-			sqliResult.Findings = verifiedSQLiFindings
-			sqliResult.Summary.VulnerabilitiesFound = len(verifiedSQLiFindings)
-
-			verifiedNoSQLiFindings := make([]NoSQLiFinding, 0)
-			for _, finding := range nosqliResult.Findings {
-				if finding.Verified {
-					verifiedNoSQLiFindings = append(verifiedNoSQLiFindings, finding)
-				}
-			}
-			nosqliResult.Findings = verifiedNoSQLiFindings
-			nosqliResult.Summary.VulnerabilitiesFound = len(verifiedNoSQLiFindings)
-
-			verifiedCSRFFindings := make([]CSRFFinding, 0)
-			for _, finding := range csrfResult.Findings {
-				if finding.Verified {
-					verifiedCSRFFindings = append(verifiedCSRFFindings, finding)
-				}
-			}
-			csrfResult.Findings = verifiedCSRFFindings
-			csrfResult.Summary.VulnerableForms = len(verifiedCSRFFindings)
-
-			verifiedSSRFFindings := make([]SSRFFinding, 0)
-			for _, finding := range ssrfResult.Findings {
-				if finding.Verified {
-					verifiedSSRFFindings = append(verifiedSSRFFindings, finding)
-				}
-			}
-			ssrfResult.Findings = verifiedSSRFFindings
-			ssrfResult.Summary.VulnerabilitiesFound = len(verifiedSSRFFindings)
-
-			verifiedRedirectFindings := make([]RedirectFinding, 0)
-			for _, finding := range redirectResult.Findings {
-				if finding.Verified {
-					verifiedRedirectFindings = append(verifiedRedirectFindings, finding)
-				}
-			}
-			redirectResult.Findings = verifiedRedirectFindings
-			redirectResult.Summary.VulnerabilitiesFound = len(verifiedRedirectFindings)
-
-			verifiedCMDiFindings := make([]CMDiFinding, 0)
-			for _, finding := range cmdiResult.Findings {
-				if finding.Verified {
-					verifiedCMDiFindings = append(verifiedCMDiFindings, finding)
-				}
-			}
-			cmdiResult.Findings = verifiedCMDiFindings
-			cmdiResult.Summary.VulnerabilitiesFound = len(verifiedCMDiFindings)
-
-			verifiedPathTraversalFindings := make([]PathTraversalFinding, 0)
-			for _, finding := range pathtraversalResult.Findings {
-				if finding.Verified {
-					verifiedPathTraversalFindings = append(verifiedPathTraversalFindings, finding)
-				}
-			}
-			pathtraversalResult.Findings = verifiedPathTraversalFindings
-			pathtraversalResult.Summary.VulnerabilitiesFound = len(verifiedPathTraversalFindings)
-
-			verifiedSSTIFindings := make([]SSTIFinding, 0)
-			for _, finding := range sstiResult.Findings {
-				if finding.Verified {
-					verifiedSSTIFindings = append(verifiedSSTIFindings, finding)
-				}
-			}
-			sstiResult.Findings = verifiedSSTIFindings
-			sstiResult.Summary.VulnerabilitiesFound = len(verifiedSSTIFindings)
-
-			verifiedXXEFindings := make([]XXEFinding, 0)
-			for _, finding := range xxeResult.Findings {
-				if finding.Verified {
-					verifiedXXEFindings = append(verifiedXXEFindings, finding)
-				}
-			}
-			xxeResult.Findings = verifiedXXEFindings
-			xxeResult.Summary.VulnerabilitiesFound = len(verifiedXXEFindings)
 		}
 
+		// ── result assignment ──────────────────────────────────────────────
+		// Assign typed results to the intermediate result struct
+		// (place 2 of 2 when adding a new scanner).
 		intermediateResult.XSS = xssResult
 		intermediateResult.SQLi = sqliResult
 		intermediateResult.NoSQLi = nosqliResult
@@ -572,40 +734,16 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		intermediateResult.SSTI = sstiResult
 		intermediateResult.XXE = xxeResult
 
-		// Aggregate errors from active scans
-		if len(xssResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, xssResult.Errors...)
-		}
-		if len(sqliResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, sqliResult.Errors...)
-		}
-		if len(nosqliResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, nosqliResult.Errors...)
-		}
-		if len(csrfResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, csrfResult.Errors...)
-		}
-		if len(ssrfResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, ssrfResult.Errors...)
-		}
-		if len(redirectResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, redirectResult.Errors...)
-		}
-		if len(cmdiResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, cmdiResult.Errors...)
-		}
-		if len(pathtraversalResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, pathtraversalResult.Errors...)
-		}
-		if len(sstiResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, sstiResult.Errors...)
-		}
-		if len(xxeResult.Errors) > 0 {
-			intermediateResult.Errors = append(intermediateResult.Errors, xxeResult.Errors...)
+		// ── error aggregation ──────────────────────────────────────────────
+		// Collect errors from all active scanners via the common interface.
+		for _, e := range entries {
+			if errs := e.getErrors(); len(errs) > 0 {
+				intermediateResult.Errors = append(intermediateResult.Errors, errs...)
+			}
 		}
 	}
 
-	// Create unified result with correlation and risk scoring
+	// Create unified result with correlation and risk scoring.
 	unifiedResult := NewUnifiedScanResult(
 		cfg.Target,
 		cfg.SafeMode,
@@ -627,68 +765,62 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 	return unifiedResult, stats
 }
 
+// ─── CalculateFilteredCount ───────────────────────────────────────────────────
+
+// verifiedCountFromUnified aggregates the total number of findings that survived
+// verification by iterating over the typed result fields of a UnifiedScanResult.
+// It replaces 10 individual nil-check-and-count blocks with a single function.
+func verifiedCountFromUnified(r *UnifiedScanResult) int {
+	count := 0
+	if r.XSS != nil {
+		count += len(r.XSS.Findings)
+	}
+	if r.SQLi != nil {
+		count += len(r.SQLi.Findings)
+	}
+	if r.NoSQLi != nil {
+		count += len(r.NoSQLi.Findings)
+	}
+	if r.CSRF != nil {
+		count += len(r.CSRF.Findings)
+	}
+	if r.SSRF != nil {
+		count += len(r.SSRF.Findings)
+	}
+	if r.Redirect != nil {
+		count += len(r.Redirect.Findings)
+	}
+	if r.CMDi != nil {
+		count += len(r.CMDi.Findings)
+	}
+	if r.PathTraversal != nil {
+		count += len(r.PathTraversal.Findings)
+	}
+	if r.XXE != nil {
+		count += len(r.XXE.Findings)
+	}
+	return count
+}
+
 // CalculateFilteredCount calculates the number of findings that were filtered out during verification.
 func CalculateFilteredCount(stats *ScanStats, result *UnifiedScanResult) int {
 	if stats == nil || result == nil {
 		return 0
 	}
 
-	verifiedXSSCount := 0
-	if result.XSS != nil {
-		verifiedXSSCount = len(result.XSS.Findings)
-	}
+	totalBefore := stats.TotalXSSFindings +
+		stats.TotalSQLiFindings +
+		stats.TotalNoSQLiFindings +
+		stats.TotalCSRFFindings +
+		stats.TotalSSRFFindings +
+		stats.TotalRedirectFindings +
+		stats.TotalCMDiFindings +
+		stats.TotalPathTraversalFindings +
+		stats.TotalXXEFindings
 
-	verifiedSQLiCount := 0
-	if result.SQLi != nil {
-		verifiedSQLiCount = len(result.SQLi.Findings)
-	}
+	totalAfter := verifiedCountFromUnified(result)
 
-	verifiedNoSQLiCount := 0
-	if result.NoSQLi != nil {
-		verifiedNoSQLiCount = len(result.NoSQLi.Findings)
-	}
-
-	verifiedCSRFCount := 0
-	if result.CSRF != nil {
-		verifiedCSRFCount = len(result.CSRF.Findings)
-	}
-
-	verifiedSSRFCount := 0
-	if result.SSRF != nil {
-		verifiedSSRFCount = len(result.SSRF.Findings)
-	}
-
-	verifiedRedirectCount := 0
-	if result.Redirect != nil {
-		verifiedRedirectCount = len(result.Redirect.Findings)
-	}
-
-	verifiedCMDiCount := 0
-	if result.CMDi != nil {
-		verifiedCMDiCount = len(result.CMDi.Findings)
-	}
-
-	verifiedPathTraversalCount := 0
-	if result.PathTraversal != nil {
-		verifiedPathTraversalCount = len(result.PathTraversal.Findings)
-	}
-
-	verifiedXXECount := 0
-	if result.XXE != nil {
-		verifiedXXECount = len(result.XXE.Findings)
-	}
-
-	totalFiltered := (stats.TotalXSSFindings - verifiedXSSCount) +
-		(stats.TotalSQLiFindings - verifiedSQLiCount) +
-		(stats.TotalNoSQLiFindings - verifiedNoSQLiCount) +
-		(stats.TotalCSRFFindings - verifiedCSRFCount) +
-		(stats.TotalSSRFFindings - verifiedSSRFCount) +
-		(stats.TotalRedirectFindings - verifiedRedirectCount) +
-		(stats.TotalCMDiFindings - verifiedCMDiCount) +
-		(stats.TotalPathTraversalFindings - verifiedPathTraversalCount) +
-		(stats.TotalXXEFindings - verifiedXXECount)
-
-	return totalFiltered
+	return totalBefore - totalAfter
 }
 
 // FormatFilteredMessage creates a formatted message about filtered findings.
@@ -698,6 +830,8 @@ func FormatFilteredMessage(filteredCount int) string {
 	}
 	return ""
 }
+
+// ─── callback helpers ─────────────────────────────────────────────────────────
 
 // createCallbackServer creates a callback server from a callback URL.
 // The URL should be in the format: http://callback.example.com:8888
