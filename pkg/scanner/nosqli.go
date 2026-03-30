@@ -899,6 +899,15 @@ func (s *NoSQLiScanner) testWithBaselinePOST(ctx context.Context, baseURL *url.U
 	}
 
 	if s.isSignificantResponseChange(baseline, resp.StatusCode, len(body)) {
+		// Re-capture the baseline to detect external page modifications (e.g., concurrent
+		// scanners storing content on the same page during discovery scans).  If the fresh
+		// baseline itself has drifted significantly from the original, the differential
+		// analysis is unreliable — skip to avoid false positives on stored-content pages.
+		freshBaseline := s.getBaselinePOST(ctx, baseURL, paramName, allParameters)
+		if freshBaseline != nil && s.isSignificantResponseChange(baseline, freshBaseline.StatusCode, freshBaseline.BodyLength) {
+			return nil
+		}
+
 		if !s.confirmVarianceIsInjectionPOST(ctx, baseURL, paramName, allParameters, baseline) {
 			return nil
 		}

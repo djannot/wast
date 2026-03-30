@@ -1494,7 +1494,7 @@ func (r *CMDiScanResult) String() string {
 	if len(r.Findings) > 0 {
 		sb.WriteString("\nVulnerabilities:\n")
 		for i, f := range r.Findings {
-			sb.WriteString(fmt.Sprintf("\n  %d. [%s] %s Command Injection (%s)\n", i+1, strings.ToUpper(f.Severity), strings.Title(f.Type), f.OSType))
+			sb.WriteString(fmt.Sprintf("\n  %d. [%s] %s Command Injection (%s)\n", i+1, strings.ToUpper(f.Severity), titleCase(f.Type), f.OSType))
 			sb.WriteString(fmt.Sprintf("     Parameter: %s\n", f.Parameter))
 			sb.WriteString(fmt.Sprintf("     Payload: %s\n", f.Payload))
 			sb.WriteString(fmt.Sprintf("     Description: %s\n", f.Description))
