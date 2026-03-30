@@ -45,8 +45,14 @@ Safe mode performs **only passive security checks** that analyze server response
 ❌ **No Active Vulnerability Testing**
 - No XSS (Cross-Site Scripting) payload injection
 - No SQLi (SQL Injection) testing
+- No NoSQLi (NoSQL Injection) testing
+- No CMDi (Command Injection) testing
 - No CSRF (Cross-Site Request Forgery) exploitation attempts
 - No SSRF (Server-Side Request Forgery) testing
+- No Open Redirect testing
+- No Path Traversal / LFI testing
+- No SSTI (Server-Side Template Injection) testing
+- No XXE (XML External Entity) testing
 - No injection of any attack payloads
 
 ### Active Testing Mode
@@ -80,6 +86,30 @@ Active testing mode enables **active vulnerability testing** by sending potentia
 - Metadata endpoint testing
 - Private network probing
 - Protocol smuggling detection
+
+✅ **NoSQL Injection (NoSQLi) Testing**
+- NoSQL operator injection
+- Authentication bypass detection
+
+✅ **Command Injection (CMDi) Testing**
+- OS command injection detection
+- Command separator testing
+
+✅ **Open Redirect Testing**
+- URL redirection validation
+- Parameter-based redirect detection
+
+✅ **Path Traversal / LFI Testing**
+- Directory traversal detection
+- Local file inclusion testing
+
+✅ **Server-Side Template Injection (SSTI) Testing**
+- Template expression injection
+- Multiple template engine detection
+
+✅ **XML External Entity (XXE) Testing**
+- External entity injection
+- XML parser exploitation detection
 
 ## When to Use Each Mode
 
