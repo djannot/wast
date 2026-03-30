@@ -464,9 +464,20 @@ func (s *NoSQLiScanner) ScanPOST(ctx context.Context, targetURL string, paramete
 		}
 	}
 
+	// Filter out non-data parameters (submit buttons, CSRF tokens, etc.) so that
+	// the scanner only probes fields that are likely to reach a NoSQL query.
+	// The full params map is still passed to each request builder so that fixed
+	// form fields (e.g. submit buttons) are included in every POST body.
+	paramsToTest := make(map[string]string)
+	for paramName, paramValue := range params {
+		if !isNonDataParameter(paramName) {
+			paramsToTest[paramName] = paramValue
+		}
+	}
+
 	// Get baseline responses for differential analysis
 	baselineResponses := make(map[string]*baselineResponse)
-	for paramName := range params {
+	for paramName := range paramsToTest {
 		baseline := s.getBaselinePOST(ctx, parsedURL, paramName, params)
 		if baseline != nil {
 			baselineResponses[paramName] = baseline
@@ -474,7 +485,7 @@ func (s *NoSQLiScanner) ScanPOST(ctx context.Context, targetURL string, paramete
 	}
 
 	// Test each parameter with each payload
-	for paramName := range params {
+	for paramName := range paramsToTest {
 		for _, payload := range nosqliPayloads {
 			// Apply rate limiting
 			if s.rateLimiter != nil {
