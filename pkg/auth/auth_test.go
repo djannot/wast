@@ -556,8 +556,8 @@ func TestAuthConfig_PerformLogin_NoCookies(t *testing.T) {
 		t.Fatal("Expected error when no cookies received, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "no cookies were received") {
-		t.Errorf("Expected no cookies error, got: %v", err)
+	if !strings.Contains(err.Error(), "no session credentials were received") {
+		t.Errorf("Expected no session credentials error, got: %v", err)
 	}
 }
 
@@ -800,8 +800,8 @@ func TestAuthConfig_PerformLogin_NeitherCookiesNorJWT(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error when neither cookies nor JWT token received, got nil")
 	}
-	if !strings.Contains(err.Error(), "no cookies were received") {
-		t.Errorf("Expected 'no cookies were received' error, got: %v", err)
+	if !strings.Contains(err.Error(), "no session credentials were received") {
+		t.Errorf("Expected 'no session credentials were received' error, got: %v", err)
 	}
 }
 

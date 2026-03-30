@@ -493,6 +493,14 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"description": "Form field name for password (default: 'password')",
 				"default":     "password",
 			},
+			"login_content_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Content type for login request: \"form\" (default) or \"json\"",
+			},
+			"login_token_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Dot-separated JSON path to extract a bearer token from the login response body (e.g. \"authentication.token\" for OWASP Juice Shop)",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -526,6 +534,8 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		LoginPass         string   `json:"login_pass"`
 		LoginUserField    string   `json:"login_user_field"`
 		LoginPassField    string   `json:"login_pass_field"`
+		LoginContentType  string   `json:"login_content_type"`
+		LoginTokenField   string   `json:"login_token_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 		CallbackURL       string   `json:"callback_url"`
 	}
@@ -577,6 +587,8 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 			Password:      args.LoginPass,
 			UsernameField: args.LoginUserField,
 			PasswordField: args.LoginPassField,
+			ContentType:   args.LoginContentType,
+			TokenField:    args.LoginTokenField,
 		}
 		// Perform login to capture session cookies
 		if err := authConfig.PerformLogin(ctx); err != nil {
@@ -688,6 +700,14 @@ func (t *CrawlTool) InputSchema() map[string]interface{} {
 				"description": "Form field name for password (default: 'password')",
 				"default":     "password",
 			},
+			"login_content_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Content type for login request: \"form\" (default) or \"json\"",
+			},
+			"login_token_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Dot-separated JSON path to extract a bearer token from the login response body (e.g. \"authentication.token\" for OWASP Juice Shop)",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -715,6 +735,8 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		LoginPass         string   `json:"login_pass"`
 		LoginUserField    string   `json:"login_user_field"`
 		LoginPassField    string   `json:"login_pass_field"`
+		LoginContentType  string   `json:"login_content_type"`
+		LoginTokenField   string   `json:"login_token_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -773,6 +795,8 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 			Password:      args.LoginPass,
 			UsernameField: args.LoginUserField,
 			PasswordField: args.LoginPassField,
+			ContentType:   args.LoginContentType,
+			TokenField:    args.LoginTokenField,
 		}
 		// Perform login to capture session cookies
 		if err := authConfig.PerformLogin(ctx); err != nil {
@@ -870,6 +894,14 @@ func (t *APITool) InputSchema() map[string]interface{} {
 				"description": "Form field name for password (default: 'password')",
 				"default":     "password",
 			},
+			"login_content_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Content type for login request: \"form\" (default) or \"json\"",
+			},
+			"login_token_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Dot-separated JSON path to extract a bearer token from the login response body (e.g. \"authentication.token\" for OWASP Juice Shop)",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -894,6 +926,8 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 		LoginPass         string   `json:"login_pass"`
 		LoginUserField    string   `json:"login_user_field"`
 		LoginPassField    string   `json:"login_pass_field"`
+		LoginContentType  string   `json:"login_content_type"`
+		LoginTokenField   string   `json:"login_token_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -934,6 +968,8 @@ func (t *APITool) Execute(ctx context.Context, params json.RawMessage) (interfac
 			Password:      args.LoginPass,
 			UsernameField: args.LoginUserField,
 			PasswordField: args.LoginPassField,
+			ContentType:   args.LoginContentType,
+			TokenField:    args.LoginTokenField,
 		}
 		// Perform login to capture session cookies
 		if err := authConfig.PerformLogin(ctx); err != nil {
@@ -1212,6 +1248,14 @@ func (t *VerifyTool) InputSchema() map[string]interface{} {
 				"description": "Form field name for password (default: 'password')",
 				"default":     "password",
 			},
+			"login_content_type": map[string]interface{}{
+				"type":        "string",
+				"description": "Content type for login request: \"form\" (default) or \"json\"",
+			},
+			"login_token_field": map[string]interface{}{
+				"type":        "string",
+				"description": "Dot-separated JSON path to extract a bearer token from the login response body (e.g. \"authentication.token\" for OWASP Juice Shop)",
+			},
 			"requests_per_second": map[string]interface{}{
 				"type":        "number",
 				"description": "Rate limit for requests per second (0 for unlimited)",
@@ -1239,6 +1283,8 @@ func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (inter
 		LoginPass         string   `json:"login_pass"`
 		LoginUserField    string   `json:"login_user_field"`
 		LoginPassField    string   `json:"login_pass_field"`
+		LoginContentType  string   `json:"login_content_type"`
+		LoginTokenField   string   `json:"login_token_field"`
 		RequestsPerSecond float64  `json:"requests_per_second"`
 	}
 
@@ -1306,6 +1352,8 @@ func (t *VerifyTool) Execute(ctx context.Context, params json.RawMessage) (inter
 			Password:      args.LoginPass,
 			UsernameField: args.LoginUserField,
 			PasswordField: args.LoginPassField,
+			ContentType:   args.LoginContentType,
+			TokenField:    args.LoginTokenField,
 		}
 		// Perform login to capture session cookies
 		if err := authConfig.PerformLogin(ctx); err != nil {

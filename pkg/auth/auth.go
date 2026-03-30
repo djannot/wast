@@ -331,8 +331,9 @@ func (c *AuthConfig) PerformLogin(ctx context.Context) error {
 		if token, err := extractBearerTokenFromBody(body, c.Login.TokenField); err == nil {
 			c.BearerToken = token
 			return nil
+		} else {
+			return fmt.Errorf("login succeeded but no session credentials were received: %w (check cookies and token_field configuration)", err)
 		}
-		return fmt.Errorf("login succeeded but no cookies were received (check if login was actually successful)")
 	}
 
 	// Populate the Cookies field with captured cookies
@@ -407,6 +408,8 @@ func extractNestedStringField(data map[string]interface{}, path string) string {
 }
 
 // looksLikeJWT performs a quick check if a string looks like a JWT.
+// NOTE: This is a deliberate duplicate of api.LooksLikeJWT. pkg/api imports pkg/auth,
+// so pkg/auth cannot import pkg/api without creating an import cycle.
 func looksLikeJWT(s string) bool {
 	parts := strings.Split(s, ".")
 	return len(parts) == 3 && len(parts[0]) > 0
