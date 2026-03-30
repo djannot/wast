@@ -246,6 +246,7 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	}
 	csrfOpts := []CSRFOption{
 		WithCSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
+		WithCSRFActiveMode(!cfg.SafeMode), // enable server-side token verification in active mode
 	}
 	ssrfOpts := []SSRFOption{
 		WithSSRFTimeout(time.Duration(cfg.Timeout) * time.Second),
@@ -1091,17 +1092,9 @@ func scanTargetForNoSQLi(ctx context.Context, scanner *NoSQLiScanner, target Dis
 }
 
 // scanTargetForCSRF scans a single discovered target for CSRF vulnerabilities.
+// Both GET and POST targets are scanned because any page may contain forms
+// vulnerable to CSRF (e.g., DVWA's GET-based password change form).
 func scanTargetForCSRF(ctx context.Context, scanner *CSRFScanner, target DiscoveredTarget) *CSRFScanResult {
-	// Only scan POST forms for CSRF
-	if !strings.EqualFold(target.Method, "POST") {
-		return &CSRFScanResult{
-			Target:   target.URL,
-			Findings: []CSRFFinding{},
-			Summary:  CSRFSummary{},
-			Errors:   []string{},
-		}
-	}
-
 	// Parse URL to get the page that contains the form
 	parsedURL, err := url.Parse(target.URL)
 	if err != nil {

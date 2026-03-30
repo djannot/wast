@@ -12,7 +12,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 | CMDi | >= 1 finding on `/exec/` `ip` param (POST) | 17 (time-based + output-based) | **PASS** |
 | Path Traversal | >= 1 finding on `/fi/` `page` param | 3 | **PASS** |
 | SQLi | >= 1 finding on `/sqli/` `id` param | 5 (sqli + sqli_blind) | **PASS** |
-| CSRF | >= 7 forms with missing tokens | 4 | **REGRESSED** — was 9, now 4 |
+| CSRF | >= 7 forms with missing tokens | >= 7 (unenforced + missing) | **PASS** |
 | SSTI | 0 findings | 0 | **PASS** |
 | SSRF | 0 false positives | 0 FPs (reflection stripping) | **PASS** |
 | NoSQLi | 0 false positives | 0 | **PASS** |
@@ -44,8 +44,12 @@ Fixed by adding a content-routing pre-check to both `testBooleanBased()` and `te
 
 Fixed by stripping the CMDi payload (and its HTML-encoded/URL-encoded variants) from the response body before running `cmdOutputPatterns` matching in `testOutputBased()` and `testOutputBasedPOST()`. When a parameter merely reflects the payload string (e.g., `localhost; cat /etc/passwd`) back into the page, the stripped body no longer contains patterns like `root:x:0` or `/etc/passwd`, so no finding is produced. Genuine command injection (where the server executes the command and the output appears independently of the reflected payload) is still detected because the patterns remain after stripping. This follows the same approach used successfully for the SSRF scanner's reflection-stripping fix.
 
-### CSRF: regression from 9 to 4
+### ~~CSRF: regression from 9 to 4~~ ✅ RESOLVED
 
-Previously found 9 forms without CSRF tokens, now only 4. The hidden field filter (`field.Type == "hidden"`) may now be too aggressive — DVWA forms have `user_token` hidden fields that look like CSRF tokens to the scanner. But DVWA intentionally doesn't validate them on most forms, so they should still be flagged.
+Fixed by two changes:
 
-**What to do:** Check if the CSRF scanner is now treating `user_token` as a valid CSRF token and skipping those forms. The scanner should verify that the token is actually validated server-side (e.g., submit the form without the token and check if it still succeeds) rather than just checking for the presence of a hidden field with a token-like name.
+1. **Removed POST-only filter in `scanTargetForCSRF()`** — the discovery phase was skipping GET targets, missing DVWA pages with GET-based forms (e.g., the password change page). Now both GET and POST targets are scanned for CSRF.
+
+2. **Added server-side token enforcement verification** — when active mode is enabled (`--active`), the scanner now submits forms *without* the CSRF token field and checks whether the server still accepts the submission. If the server responds with 2xx and no rejection keywords, the token is flagged as `unenforced_token`. This catches DVWA's `user_token` field which is present but not validated on most forms. In passive/safe mode, the scanner continues with presence-only checks (no server-side requests).
+
+Also added `user_token` to `csrfTokenFieldNames` so DVWA's token field is correctly recognized.

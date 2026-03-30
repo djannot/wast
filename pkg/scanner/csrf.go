@@ -26,6 +26,7 @@ type CSRFScanner struct {
 	authConfig  *auth.AuthConfig
 	rateLimiter ratelimit.Limiter
 	tracer      trace.Tracer
+	activeMode  bool // when true, verify tokens server-side
 }
 
 // CSRFScanResult represents the result of a CSRF vulnerability scan.
@@ -70,6 +71,21 @@ var csrfTokenFieldNames = []string{
 	"token",
 	"xsrf_token",
 	"_xsrf",
+	"user_token", // DVWA
+}
+
+// Keywords in server responses that indicate a rejected submission.
+var tokenRejectionKeywords = []string{
+	"csrf token is incorrect",
+	"invalid token",
+	"token expired",
+	"token mismatch",
+	"forbidden",
+	"access denied",
+	"session expired",
+	"security token",
+	"invalid csrf",
+	"csrf verification failed",
 }
 
 // Custom headers that can provide CSRF protection.
@@ -129,6 +145,15 @@ func WithCSRFRateLimitConfig(cfg ratelimit.Config) CSRFOption {
 func WithCSRFTracer(tracer trace.Tracer) CSRFOption {
 	return func(s *CSRFScanner) {
 		s.tracer = tracer
+	}
+}
+
+// WithCSRFActiveMode enables active server-side token verification.
+// When active mode is on, the scanner submits forms without the CSRF token
+// to check if the server actually enforces the token.
+func WithCSRFActiveMode(active bool) CSRFOption {
+	return func(s *CSRFScanner) {
+		s.activeMode = active
 	}
 }
 
@@ -242,8 +267,8 @@ func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResul
 		}
 
 		// Check for CSRF token in form fields
-		hasCSRFToken := s.hasCSRFToken(form.Fields)
-		if !hasCSRFToken {
+		hasToken := s.hasCSRFToken(form.Fields)
+		if !hasToken {
 			finding := CSRFFinding{
 				FormAction:  form.Action,
 				FormMethod:  form.Method,
@@ -255,6 +280,22 @@ func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResul
 			}
 			result.Findings = append(result.Findings, finding)
 			result.Summary.VulnerableForms++
+		} else if s.activeMode {
+			// Token field is present — verify it is actually enforced server-side.
+			enforced := s.isTokenEnforced(ctx, form, targetURL)
+			if !enforced {
+				finding := CSRFFinding{
+					FormAction:  form.Action,
+					FormMethod:  form.Method,
+					FormPage:    form.Page,
+					Type:        "unenforced_token",
+					Severity:    SeverityHigh,
+					Description: "Form contains a CSRF token field but the server does not enforce it - the form is accepted without the token, making it vulnerable to Cross-Site Request Forgery attacks",
+					Remediation: "Validate the CSRF token server-side on every state-changing request. Reject requests that omit or supply an invalid token.",
+				}
+				result.Findings = append(result.Findings, finding)
+				result.Summary.VulnerableForms++
+			}
 		}
 	}
 
@@ -378,6 +419,140 @@ func (s *CSRFScanner) hasCSRFToken(fields []crawler.FormFieldInfo) bool {
 	return false
 }
 
+// isTokenEnforced submits the form WITHOUT the CSRF token field and checks
+// whether the server still accepts it.  If the server responds with a 2xx
+// status and no rejection keywords, the token is considered unenforced.
+// This method is only called when active mode is enabled.
+func (s *CSRFScanner) isTokenEnforced(ctx context.Context, form crawler.FormInfo, pageURL string) bool {
+	// Apply rate limiting
+	if s.rateLimiter != nil {
+		if err := s.rateLimiter.Wait(ctx); err != nil {
+			return true // assume enforced on error (conservative)
+		}
+	}
+
+	// Build form data excluding CSRF token fields
+	formData := url.Values{}
+	for _, field := range form.Fields {
+		if s.isCSRFTokenField(field) {
+			continue // omit the token
+		}
+		if field.Name != "" {
+			formData.Set(field.Name, field.Value)
+		}
+	}
+
+	// Resolve the form action URL
+	actionURL := form.Action
+	if actionURL == "" || actionURL == "#" {
+		actionURL = pageURL
+	} else if !strings.HasPrefix(actionURL, "http") {
+		base, err := url.Parse(pageURL)
+		if err != nil {
+			return true
+		}
+		ref, err := url.Parse(actionURL)
+		if err != nil {
+			return true
+		}
+		actionURL = base.ResolveReference(ref).String()
+	}
+
+	method := strings.ToUpper(form.Method)
+	if method == "" {
+		method = "GET"
+	}
+
+	var req *http.Request
+	var err error
+
+	if method == "GET" {
+		u, parseErr := url.Parse(actionURL)
+		if parseErr != nil {
+			return true
+		}
+		q := u.Query()
+		for k, vals := range formData {
+			for _, v := range vals {
+				q.Set(k, v)
+			}
+		}
+		u.RawQuery = q.Encode()
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	} else {
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, actionURL, strings.NewReader(formData.Encode()))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+	}
+	if err != nil {
+		return true
+	}
+
+	req.Header.Set("User-Agent", s.userAgent)
+	if s.authConfig != nil {
+		s.authConfig.ApplyToRequest(req)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return true
+	}
+	defer resp.Body.Close()
+
+	// If the server returns 403, 401, or a redirect to login — token is enforced
+	if resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusUnauthorized {
+		return true
+	}
+
+	// Read response body to look for rejection messages
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return true
+	}
+	bodyLower := strings.ToLower(string(body))
+
+	for _, keyword := range tokenRejectionKeywords {
+		if strings.Contains(bodyLower, keyword) {
+			return true
+		}
+	}
+
+	// If the server returned a 2xx with no rejection signals, the token is NOT enforced
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return false
+	}
+
+	// For 3xx redirects, check if it redirects to a login page (enforced)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		location := resp.Header.Get("Location")
+		locationLower := strings.ToLower(location)
+		if strings.Contains(locationLower, "login") || strings.Contains(locationLower, "signin") || strings.Contains(locationLower, "auth") {
+			return true
+		}
+		// Non-login redirect with no rejection keywords — likely unenforced
+		return false
+	}
+
+	// Conservative default: assume enforced
+	return true
+}
+
+// isCSRFTokenField checks if a form field is a CSRF token field.
+func (s *CSRFScanner) isCSRFTokenField(field crawler.FormFieldInfo) bool {
+	if field.Type != "hidden" && field.Type != "text" {
+		return false
+	}
+	fieldNameLower := strings.ToLower(field.Name)
+	for _, tokenName := range csrfTokenFieldNames {
+		if fieldNameLower == strings.ToLower(tokenName) {
+			return true
+		}
+	}
+	return false
+}
+
 // String returns a human-readable representation of the scan result.
 func (r *CSRFScanResult) String() string {
 	var sb strings.Builder
@@ -445,6 +620,16 @@ func (s *CSRFScanner) VerifyFinding(ctx context.Context, finding *CSRFFinding, c
 	// For missing_token findings, we verify by checking if the form can be submitted without a token
 	if finding.Type == "missing_token" {
 		return s.verifyMissingTokenFinding(ctx, finding, config)
+	}
+
+	// For unenforced_token findings, the token was already verified server-side during active scan
+	if finding.Type == "unenforced_token" {
+		return &VerificationResult{
+			Verified:    true,
+			Attempts:    1,
+			Confidence:  0.95,
+			Explanation: "CSRF token field is present but server does not enforce it - verified by submitting without token",
+		}, nil
 	}
 
 	// For other types, return a conservative verification

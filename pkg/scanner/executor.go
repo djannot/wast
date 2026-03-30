@@ -81,6 +81,7 @@ type CommonScannerConfig struct {
 	HTTPClient      *http.Client
 	RateLimitConfig ratelimit.Config
 	Tracer          trace.Tracer
+	ActiveMode      bool // true when safe mode is disabled (enables active verification)
 }
 
 // activeScanEntry bundles the per-scanner closures needed for the common execution
@@ -199,7 +200,10 @@ func buildNoSQLiOpts(c CommonScannerConfig) []NoSQLiOption {
 }
 
 func buildCSRFOpts(c CommonScannerConfig) []CSRFOption {
-	opts := []CSRFOption{WithCSRFTimeout(c.Timeout)}
+	opts := []CSRFOption{
+		WithCSRFTimeout(c.Timeout),
+		WithCSRFActiveMode(c.ActiveMode),
+	}
 	if c.AuthConfig != nil && !c.AuthConfig.IsEmpty() {
 		opts = append(opts, WithCSRFAuth(c.AuthConfig))
 	}
@@ -364,6 +368,7 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		HTTPClient:      cfg.HTTPClient,
 		RateLimitConfig: cfg.RateLimitConfig,
 		Tracer:          cfg.Tracer,
+		ActiveMode:      !cfg.SafeMode,
 	}
 
 	// Perform the (always-active) passive header scan.
