@@ -10,6 +10,9 @@ COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
+# Minimum coverage threshold (percentage)
+MIN_COVERAGE ?= 74
+
 # Go parameters
 GOCMD := go
 GOBUILD := $(GOCMD) build
@@ -87,6 +90,22 @@ test-coverage: test
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
+# Check coverage against existing coverage.out (no test re-run)
+.PHONY: check-coverage
+check-coverage:
+	@echo "Checking coverage threshold (minimum: $(MIN_COVERAGE)%)..."
+	@COVERAGE=$$($(GOCMD) tool cover -func=coverage.out | grep "^total:" | awk '{print substr($$3, 1, length($$3)-1)}'); \
+	if [ -z "$${COVERAGE}" ]; then \
+		echo "ERROR: could not extract coverage from coverage.out"; \
+		exit 1; \
+	fi; \
+	echo "Total coverage: $${COVERAGE}%"; \
+	awk -v cov="$${COVERAGE}" -v min="$(MIN_COVERAGE)" 'BEGIN {if (cov+0 < min+0) {print "FAIL: coverage " cov "% < " min "%"; exit 1} else {print "PASS"}}'
+
+# Run tests then check coverage threshold
+.PHONY: coverage-check
+coverage-check: test check-coverage
+
 # Run linters
 .PHONY: lint
 lint:
@@ -159,6 +178,8 @@ help:
 	@echo "  build-all        Build for multiple platforms"
 	@echo "  test             Run tests with coverage"
 	@echo "  test-coverage    Generate HTML coverage report"
+	@echo "  check-coverage   Check coverage against existing coverage.out (no test re-run, MIN_COVERAGE=$(MIN_COVERAGE)%)"
+	@echo "  coverage-check   Run tests then check coverage threshold (MIN_COVERAGE=$(MIN_COVERAGE)%)"
 	@echo "  test-integration Run integration tests"
 	@echo "  test-dvwa        Run DVWA integration tests"
 	@echo "  test-juiceshop   Run Juice Shop integration tests"
