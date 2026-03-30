@@ -1113,12 +1113,17 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		}
 	}
 
+	// Strip the payload and its variants from the response body before running
+	// signature checks. This prevents reflected input (e.g., a parameter that
+	// echoes "http://127.0.0.1" back into the page) from triggering SSRF signatures.
+	bodyForSignatureChecks := stripPayloadFromBody(body, payload.Payload)
+
 	// Check for status codes that indicate successful internal requests
 	if resp.StatusCode == http.StatusOK {
 		// Look for cloud metadata signatures
 		if payload.Target == "aws-metadata" {
 			// AWS metadata often returns plain text with specific patterns
-			if containsAWSMetadataSignature(body) {
+			if containsAWSMetadataSignature(bodyForSignatureChecks) {
 				// Check if these signatures were NOT in baseline
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "aws") {
 					return "", ""
@@ -1128,7 +1133,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		}
 
 		if payload.Target == "gcp-metadata" {
-			if containsGCPMetadataSignature(body) {
+			if containsGCPMetadataSignature(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "gcp") {
 					return "", ""
 				}
@@ -1137,7 +1142,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		}
 
 		if payload.Target == "azure-metadata" {
-			if containsAzureMetadataSignature(body) {
+			if containsAzureMetadataSignature(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "azure") {
 					return "", ""
 				}
@@ -1146,7 +1151,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		}
 
 		if payload.Target == "k8s-metadata" {
-			if containsKubernetesMetadataSignature(body) {
+			if containsKubernetesMetadataSignature(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "k8s") {
 					return "", ""
 				}
@@ -1157,14 +1162,14 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		// Check for localhost/internal responses
 		if payload.Target == "localhost" {
 			// Look for common localhost service responses
-			if containsLocalhostSignature(body) {
+			if containsLocalhostSignature(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "localhost") {
 					return "", ""
 				}
 				return "high", "Response contains localhost service signatures"
 			}
 			// Check for private network patterns
-			if containsPrivateIPPatterns(body) {
+			if containsPrivateIPPatterns(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "private-ip") {
 					return "", ""
 				}
@@ -1174,7 +1179,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 
 		// Check for file protocol access
 		if payload.Target == "file-protocol" {
-			if containsFileAccessSignature(body) {
+			if containsFileAccessSignature(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "file") {
 					return "", ""
 				}
@@ -1185,7 +1190,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		// Check for private network responses
 		if payload.Target == "private-network" {
 			// Only report if we detect actual private network content
-			if containsPrivateIPPatterns(body) || containsInternalServiceSignatures(body) {
+			if containsPrivateIPPatterns(bodyForSignatureChecks) || containsInternalServiceSignatures(bodyForSignatureChecks) {
 				// Check if these signatures were already in baseline
 				if baseline != nil && (s.signaturesInBaseline(baseline.Signatures, "private-ip") || s.signaturesInBaseline(baseline.Signatures, "service")) {
 					return "", ""
@@ -1197,7 +1202,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 		// Check for protocol smuggling responses
 		if strings.HasSuffix(payload.Target, "-protocol") {
 			// Only report if there's evidence the protocol was actually processed
-			if containsFileAccessSignature(body) || containsProtocolSmugglingSignatures(body) {
+			if containsFileAccessSignature(bodyForSignatureChecks) || containsProtocolSmugglingSignatures(bodyForSignatureChecks) {
 				if baseline != nil && s.signaturesInBaseline(baseline.Signatures, "file") {
 					return "", ""
 				}
@@ -1212,7 +1217,7 @@ func (s *SSRFScanner) analyzeSSRFResponse(resp *http.Response, body string, payl
 	}
 
 	// Check for error messages that reveal internal network structure
-	if containsInternalNetworkErrorPatterns(body) {
+	if containsInternalNetworkErrorPatterns(bodyForSignatureChecks) {
 		return "medium", "Response contains internal network error messages"
 	}
 
@@ -1325,6 +1330,66 @@ func containsKubernetesMetadataSignature(body string) bool {
 
 	// If we find multiple Kubernetes-specific terms, it's likely Kubernetes API response
 	return matchCount >= 2
+}
+
+// stripPayloadFromBody removes occurrences of the SSRF payload and its common
+// reflected variants from the response body.  This prevents reflected input
+// (e.g. a parameter that echoes "http://127.0.0.1" back into the page) from
+// triggering SSRF signature detections.
+//
+// Only the full payload URL (and its encoded/decoded forms) is stripped — the
+// bare host/IP is intentionally kept so that genuine SSRF responses (where the
+// server actually fetched content from an internal host and the response
+// mentions that host) are still detected.
+func stripPayloadFromBody(body string, payload string) string {
+	if payload == "" {
+		return body
+	}
+
+	result := body
+
+	// Build a list of strings to strip: the raw payload plus common variants
+	toStrip := []string{payload}
+
+	// Add URL-decoded variant (handles %3A%2F%2F etc.)
+	if decoded, err := url.QueryUnescape(payload); err == nil && decoded != payload {
+		toStrip = append(toStrip, decoded)
+	}
+
+	// Add URL-encoded variant
+	encoded := url.QueryEscape(payload)
+	if encoded != payload {
+		toStrip = append(toStrip, encoded)
+	}
+
+	// Add scheme://host form if it differs from the full payload
+	// (e.g. payload "http://127.0.0.1/path" → also strip "http://127.0.0.1")
+	if u, err := url.Parse(payload); err == nil && u.Host != "" {
+		schemeHost := u.Scheme + "://" + u.Host
+		if schemeHost != payload {
+			toStrip = append(toStrip, schemeHost)
+		}
+	}
+
+	// Remove all variants (case-insensitive)
+	for _, s := range toStrip {
+		if s == "" {
+			continue
+		}
+		// Case-insensitive removal
+		sLower := strings.ToLower(s)
+		idx := 0
+		for {
+			pos := strings.Index(strings.ToLower(result[idx:]), sLower)
+			if pos == -1 {
+				break
+			}
+			result = result[:idx+pos] + result[idx+pos+len(s):]
+			// don't advance idx — the replacement may have brought new content to this position
+		}
+	}
+
+	return result
 }
 
 // containsLocalhostSignature checks if response contains localhost service signatures.
