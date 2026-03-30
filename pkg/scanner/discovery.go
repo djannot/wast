@@ -984,23 +984,23 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 	}
 
 	// Create unified result
-	unifiedResult := NewUnifiedScanResult(
-		cfg.Target,
-		cfg.SafeMode,
-		intermediateResult.Headers,
-		intermediateResult.XSS,
-		intermediateResult.SQLi,
-		intermediateResult.NoSQLi,
-		intermediateResult.CSRF,
-		intermediateResult.SSRF,
-		intermediateResult.Redirect,
-		intermediateResult.CMDi,
-		intermediateResult.PathTraversal,
-		intermediateResult.SSTI,
-		intermediateResult.XXE,
-		websocketResult,
-		intermediateResult.Errors,
-	)
+	unifiedResult := NewUnifiedScanResult(ScanResultOptions{
+		Target:        cfg.Target,
+		PassiveOnly:   cfg.SafeMode,
+		Headers:       intermediateResult.Headers,
+		XSS:           intermediateResult.XSS,
+		SQLi:          intermediateResult.SQLi,
+		NoSQLi:        intermediateResult.NoSQLi,
+		CSRF:          intermediateResult.CSRF,
+		SSRF:          intermediateResult.SSRF,
+		Redirect:      intermediateResult.Redirect,
+		CMDi:          intermediateResult.CMDi,
+		PathTraversal: intermediateResult.PathTraversal,
+		SSTI:          intermediateResult.SSTI,
+		XXE:           intermediateResult.XXE,
+		WebSocket:     websocketResult,
+		Errors:        intermediateResult.Errors,
+	})
 
 	return unifiedResult, stats
 }

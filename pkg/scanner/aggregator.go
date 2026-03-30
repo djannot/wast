@@ -84,6 +84,27 @@ type RiskScore struct {
 	Breakdown  map[string]int `json:"breakdown" yaml:"breakdown"`   // category -> score
 }
 
+// ScanResultOptions provides all parameters needed to create a UnifiedScanResult.
+// Using a struct instead of positional parameters makes call sites self-documenting
+// and allows adding new scanner types without updating existing callers.
+type ScanResultOptions struct {
+	Target        string
+	PassiveOnly   bool
+	Headers       *HeaderScanResult
+	XSS           *XSSScanResult
+	SQLi          *SQLiScanResult
+	NoSQLi        *NoSQLiScanResult
+	CSRF          *CSRFScanResult
+	SSRF          *SSRFScanResult
+	Redirect      *RedirectScanResult
+	CMDi          *CMDiScanResult
+	PathTraversal *PathTraversalScanResult
+	SSTI          *SSTIScanResult
+	XXE           *XXEScanResult
+	WebSocket     *WebSocketScanResult
+	Errors        []string
+}
+
 // UnifiedSummary provides an executive overview of all security findings.
 type UnifiedSummary struct {
 	TotalFindings      int      `json:"total_findings" yaml:"total_findings"`
@@ -96,24 +117,24 @@ type UnifiedSummary struct {
 
 // NewUnifiedScanResult creates a unified scan result from individual scanner outputs
 // and performs correlation analysis.
-func NewUnifiedScanResult(target string, passiveOnly bool, headers *HeaderScanResult, xss *XSSScanResult, sqli *SQLiScanResult, nosqli *NoSQLiScanResult, csrf *CSRFScanResult, ssrf *SSRFScanResult, redirect *RedirectScanResult, cmdi *CMDiScanResult, pathtraversal *PathTraversalScanResult, ssti *SSTIScanResult, xxe *XXEScanResult, websocket *WebSocketScanResult, errors []string) *UnifiedScanResult {
+func NewUnifiedScanResult(opts ScanResultOptions) *UnifiedScanResult {
 	result := &UnifiedScanResult{
-		Target:        target,
-		PassiveOnly:   passiveOnly,
-		Headers:       headers,
-		XSS:           xss,
-		SQLi:          sqli,
-		NoSQLi:        nosqli,
-		CSRF:          csrf,
-		SSRF:          ssrf,
-		Redirect:      redirect,
-		CMDi:          cmdi,
-		PathTraversal: pathtraversal,
-		SSTI:          ssti,
-		XXE:           xxe,
-		WebSocket:     websocket,
+		Target:        opts.Target,
+		PassiveOnly:   opts.PassiveOnly,
+		Headers:       opts.Headers,
+		XSS:           opts.XSS,
+		SQLi:          opts.SQLi,
+		NoSQLi:        opts.NoSQLi,
+		CSRF:          opts.CSRF,
+		SSRF:          opts.SSRF,
+		Redirect:      opts.Redirect,
+		CMDi:          opts.CMDi,
+		PathTraversal: opts.PathTraversal,
+		SSTI:          opts.SSTI,
+		XXE:           opts.XXE,
+		WebSocket:     opts.WebSocket,
 		Correlations:  make([]CorrelatedFinding, 0),
-		Errors:        errors,
+		Errors:        opts.Errors,
 	}
 
 	// Perform correlation analysis
