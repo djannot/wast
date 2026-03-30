@@ -1042,3 +1042,39 @@ func TestProxy_HandleConnect_Method(t *testing.T) {
 		t.Errorf("Expected status 500, got %d", resp.StatusCode)
 	}
 }
+
+func TestSaveTrafficToFile_Permissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	savePath := tmpDir + "/traffic.json"
+
+	p := NewProxy(WithSaveFile(savePath))
+
+	// Build a minimal ProxyResult to save
+	result := &ProxyResult{
+		Traffic: []*RequestResponsePair{
+			{
+				Request: &InterceptedRequest{
+					Method: "GET",
+					URL:    "http://example.com",
+				},
+				Response: &InterceptedResponse{
+					StatusCode: 200,
+				},
+			},
+		},
+	}
+
+	if err := p.saveTrafficToFile(result); err != nil {
+		t.Fatalf("saveTrafficToFile failed: %v", err)
+	}
+
+	info, err := os.Stat(savePath)
+	if err != nil {
+		t.Fatalf("failed to stat saved file: %v", err)
+	}
+
+	perm := info.Mode().Perm()
+	if perm != 0600 {
+		t.Errorf("expected file permissions 0600, got %04o", perm)
+	}
+}

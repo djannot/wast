@@ -442,7 +442,7 @@ func (p *Proxy) saveTrafficToFile(result *ProxyResult) error {
 		return fmt.Errorf("failed to marshal traffic: %w", err)
 	}
 
-	if err := os.WriteFile(p.saveFile, data, 0644); err != nil {
+	if err := os.WriteFile(p.saveFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
