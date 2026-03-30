@@ -23,7 +23,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 8 FPs on `doc` param | **FAIL** |
+| SQLi | 0 findings on non-injectable params | 0 FPs (content-routing pre-check) | **PASS** |
 | SSRF | 0 false positives on non-SSRF params | 0 FPs | **PASS** |
 | CMDi | 0 findings on non-injectable params | 4 FPs (`name`, `include`, `txtName`, `mtxMessage`) | **FAIL** |
 | All others | 0 false positives | 0 | **PASS** |
@@ -36,11 +36,9 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 Fixed by stripping the SSRF payload (and its URL-encoded/decoded variants) from the response body before running signature checks in `analyzeSSRFResponse()`. When a parameter merely reflects the payload URL (e.g., `http://127.0.0.1`) back into the page, the stripped body no longer contains localhost/private-IP signatures, so no finding is produced. Genuine SSRF (where the server fetches internal content containing those signatures independently of the payload) is still detected because the signatures remain after stripping.
 
-### SQLi: 8 false positives on `doc` param
+### ~~SQLi: 8 false positives on `doc` param~~ ✅ RESOLVED
 
-The `doc` param on `instructions.php` switches between documentation pages (readme, PDF, changelog, copying). Different values produce different response sizes — this is normal content routing, not injection. The boolean-based differential analysis sees different content and flags it.
-
-**What to do:** The differential analysis needs to distinguish between "response changes because input is injectable" vs "response changes because the app serves different content for different values." One approach: if the baseline value and a non-SQL value (e.g., `randomstring123`) also produce different responses, the param is content-routing, not injectable.
+Fixed by adding a content-routing pre-check to both `testBooleanBased()` and `testBooleanBasedPOST()`. Before running differential analysis, the scanner sends a request with a random non-SQL string (e.g., `randomstring_12345`) and compares the response against the baseline. If the random value also produces a significantly different response (using the same size-difference thresholds), the parameter is classified as content-routing and skipped. This eliminates all 8 false positives on DVWA's `doc` parameter (`instructions.php`) while preserving true positive detection on injectable parameters like `id`.
 
 ### CMDi: 4 false positives on non-command params
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -322,6 +323,10 @@ func TestSQLiScanner_Scan_ErrorBasedOracleError(t *testing.T) {
 
 func TestSQLiScanner_Scan_BooleanBasedDetection(t *testing.T) {
 	mock := newMockSQLiHTTPClient()
+
+	// Set default response to match baseline so the content-routing pre-check
+	// sees the same response for random strings as for the original value.
+	mock.defaultResponse = "<html><body>Product details for ID 1</body></html>"
 
 	// Baseline response
 	mock.responses["https://example.com/product?id=1"] = &http.Response{
@@ -839,6 +844,9 @@ func TestSQLiScanner_Scan_FalsePositive_NormalVariation(t *testing.T) {
 // Test for true positive with high confidence: differential analysis confirms SQLi
 func TestSQLiScanner_Scan_TruePositive_DifferentialAnalysis(t *testing.T) {
 	mock := newMockSQLiHTTPClient()
+
+	// Default response matches baseline so content-routing pre-check passes
+	mock.defaultResponse = "<html><body>Product ID 1: Widget</body></html>"
 
 	// Baseline response
 	mock.responses["https://example.com/product?id=1"] = &http.Response{
@@ -1391,6 +1399,9 @@ func TestSQLiScanner_ContentBasedDetection(t *testing.T) {
 		<p>No results found</p>
 	</body></html>`
 
+	// Default response matches baseline so content-routing pre-check passes
+	mock.defaultResponse = baselineHTML
+
 	// Configure mock responses for differential analysis
 	mock.responses["https://example.com/product?id=1"] = &http.Response{
 		StatusCode: http.StatusOK,
@@ -1473,6 +1484,9 @@ func TestSQLiScanner_ContentBasedDetection_DVWA(t *testing.T) {
 </div>
 </body>
 </html>`
+
+	// Default response matches baseline so content-routing pre-check passes
+	mock.defaultResponse = baselineHTML
 
 	mock.responses["https://dvwa.local/vulnerabilities/sqli/?id=1"] = &http.Response{
 		StatusCode: http.StatusOK,
@@ -2509,6 +2523,9 @@ func TestSQLiScanner_DVWAFixtures_NumericParam(t *testing.T) {
 
 	mock := newMockSQLiHTTPClient()
 
+	// Default response matches baseline so content-routing pre-check passes
+	mock.defaultResponse = string(baselineHTML)
+
 	// Baseline request (id=1) returns 1 row.
 	mock.responses["http://dvwa.local/vulnerabilities/sqli/?id=1"] = &http.Response{
 		StatusCode: http.StatusOK,
@@ -2700,6 +2717,9 @@ func TestSQLiScanner_Scan_DVWAStyleBooleanBased(t *testing.T) {
 </div>
 </body>
 </html>`
+
+	// Default response matches baseline so content-routing pre-check passes
+	mock.defaultResponse = baselineHTML
 
 	// Set up mock responses
 	mock.responses["https://example.com/dvwa/vulnerabilities/sqli/?id=1"] = &http.Response{
@@ -3060,5 +3080,242 @@ func TestAnalyzeResponse_CSRFTokenNormalization(t *testing.T) {
 	}
 	if words1 != words2 {
 		t.Errorf("analyzeResponse() WordCount differs for pages that differ only in CSRF token: %d vs %d (CSRF normalization not applied)", words1, words2)
+	}
+}
+
+// contentRoutingMock simulates a parameter that routes to different content pages.
+// Any value different from the original produces a significantly different response.
+type contentRoutingMock struct {
+	requests        []*http.Request
+	originalValue   string
+	originalBody    string // response for the original value
+	differentBody   string // response for any other value
+	trueBody        string // response for SQL true payloads (only used for injectable params)
+	falseBody       string // response for SQL false payloads (only used for injectable params)
+	injectable      bool   // if true, only SQL payloads produce different responses
+}
+
+func (m *contentRoutingMock) Do(req *http.Request) (*http.Response, error) {
+	m.requests = append(m.requests, req)
+
+	var postBody string
+	if req.Body != nil && req.Method == http.MethodPost {
+		bodyBytes, _ := io.ReadAll(req.Body)
+		postBody = string(bodyBytes)
+		req.Body = io.NopCloser(strings.NewReader(postBody))
+	}
+
+	// Collect all parameter values
+	var values []string
+	for _, vals := range req.URL.Query() {
+		values = append(values, vals...)
+	}
+	if postBody != "" {
+		values = append(values, postBody)
+	}
+
+	body := m.originalBody
+
+	for _, v := range values {
+		if m.injectable {
+			// Injectable parameter: only SQL payloads differ
+			if strings.Contains(v, "1'='1") || strings.Contains(v, "2'='2") {
+				body = m.trueBody
+			} else if strings.Contains(v, "1'='2") || strings.Contains(v, "2'='3") {
+				body = m.falseBody
+			}
+		} else {
+			// Content-routing parameter: any different value differs
+			if v != m.originalValue {
+				body = m.differentBody
+			}
+		}
+	}
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestContentRoutingPreCheck_GET_SkipsContentRoutingParam(t *testing.T) {
+	// Simulate a content-routing parameter like DVWA's doc param on instructions.php.
+	// ANY different value produces a very different response.
+	originalBody := strings.Repeat("a", 5000)  // baseline: 5000 bytes
+	differentBody := strings.Repeat("b", 8000) // random string response: 8000 bytes (60% larger)
+
+	mock := &contentRoutingMock{
+		originalValue: "readme",
+		originalBody:  originalBody,
+		differentBody: differentBody,
+		injectable:    false,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "https://example.com/instructions.php?doc=readme")
+
+	// Should produce NO boolean-based findings since the param is content-routing
+	for _, f := range result.Findings {
+		if f.Type == "boolean-based" {
+			t.Errorf("Expected no boolean-based findings for content-routing param, but got: param=%s payload=%s", f.Parameter, f.Payload)
+		}
+	}
+}
+
+func TestContentRoutingPreCheck_GET_DetectsInjectableParam(t *testing.T) {
+	// Simulate an injectable parameter like DVWA's id param on sqli/.
+	// Only SQL payloads produce different responses; random strings return the same as baseline.
+	originalBody := `<html><body><table><tr><td>ID: 1</td><td>First name: admin</td><td>Surname: admin</td></tr></table></body></html>`
+	trueBody := `<html><body><table><tr><td>ID: 1</td><td>First name: admin</td><td>Surname: admin</td></tr></table></body></html>`
+	falseBody := `<html><body><table></table></body></html>`
+
+	mock := &contentRoutingMock{
+		originalValue: "1",
+		originalBody:  originalBody,
+		trueBody:      trueBody,
+		falseBody:     falseBody,
+		injectable:    true,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "https://example.com/sqli/?id=1")
+
+	// Should produce boolean-based findings since the param IS injectable
+	hasBooleanFinding := false
+	for _, f := range result.Findings {
+		if f.Type == "boolean-based" {
+			hasBooleanFinding = true
+			break
+		}
+	}
+	if !hasBooleanFinding {
+		t.Error("Expected boolean-based findings for injectable param, but got none")
+	}
+}
+
+func TestContentRoutingPreCheck_POST_SkipsContentRoutingParam(t *testing.T) {
+	originalBody := strings.Repeat("a", 5000)
+	differentBody := strings.Repeat("b", 8000)
+
+	mock := &contentRoutingMock{
+		originalValue: "readme",
+		originalBody:  originalBody,
+		differentBody: differentBody,
+		injectable:    false,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	// Simulate POST scanning by testing the isContentRoutingPOST method directly
+	baseURL, _ := url.Parse("https://example.com/instructions.php")
+	baseline := &baselineResponse{
+		StatusCode: http.StatusOK,
+		BodyLength: len(originalBody),
+	}
+	allParams := map[string]string{"doc": "readme"}
+
+	isRouting := scanner.isContentRoutingPOST(ctx, baseURL, "doc", baseline, allParams)
+	if !isRouting {
+		t.Error("Expected isContentRoutingPOST to return true for content-routing param")
+	}
+}
+
+func TestContentRoutingPreCheck_POST_DetectsInjectableParam(t *testing.T) {
+	originalBody := `<html><body><table><tr><td>ID: 1</td></tr></table></body></html>`
+
+	mock := &contentRoutingMock{
+		originalValue: "1",
+		originalBody:  originalBody,
+		trueBody:      originalBody,
+		falseBody:     `<html><body><table></table></body></html>`,
+		injectable:    true,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	baseURL, _ := url.Parse("https://example.com/sqli/")
+	baseline := &baselineResponse{
+		StatusCode: http.StatusOK,
+		BodyLength: len(originalBody),
+	}
+	allParams := map[string]string{"id": "1"}
+
+	isRouting := scanner.isContentRoutingPOST(ctx, baseURL, "id", baseline, allParams)
+	if isRouting {
+		t.Error("Expected isContentRoutingPOST to return false for injectable param")
+	}
+}
+
+func TestResponseSignificantlyDiffers(t *testing.T) {
+	tests := []struct {
+		name     string
+		resp     *responseCharacteristics
+		baseline *baselineResponse
+		want     bool
+	}{
+		{
+			name: "same response",
+			resp: &responseCharacteristics{
+				StatusCode: 200,
+				BodyLength: 5000,
+			},
+			baseline: &baselineResponse{
+				StatusCode: 200,
+				BodyLength: 5000,
+			},
+			want: false,
+		},
+		{
+			name: "different status code",
+			resp: &responseCharacteristics{
+				StatusCode: 404,
+				BodyLength: 5000,
+			},
+			baseline: &baselineResponse{
+				StatusCode: 200,
+				BodyLength: 5000,
+			},
+			want: true,
+		},
+		{
+			name: "significant length difference",
+			resp: &responseCharacteristics{
+				StatusCode: 200,
+				BodyLength: 8000,
+			},
+			baseline: &baselineResponse{
+				StatusCode: 200,
+				BodyLength: 5000,
+			},
+			want: true, // 60% difference > 10% threshold
+		},
+		{
+			name: "small length difference within threshold",
+			resp: &responseCharacteristics{
+				StatusCode: 200,
+				BodyLength: 5200,
+			},
+			baseline: &baselineResponse{
+				StatusCode: 200,
+				BodyLength: 5000,
+			},
+			want: false, // 4% difference < 10% threshold
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := responseSignificantlyDiffers(tt.resp, tt.baseline)
+			if got != tt.want {
+				t.Errorf("responseSignificantlyDiffers() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
