@@ -69,13 +69,8 @@ var dynamicContentPatterns = []*regexp.Regexp{
 
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
-	client         HTTPClient
-	userAgent      string
-	timeout        time.Duration
-	authConfig     *auth.AuthConfig
-	rateLimiter    ratelimit.Limiter
-	tracer         trace.Tracer
-	timeBasedDelay time.Duration // Delay duration for time-based detection (default 5 seconds)
+	BaseScanner                   // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
+	timeBasedDelay time.Duration  // Delay duration for time-based detection (default 5 seconds)
 }
 
 // SQLiScanResult represents the result of a SQL injection vulnerability scan.
@@ -337,8 +332,7 @@ func WithSQLiTimeBasedDelay(d time.Duration) SQLiOption {
 // NewSQLiScanner creates a new SQLiScanner with the given options.
 func NewSQLiScanner(opts ...SQLiOption) *SQLiScanner {
 	s := &SQLiScanner{
-		userAgent:      "WAST/1.0 (Web Application Security Testing)",
-		timeout:        30 * time.Second,
+		BaseScanner:    newBaseScanner(),
 		timeBasedDelay: 5 * time.Second, // Default delay for time-based detection
 	}
 
@@ -660,141 +654,24 @@ func (s *SQLiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	return result
 }
 
-// baselineResponse stores information about a baseline request for comparison.
-type baselineResponse struct {
-	StatusCode    int
-	BodyLength    int
-	BodyHash      string
-	ContainsKey   string
-	DataWordCount int    // Number of words in data-bearing elements (td, th, pre)
-	DataContent   string // Text extracted from data-bearing elements
-	DataRowCount  int    // Number of table rows with data cells
-}
-
 // getBaseline makes a request with the original parameter value to establish a baseline.
 func (s *SQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, paramName string) *baselineResponse {
 	baseline, _ := s.getBaselineWithTiming(ctx, baseURL, paramName)
 	return baseline
 }
 
-// getBaselineWithTiming makes a request with the original parameter value to establish a baseline
-// and measures the request duration for time-based detection.
+// getBaselineWithTiming makes a request with the original parameter value (defaulting
+// to "1" for numeric SQL contexts) to establish a baseline for differential analysis.
 func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.URL, paramName string) (*baselineResponse, time.Duration) {
-	// Create a copy of the URL with the original parameter value
-	testURL := *baseURL
-	q := testURL.Query()
-
-	// Use original value if it exists, otherwise use a safe default
-	originalValue := q.Get(paramName)
-	if originalValue == "" {
-		originalValue = "1"
-		q.Set(paramName, originalValue)
-	}
-	testURL.RawQuery = q.Encode()
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
-		return nil, 0
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		return nil, 0
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0
-	}
-
-	bodyStr := string(body)
-	_, _, _, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
-
-	baseline := &baselineResponse{
-		StatusCode:    resp.StatusCode,
-		BodyLength:    len(body),
-		BodyHash:      fmt.Sprintf("%x", len(body)), // Simple hash for comparison
-		ContainsKey:   bodyStr,
-		DataWordCount: dataWordCount,
-		DataContent:   dataContent,
-		DataRowCount:  dataRowCount,
-	}
-
-	return baseline, duration
+	return s.BaseScanner.getBaselineWithTiming(ctx, baseURL, paramName, "1")
 }
 
-// getBaselineWithTimingPOST makes a POST request with the original parameter value to establish a baseline
-// and measures the request duration for time-based detection.
+// getBaselineWithTimingPOST makes a POST request with the original parameter values to
+// establish a baseline for differential analysis.
 func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
-		return nil, 0
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		return nil, 0
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0
-	}
-
-	bodyStr := string(body)
-	_, _, _, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
-
-	// Calculate proper hash of response body
-	hash := md5.Sum(body)
-
-	baseline := &baselineResponse{
-		StatusCode:    resp.StatusCode,
-		BodyLength:    len(body),
-		BodyHash:      fmt.Sprintf("%x", hash),
-		ContainsKey:   bodyStr,
-		DataWordCount: dataWordCount,
-		DataContent:   dataContent,
-		DataRowCount:  dataRowCount,
-	}
-
-	return baseline, duration
+	// Pass "" as defaultParamValue: SQLi parameters should already be non-empty; no
+	// substitution is required.
+	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, paramName, allParameters, "")
 }
 
 // testErrorBased tests a single parameter with an error-based SQL injection payload.
@@ -860,19 +737,6 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 	}
 
 	return nil
-}
-
-// responseCharacteristics holds response data for comparison
-type responseCharacteristics struct {
-	StatusCode         int
-	BodyLength         int
-	Body               string
-	ContentHash        string // MD5 hash of extracted body content
-	WordCount          int    // Number of words in the response
-	StructuralElements int    // Count of structural HTML elements (tr, li, etc.)
-	DataContent        string // Text extracted from data-bearing elements (td, th, pre)
-	DataWordCount      int    // Number of words in data content
-	DataRowCount       int    // Number of table rows in data regions (for DVWA-style detection)
 }
 
 // extractBodyContent strips non-content elements and extracts meaningful text from HTML
@@ -1287,110 +1151,6 @@ func analyzeResponse(body string) (contentHash string, wordCount int, structural
 	dataRowCount = countDataRows(body)
 
 	return
-}
-
-// makeRequest is a helper to make a request with a specific payload
-func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string) (*responseCharacteristics, error) {
-	testURL := *baseURL
-	q := testURL.Query()
-	q.Set(paramName, payloadValue)
-	testURL.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("rate limited")
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	bodyStr := string(body)
-	contentHash, wordCount, structuralElements, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
-
-	return &responseCharacteristics{
-		StatusCode:         resp.StatusCode,
-		BodyLength:         len(body),
-		Body:               bodyStr,
-		ContentHash:        contentHash,
-		WordCount:          wordCount,
-		StructuralElements: structuralElements,
-		DataContent:        dataContent,
-		DataWordCount:      dataWordCount,
-		DataRowCount:       dataRowCount,
-	}, nil
-}
-
-// makeRequestPOST is a helper to make a POST request with a specific payload
-func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, paramName string, payloadValue string, allParameters map[string]string) (*responseCharacteristics, error) {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		formData.Set(k, v)
-	}
-	// Override the parameter being tested
-	formData.Set(paramName, payloadValue)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("rate limited")
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	bodyStr := string(body)
-	contentHash, wordCount, structuralElements, dataContent, dataWordCount, dataRowCount := analyzeResponse(bodyStr)
-
-	return &responseCharacteristics{
-		StatusCode:         resp.StatusCode,
-		BodyLength:         len(body),
-		Body:               bodyStr,
-		ContentHash:        contentHash,
-		WordCount:          wordCount,
-		StructuralElements: structuralElements,
-		DataContent:        dataContent,
-		DataWordCount:      dataWordCount,
-		DataRowCount:       dataRowCount,
-	}, nil
 }
 
 // testBooleanBased tests a single parameter with a boolean-based SQL injection payload.

@@ -3,7 +3,6 @@ package scanner
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
@@ -21,14 +20,9 @@ import (
 
 // CMDiScanner performs active command injection vulnerability detection.
 type CMDiScanner struct {
-	client         HTTPClient
-	userAgent      string
-	timeout        time.Duration
-	authConfig     *auth.AuthConfig
-	rateLimiter    ratelimit.Limiter
-	tracer         trace.Tracer
-	timeBasedDelay time.Duration // Default 5 seconds
-	verbose        bool          // Enable verbose debug logging
+	BaseScanner                   // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
+	timeBasedDelay time.Duration  // Default 5 seconds
+	verbose        bool           // Enable verbose debug logging
 }
 
 // CMDiScanResult represents the result of a command injection vulnerability scan.
@@ -508,8 +502,7 @@ func isSubmitButton(paramName string) bool {
 // NewCMDiScanner creates a new CMDiScanner with the given options.
 func NewCMDiScanner(opts ...CMDiOption) *CMDiScanner {
 	s := &CMDiScanner{
-		userAgent:      "WAST/1.0 (Web Application Security Testing)",
-		timeout:        30 * time.Second,
+		BaseScanner:    newBaseScanner(),
 		timeBasedDelay: 5 * time.Second, // Default delay for time-based detection
 	}
 
@@ -735,119 +728,19 @@ func (s *CMDiScanner) ScanPOST(ctx context.Context, targetURL string, parameters
 	return result
 }
 
-// getBaselineWithTiming makes a request with the original parameter value to establish a baseline
-// and measures the request duration for time-based detection.
+// getBaselineWithTiming makes a request with the original parameter value (defaulting
+// to "test" for command injection contexts) to establish a baseline for differential
+// analysis.
 func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.URL, paramName string) (*baselineResponse, time.Duration) {
-	// Create a copy of the URL with the original parameter value
-	testURL := *baseURL
-	q := testURL.Query()
-
-	// Use original value if it exists, otherwise use a safe default
-	originalValue := q.Get(paramName)
-	if originalValue == "" {
-		originalValue = "test"
-		q.Set(paramName, originalValue)
-	}
-	testURL.RawQuery = q.Encode()
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL.String(), nil)
-	if err != nil {
-		return nil, 0
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		return nil, 0
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0
-	}
-
-	baseline := &baselineResponse{
-		StatusCode:  resp.StatusCode,
-		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", len(body)), // Simple hash for comparison
-		ContainsKey: string(body),
-	}
-
-	return baseline, duration
+	return s.BaseScanner.getBaselineWithTiming(ctx, baseURL, paramName, "test")
 }
 
-// getBaselineWithTimingPOST makes a POST request with the original parameter value to establish a baseline
-// and measures the request duration for time-based detection.
+// getBaselineWithTimingPOST makes a POST request with the original parameter values
+// to establish a baseline for differential analysis. Empty parameter values are
+// substituted with "test" so that apps requiring a non-empty prefix still produce a
+// representative baseline response.
 func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *url.URL, paramName string, allParameters map[string]string) (*baselineResponse, time.Duration) {
-	// Create form data with ALL parameters
-	formData := url.Values{}
-	for k, v := range allParameters {
-		if k == paramName && v == "" {
-			// Use a benign placeholder when the target parameter has no default value.
-			// An empty string may cause the server to produce no output, making differential
-			// analysis unreliable (baseline body differs from injected body for structural
-			// reasons unrelated to the injection).
-			v = "test"
-		}
-		formData.Set(k, v)
-	}
-
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL.String(), strings.NewReader(formData.Encode()))
-	if err != nil {
-		return nil, 0
-	}
-
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// Apply authentication configuration
-	if s.authConfig != nil {
-		s.authConfig.ApplyToRequest(req)
-	}
-
-	// Measure request time
-	startTime := time.Now()
-	resp, err := s.client.Do(req)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		return nil, 0
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0
-	}
-
-	// Calculate proper hash of response body
-	hash := md5.Sum(body)
-
-	baseline := &baselineResponse{
-		StatusCode:  resp.StatusCode,
-		BodyLength:  len(body),
-		BodyHash:    fmt.Sprintf("%x", hash),
-		ContainsKey: string(body),
-	}
-
-	return baseline, duration
+	return s.BaseScanner.getBaselineWithTimingPOST(ctx, baseURL, paramName, allParameters, "test")
 }
 
 // buildPrependedPayloads returns payload variants to try for a given parameter.
