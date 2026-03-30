@@ -20,9 +20,9 @@ import (
 
 // CMDiScanner performs active command injection vulnerability detection.
 type CMDiScanner struct {
-	BaseScanner                   // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
-	timeBasedDelay time.Duration  // Default 5 seconds
-	verbose        bool           // Enable verbose debug logging
+	BaseScanner                  // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
+	timeBasedDelay time.Duration // Default 5 seconds
+	verbose        bool          // Enable verbose debug logging
 }
 
 // CMDiScanResult represents the result of a command injection vulnerability scan.

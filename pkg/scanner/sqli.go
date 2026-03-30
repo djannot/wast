@@ -69,8 +69,8 @@ var dynamicContentPatterns = []*regexp.Regexp{
 
 // SQLiScanner performs active SQL injection vulnerability detection.
 type SQLiScanner struct {
-	BaseScanner                   // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
-	timeBasedDelay time.Duration  // Delay duration for time-based detection (default 5 seconds)
+	BaseScanner                  // Embeds common fields (client, userAgent, timeout, authConfig, rateLimiter, tracer)
+	timeBasedDelay time.Duration // Delay duration for time-based detection (default 5 seconds)
 }
 
 // SQLiScanResult represents the result of a SQL injection vulnerability scan.
