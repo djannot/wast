@@ -1439,3 +1439,155 @@ uid=33(www-data) gid=33(www-data) groups=33(www-data)`)),
 1 packets transmitted, 1 received`)),
 	}, nil
 }
+
+// TestStripCMDiPayloadFromBody verifies that the reflection-stripping helper
+// removes injected payload text (and HTML/URL-encoded variants) from the
+// response body so that reflected input does not trigger output-based patterns.
+func TestStripCMDiPayloadFromBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "empty payload returns body unchanged",
+			body:    "root:x:0:0:root:/root:/bin/bash",
+			payload: "",
+			want:    "root:x:0:0:root:/root:/bin/bash",
+		},
+		{
+			name:    "reflected /etc/passwd payload is stripped",
+			body:    `<pre>localhost; cat /etc/passwd</pre>`,
+			payload: "localhost; cat /etc/passwd",
+			want:    `<pre></pre>`,
+		},
+		{
+			name:    "genuine command output survives stripping",
+			body:    "localhost; cat /etc/passwd\nroot:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:",
+			payload: "localhost; cat /etc/passwd",
+			want:    "\nroot:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:",
+		},
+		{
+			name:    "HTML-escaped payload is stripped",
+			body:    `<input value="localhost; cat /etc/passwd">`,
+			payload: "localhost; cat /etc/passwd",
+			want:    `<input value="">`,
+		},
+		{
+			name:    "HTML entity &amp; variant is stripped",
+			body:    `<div>test &amp;&amp; id</div>`,
+			payload: "test && id",
+			want:    `<div></div>`,
+		},
+		{
+			name:    "URL-encoded payload is stripped",
+			body:    `localhost%3B+cat+%2Fetc%2Fpasswd appeared in page`,
+			payload: "localhost; cat /etc/passwd",
+			want:    ` appeared in page`,
+		},
+		{
+			name:    "case-insensitive stripping",
+			body:    `LOCALHOST; CAT /ETC/PASSWD root:x:0`,
+			payload: "localhost; cat /etc/passwd",
+			want:    ` root:x:0`,
+		},
+		{
+			name:    "multiple reflected occurrences are all stripped",
+			body:    `echo: localhost; cat /etc/passwd result: localhost; cat /etc/passwd done`,
+			payload: "localhost; cat /etc/passwd",
+			want:    `echo:  result:  done`,
+		},
+		{
+			name:    "no match leaves body unchanged",
+			body:    "some normal page content",
+			payload: "localhost; cat /etc/passwd",
+			want:    "some normal page content",
+		},
+		{
+			name:    "uid pattern in reflected payload is stripped",
+			body:    `<pre>127.0.0.1; id</pre><br>uid=33(www-data)`,
+			payload: "127.0.0.1; id",
+			want:    `<pre></pre><br>uid=33(www-data)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripCMDiPayloadFromBody(tt.body, tt.payload)
+			if got != tt.want {
+				t.Errorf("stripCMDiPayloadFromBody() =\n  %q\nwant:\n  %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOutputBased_ReflectionStripping verifies that the output-based CMDi
+// detector does NOT flag a parameter that merely reflects the injected payload
+// (simulating an XSS-vulnerable parameter like DVWA's 'name' on /xss_r/).
+func TestOutputBased_ReflectionStripping(t *testing.T) {
+	// Mock: the "name" parameter reflects whatever is sent, no command execution.
+	mockClient := &mockCMDiHTTPClient{
+		responses: map[string]*mockCMDiResponse{},
+	}
+
+	scanner := NewCMDiScanner(
+		WithCMDiHTTPClient(mockClient),
+		WithCMDiTimeout(5*time.Second),
+	)
+
+	// Baseline response for the reflecting parameter
+	baselineBody := `<html><body>Hello test</body></html>`
+
+	// For every output-based payload, the reflecting page echoes it back.
+	// We register catch-all responses via the mock's default behaviour, but
+	// need specific URLs. Instead, we'll use ScanPOST with a custom mock.
+	reflectingMock := &reflectingMockClient{baselineBody: baselineBody}
+	scanner.client = reflectingMock
+
+	ctx := context.Background()
+	result := scanner.ScanPOST(ctx, "http://example.com/xss_r/", map[string]string{
+		"name": "test",
+	})
+
+	// There should be zero output-based findings on the 'name' parameter,
+	// because all cmd output patterns come from the reflected payload.
+	for _, f := range result.Findings {
+		if f.Type == "output-based" && f.Parameter == "name" {
+			t.Errorf("False positive: output-based CMDi on reflecting param 'name': payload=%s evidence=%s", f.Payload, f.Evidence)
+		}
+	}
+}
+
+// reflectingMockClient simulates a page that reflects the parameter value.
+type reflectingMockClient struct {
+	baselineBody string
+	mu           sync.Mutex
+}
+
+func (m *reflectingMockClient) Do(req *http.Request) (*http.Response, error) {
+	// Parse the parameter value from query string (GET) or body (POST).
+	var nameValue string
+	if req.Method == http.MethodPost && req.Body != nil {
+		bodyBytes, _ := io.ReadAll(req.Body)
+		vals, _ := url.ParseQuery(string(bodyBytes))
+		nameValue = vals.Get("name")
+	} else {
+		nameValue = req.URL.Query().Get("name")
+	}
+
+	// If the value looks like the baseline (or is empty), return baseline body.
+	if nameValue == "" || nameValue == "test" || nameValue == "randomstring_12345" {
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(m.baselineBody)),
+		}, nil
+	}
+
+	// Otherwise reflect the value back — simulating an XSS-vulnerable page.
+	body := `<html><body>Hello ` + nameValue + `</body></html>`
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil
+}

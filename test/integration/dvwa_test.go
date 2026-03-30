@@ -913,6 +913,29 @@ func TestDVWA_FullDiscoveryScanAssertions(t *testing.T) {
 			}
 		}
 	}
+
+	// ----------------------------------------------------------------
+	// CMDi: 0 false positives on reflecting/XSS parameters
+	// Parameters like 'name', 'include', 'txtName', 'mtxMessage' reflect user
+	// input back into the page. The reflection-stripping logic in testOutputBased
+	// and testOutputBasedPOST should prevent these from being flagged.
+	// ----------------------------------------------------------------
+	cmdiReflectingFPParams := map[string]bool{
+		"name": true, "include": true, "txtname": true, "mtxmessage": true,
+	}
+	cmdiReflectingFPs := 0
+	if result.CMDi != nil {
+		for _, f := range result.CMDi.Findings {
+			if cmdiReflectingFPParams[strings.ToLower(f.Parameter)] {
+				cmdiReflectingFPs++
+				t.Errorf("CMDi false positive on reflecting param '%s' at %s (payload: %s)", f.Parameter, f.URL, f.Payload)
+			}
+		}
+	}
+	if cmdiReflectingFPs == 0 {
+		t.Logf("CMDi: 0 false positives on reflecting params — PASS")
+	}
+
 	if result.XSS != nil {
 		for _, f := range result.XSS.Findings {
 			if submitParams[strings.ToLower(f.Parameter)] {
