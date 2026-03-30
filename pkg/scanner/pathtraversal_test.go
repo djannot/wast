@@ -1049,3 +1049,91 @@ func TestBuildPathTraversalFormBody(t *testing.T) {
 		})
 	}
 }
+
+// mockURLPathHTTPClient matches requests by checking whether the URL path contains
+// a specific substring.  This is used to simulate a server that serves /etc/passwd
+// when the URL path contains a %2f-encoded directory traversal sequence.
+type mockURLPathHTTPClient struct {
+	// pathPattern is a substring to look for in req.URL.String().
+	// If found, passwdBody is returned; otherwise a benign response.
+	pathPattern string
+	passwdBody  string
+}
+
+func (m *mockURLPathHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.String(), m.pathPattern) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(m.passwdBody)),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("Normal response")),
+	}, nil
+}
+
+// TestPathTraversalScanner_URLPathTraversal verifies that the scanner detects path
+// traversal vulnerabilities when the injection point is the URL path itself rather
+// than a query parameter.  This mirrors Juice Shop's /ftp endpoint which decodes
+// %2f in the path AFTER route matching, exposing /etc/passwd via traversal.
+func TestPathTraversalScanner_URLPathTraversal(t *testing.T) {
+	const passwdContent = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+
+	// The mock returns passwd content for any URL whose path contains "%2f..%2f".
+	mockClient := &mockURLPathHTTPClient{
+		pathPattern: "%2f..%2f",
+		passwdBody:  passwdContent,
+	}
+
+	scanner := NewPathTraversalScanner(WithPathTraversalHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/ftp?file=test")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	if result.Summary.TotalTests == 0 {
+		t.Error("Expected tests to be run")
+	}
+
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Errorf("Expected at least one path traversal finding via URL path traversal (tests: %d)", result.Summary.TotalTests)
+	}
+
+	// At least one finding should have type "encoded" and parameter "path"
+	foundPathTraversal := false
+	for _, f := range result.Findings {
+		if f.Type == "encoded" && f.Parameter == "path" {
+			foundPathTraversal = true
+			if f.Confidence != "high" {
+				t.Errorf("Expected confidence 'high' for passwd-based finding, got %q", f.Confidence)
+			}
+		}
+	}
+	if !foundPathTraversal {
+		t.Error("Expected at least one finding with type='encoded' and parameter='path'")
+	}
+}
+
+// TestPathTraversalScanner_URLPathTraversal_NoFalsePositive verifies that the URL
+// path traversal tests do NOT produce a finding when the server returns normal content.
+func TestPathTraversalScanner_URLPathTraversal_NoFalsePositive(t *testing.T) {
+	mockClient := &mockPathTraversalHTTPClient{
+		responses: map[string]*mockPathTraversalResponse{},
+	}
+
+	scanner := NewPathTraversalScanner(WithPathTraversalHTTPClient(mockClient))
+	result := scanner.Scan(context.Background(), "http://example.com/ftp?file=test")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// The default mock returns 200 "OK" which should not trigger any path-based findings.
+	for _, f := range result.Findings {
+		if f.Parameter == "path" {
+			t.Errorf("Unexpected path traversal finding on benign response: url=%s payload=%s", f.URL, f.Payload)
+		}
+	}
+}

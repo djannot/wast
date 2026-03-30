@@ -64,7 +64,8 @@ See `test/integration/juiceshop/juiceshop_test.go` and `docker-compose.juiceshop
   the XSS scanner's JSON-response reflection detection is validated against live Juice Shop~~
   **DONE** — JSON reflection detection (verbatim + Unicode-escaped) added in PR #292;
   assertion converted to t.Errorf.
-- Expand Juice Shop coverage: path traversal, CSRF, SSRF, XXE assertions
+- ~~Expand Juice Shop coverage: path traversal, CSRF, SSRF, XXE assertions~~
+  **DONE** — `TestJuiceShop_PathTraversal`, `TestJuiceShop_CSRF`, `TestJuiceShop_SSRF_NoFalsePositives`, and `TestJuiceShop_XXE_NoFalsePositives` added in PR #294; all four scanners also wired into `TestJuiceShop_FullScanSummary`.
 - Add WebGoat as a third benchmark target (Java/Spring, different session patterns)
 - Increase coverage thresholds as new scanner capabilities are added
 - Explore authenticated scanning improvements for other session management patterns
