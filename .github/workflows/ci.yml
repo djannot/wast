@@ -124,3 +124,26 @@ jobs:
       - name: Stop DVWA containers
         if: always()
         run: docker compose -f docker-compose.test.yml down -v
+
+  integration-juiceshop:
+    name: Juice Shop Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Download dependencies
+        run: make deps
+
+      - name: Run Juice Shop integration tests
+        run: make test-juiceshop
+
+      - name: Stop Juice Shop containers
+        if: always()
+        run: docker compose -f docker-compose.juiceshop.yml down -v

@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: juiceshop-test
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=test
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/rest/admin/application-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s

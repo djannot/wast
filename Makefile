@@ -61,8 +61,16 @@ test-integration:
 test-dvwa:
 	@echo "Running DVWA integration tests..."
 	@echo "Starting DVWA containers (this may take a minute)..."
-	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/...
+	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/
 	@echo "DVWA integration tests complete"
+
+# Run Juice Shop integration tests
+.PHONY: test-juiceshop
+test-juiceshop:
+	@echo "Running Juice Shop integration tests..."
+	@echo "Starting Juice Shop container (this may take a minute)..."
+	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/juiceshop/...
+	@echo "Juice Shop integration tests complete"
 
 # Run tests with coverage report
 .PHONY: test-coverage
@@ -145,6 +153,7 @@ help:
 	@echo "  test-coverage    Generate HTML coverage report"
 	@echo "  test-integration Run integration tests"
 	@echo "  test-dvwa        Run DVWA integration tests"
+	@echo "  test-juiceshop   Run Juice Shop integration tests"
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  fmt-check        Check code formatting"
