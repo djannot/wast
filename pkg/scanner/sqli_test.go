@@ -3086,13 +3086,13 @@ func TestAnalyzeResponse_CSRFTokenNormalization(t *testing.T) {
 // contentRoutingMock simulates a parameter that routes to different content pages.
 // Any value different from the original produces a significantly different response.
 type contentRoutingMock struct {
-	requests        []*http.Request
-	originalValue   string
-	originalBody    string // response for the original value
-	differentBody   string // response for any other value
-	trueBody        string // response for SQL true payloads (only used for injectable params)
-	falseBody       string // response for SQL false payloads (only used for injectable params)
-	injectable      bool   // if true, only SQL payloads produce different responses
+	requests      []*http.Request
+	originalValue string
+	originalBody  string // response for the original value
+	differentBody string // response for any other value
+	trueBody      string // response for SQL true payloads (only used for injectable params)
+	falseBody     string // response for SQL false payloads (only used for injectable params)
+	injectable    bool   // if true, only SQL payloads produce different responses
 }
 
 func (m *contentRoutingMock) Do(req *http.Request) (*http.Response, error) {
