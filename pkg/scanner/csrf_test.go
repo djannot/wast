@@ -18,10 +18,17 @@ import (
 type mockCSRFHTTPClient struct {
 	responses map[string]*http.Response
 	requests  []*http.Request
+	// responseFunc allows dynamic responses based on the request (method, body, etc.)
+	responseFunc func(req *http.Request) (*http.Response, error)
 }
 
 func (m *mockCSRFHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	m.requests = append(m.requests, req)
+
+	// Use responseFunc if set (takes priority)
+	if m.responseFunc != nil {
+		return m.responseFunc(req)
+	}
 
 	// Return a response based on the URL or a default response
 	if resp, ok := m.responses[req.URL.String()]; ok {
@@ -555,6 +562,369 @@ func TestCSRFScanResult_HasResults(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.result.HasResults(); got != tt.expected {
 				t.Errorf("HasResults() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCSRFScanner_hasCSRFToken_UserToken(t *testing.T) {
+	scanner := NewCSRFScanner()
+
+	// user_token (DVWA) should now be recognized as a CSRF token field
+	fields := []crawler.FormFieldInfo{
+		{Name: "user_token", Type: "hidden", Value: "abc123"},
+	}
+	if !scanner.hasCSRFToken(fields) {
+		t.Error("Expected hasCSRFToken to return true for user_token field")
+	}
+}
+
+func TestCSRFScanner_Scan_ActiveMode_UnenforcedToken(t *testing.T) {
+	// Form page has a CSRF token field (user_token), but the server accepts
+	// the form submission without it — the token is unenforced.
+	pageHTML := `
+		<html>
+		<body>
+			<form action="/change-password" method="POST">
+				<input type="hidden" name="user_token" value="abc123" />
+				<input type="password" name="password_new" />
+				<input type="password" name="password_conf" />
+				<button type="submit">Change</button>
+			</form>
+		</body>
+		</html>
+	`
+
+	mock := newMockCSRFHTTPClient()
+	mock.responseFunc = func(req *http.Request) (*http.Response, error) {
+		// The GET request for the page returns the form HTML
+		if req.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(pageHTML)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		// The POST request (token verification) succeeds — token NOT enforced
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>Password changed</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	scanner := NewCSRFScanner(
+		WithCSRFHTTPClient(mock),
+		WithCSRFActiveMode(true),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/csrf")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	if result.Summary.TotalFormsTested != 1 {
+		t.Errorf("Expected 1 form tested, got %d", result.Summary.TotalFormsTested)
+	}
+
+	if result.Summary.VulnerableForms != 1 {
+		t.Errorf("Expected 1 vulnerable form, got %d", result.Summary.VulnerableForms)
+	}
+
+	// Should find an unenforced_token finding
+	foundUnenforced := false
+	for _, finding := range result.Findings {
+		if finding.Type == "unenforced_token" {
+			foundUnenforced = true
+			if finding.Severity != SeverityHigh {
+				t.Errorf("Expected high severity, got %s", finding.Severity)
+			}
+		}
+	}
+	if !foundUnenforced {
+		t.Error("Expected unenforced_token finding when server accepts form without token")
+	}
+}
+
+func TestCSRFScanner_Scan_ActiveMode_EnforcedToken(t *testing.T) {
+	// Form page has a CSRF token, and the server rejects submission without it (403).
+	pageHTML := `
+		<html>
+		<body>
+			<form action="/change-password" method="POST">
+				<input type="hidden" name="csrf_token" value="abc123" />
+				<input type="password" name="password_new" />
+				<button type="submit">Change</button>
+			</form>
+		</body>
+		</html>
+	`
+
+	mock := newMockCSRFHTTPClient()
+	mock.responseFunc = func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(pageHTML)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		// POST without token is rejected with 403
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Body:       io.NopCloser(strings.NewReader("Forbidden")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	scanner := NewCSRFScanner(
+		WithCSRFHTTPClient(mock),
+		WithCSRFActiveMode(true),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/csrf")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Token is enforced — no vulnerable forms
+	if result.Summary.VulnerableForms != 0 {
+		t.Errorf("Expected 0 vulnerable forms when token is enforced, got %d", result.Summary.VulnerableForms)
+	}
+
+	for _, finding := range result.Findings {
+		if finding.Type == "unenforced_token" || finding.Type == "missing_token" {
+			t.Errorf("Unexpected finding type %s when token is enforced", finding.Type)
+		}
+	}
+}
+
+func TestCSRFScanner_Scan_ActiveMode_EnforcedToken_ByKeyword(t *testing.T) {
+	// Server returns 200 but contains rejection keyword
+	pageHTML := `
+		<html>
+		<body>
+			<form action="/submit" method="POST">
+				<input type="hidden" name="csrf_token" value="abc123" />
+				<input type="text" name="data" />
+				<button type="submit">Submit</button>
+			</form>
+		</body>
+		</html>
+	`
+
+	mock := newMockCSRFHTTPClient()
+	mock.responseFunc = func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(pageHTML)),
+				Header:     make(http.Header),
+			}, nil
+		}
+		// POST returns 200 but with rejection keyword
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("<html><body>CSRF token is incorrect</body></html>")),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	scanner := NewCSRFScanner(
+		WithCSRFHTTPClient(mock),
+		WithCSRFActiveMode(true),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/submit")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// Token is enforced (rejection keyword found) — no vulnerable forms
+	if result.Summary.VulnerableForms != 0 {
+		t.Errorf("Expected 0 vulnerable forms when server rejects with keyword, got %d", result.Summary.VulnerableForms)
+	}
+}
+
+func TestCSRFScanner_Scan_PassiveMode_SkipsServerSideVerification(t *testing.T) {
+	// In passive (safe) mode, forms with a token field should NOT trigger
+	// server-side verification, even if the token is not enforced.
+	pageHTML := `
+		<html>
+		<body>
+			<form action="/change-password" method="POST">
+				<input type="hidden" name="user_token" value="abc123" />
+				<input type="password" name="password_new" />
+				<button type="submit">Change</button>
+			</form>
+		</body>
+		</html>
+	`
+
+	mock := newMockCSRFHTTPClient()
+	mock.responseFunc = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(pageHTML)),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	scanner := NewCSRFScanner(
+		WithCSRFHTTPClient(mock),
+		WithCSRFActiveMode(false), // passive mode
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/csrf")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// In passive mode, token presence is enough — no findings expected
+	if result.Summary.VulnerableForms != 0 {
+		t.Errorf("Expected 0 vulnerable forms in passive mode, got %d", result.Summary.VulnerableForms)
+	}
+
+	// Should only have the initial GET request (no POST for verification)
+	postRequests := 0
+	for _, req := range mock.requests {
+		if req.Method == http.MethodPost {
+			postRequests++
+		}
+	}
+	if postRequests != 0 {
+		t.Errorf("Expected 0 POST requests in passive mode, got %d", postRequests)
+	}
+}
+
+func TestCSRFScanner_Scan_ActiveMode_GETFormUnenforcedToken(t *testing.T) {
+	// GET form with a token that is not enforced
+	pageHTML := `
+		<html>
+		<body>
+			<form action="/change-password" method="GET">
+				<input type="hidden" name="user_token" value="abc123" />
+				<input type="password" name="password_new" />
+				<input type="password" name="password_conf" />
+				<button type="submit">Change</button>
+			</form>
+		</body>
+		</html>
+	`
+
+	mock := newMockCSRFHTTPClient()
+	mock.responseFunc = func(req *http.Request) (*http.Response, error) {
+		// Both GET page fetch and GET form submission succeed
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(pageHTML)),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	scanner := NewCSRFScanner(
+		WithCSRFHTTPClient(mock),
+		WithCSRFActiveMode(true),
+	)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/csrf")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// GET form with unenforced token should be flagged
+	if result.Summary.VulnerableForms != 1 {
+		t.Errorf("Expected 1 vulnerable form, got %d", result.Summary.VulnerableForms)
+	}
+
+	foundUnenforced := false
+	for _, finding := range result.Findings {
+		if finding.Type == "unenforced_token" {
+			foundUnenforced = true
+		}
+	}
+	if !foundUnenforced {
+		t.Error("Expected unenforced_token finding for GET form with unenforced token")
+	}
+}
+
+func TestCSRFScanner_VerifyFinding_UnenforcedToken(t *testing.T) {
+	mock := newMockCSRFHTTPClient()
+	scanner := NewCSRFScanner(WithCSRFHTTPClient(mock))
+
+	finding := &CSRFFinding{
+		FormAction: "/change-password",
+		FormMethod: "POST",
+		FormPage:   "https://example.com/csrf",
+		Type:       "unenforced_token",
+	}
+
+	config := VerificationConfig{
+		Enabled:    true,
+		MaxRetries: 2,
+	}
+
+	ctx := context.Background()
+	result, err := scanner.VerifyFinding(ctx, finding, config)
+
+	if err != nil {
+		t.Fatalf("VerifyFinding returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("VerifyFinding returned nil result")
+	}
+	if !result.Verified {
+		t.Error("Expected unenforced_token finding to be verified")
+	}
+	if result.Confidence < 0.9 {
+		t.Errorf("Expected high confidence for unenforced_token, got %.2f", result.Confidence)
+	}
+}
+
+func TestCSRFScanner_isCSRFTokenField(t *testing.T) {
+	scanner := NewCSRFScanner()
+
+	tests := []struct {
+		name     string
+		field    crawler.FormFieldInfo
+		expected bool
+	}{
+		{
+			name:     "hidden csrf_token",
+			field:    crawler.FormFieldInfo{Name: "csrf_token", Type: "hidden"},
+			expected: true,
+		},
+		{
+			name:     "hidden user_token",
+			field:    crawler.FormFieldInfo{Name: "user_token", Type: "hidden"},
+			expected: true,
+		},
+		{
+			name:     "password field",
+			field:    crawler.FormFieldInfo{Name: "password", Type: "password"},
+			expected: false,
+		},
+		{
+			name:     "submit button",
+			field:    crawler.FormFieldInfo{Name: "submit", Type: "submit"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scanner.isCSRFTokenField(tt.field); got != tt.expected {
+				t.Errorf("isCSRFTokenField() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
