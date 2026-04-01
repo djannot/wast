@@ -36,11 +36,12 @@ const (
 	minWordCountForPercentage  = 5    // If baseline has < 5 words, use absolute difference instead of percentage (lowered from 10 for DVWA detection)
 
 	// csrfNoiseWordThreshold is the maximum word-count delta that can be caused by CSRF token
-	// rotation or session-state drift between requests.  A content-hash change paired with a
-	// zero body-length difference and a word-count delta at or below this value is definitionally
-	// scanner noise, not application-level SQL injection signal.
-	// Derived from observed DVWA false-positive pattern: 4-word delta on byte-identical responses.
-	csrfNoiseWordThreshold = 4
+	// rotation, session-state drift, or concurrent scan mutations between requests.  A content-hash
+	// change paired with a small body-length difference and a word-count delta at or below this
+	// value is scanner noise, not application-level SQL injection signal.
+	// Set to 6 based on observed patterns: DVWA CSRF tokens cause 4-word deltas, and concurrent
+	// stored XSS mutations cause up to 6-word deltas on shared-state pages.
+	csrfNoiseWordThreshold = 6
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -1553,15 +1554,13 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		}
 	}
 
-	// Early exit: if true and false responses are virtually identical (within CSRF token
-	// noise), the parameter has no observable effect and cannot be injectable.  This catches
-	// the case where the parameter is completely ignored by the application — every response
-	// is byte-identical regardless of the payload value — so no differential signal can exist.
-	// We use a word-count tolerance of 4 to absorb CSRF token churn while still catching the
-	// real false-positive pattern seen on DVWA's ?doc= parameter at the root URL.
-	trueFalseBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+	// Early exit: if the word-count difference between the true and false responses is within
+	// the noise floor, the parameter cannot be injectable.  Real boolean-based SQLi produces
+	// a substantial word-count difference (typically 10+ words) because the true condition
+	// returns additional data rows.  A difference of <= 6 words is indistinguishable from
+	// CSRF token rotation and concurrent scan mutations (stored XSS altering shared pages).
 	trueFalseWordDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseBodyDiff == 0 && trueFalseWordDiff <= csrfNoiseWordThreshold {
+	if trueFalseWordDiff <= csrfNoiseWordThreshold {
 		return nil
 	}
 
@@ -2019,11 +2018,10 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		}
 	}
 
-	// Early exit: if true and false responses are virtually identical (within CSRF token
-	// noise), the parameter has no observable effect and cannot be injectable.
-	trueFalseBodyDiffPOST := abs(trueResp.BodyLength - falseResp.BodyLength)
+	// Early exit: if the word-count difference between the true and false responses is within
+	// the noise floor, the parameter cannot be injectable (same logic as GET variant above).
 	trueFalseWordDiffPOST := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseBodyDiffPOST == 0 && trueFalseWordDiffPOST <= csrfNoiseWordThreshold {
+	if trueFalseWordDiffPOST <= csrfNoiseWordThreshold {
 		return nil
 	}
 
