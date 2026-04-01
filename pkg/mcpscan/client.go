@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// maxBodyBytes limits HTTP/SSE response bodies to prevent memory exhaustion.
+const maxBodyBytes = 1 << 20 // 1 MiB
+
 // Transport specifies how to connect to an MCP server.
 type Transport string
 
@@ -50,6 +53,12 @@ func (e *jsonrpcError) Error() string {
 	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 
+// stdioLine is a single line read from the subprocess stdout, or an error.
+type stdioLine struct {
+	line string
+	err  error
+}
+
 // Client is an MCP JSON-RPC 2.0 client that supports stdio, SSE, and HTTP transports.
 type Client struct {
 	transport Transport
@@ -63,6 +72,12 @@ type Client struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
+
+	// linesCh receives lines from the dedicated stdio reader goroutine.
+	// Using a buffered channel so the reader can proceed without blocking
+	// when the consumer is busy with context selection.
+	linesCh    chan stdioLine
+	readerDone chan struct{}
 
 	// http client (shared for SSE and HTTP transports)
 	httpClient *http.Client
@@ -147,7 +162,9 @@ func (c *Client) Connect(ctx context.Context) (*MCPServerInfo, error) {
 	return c.initialize(ctx)
 }
 
-// connectStdio starts the subprocess for stdio transport.
+// connectStdio starts the subprocess for stdio transport and launches a
+// dedicated reader goroutine. All lines from the subprocess are forwarded
+// through linesCh so that callStdio can select on context cancellation.
 func (c *Client) connectStdio(ctx context.Context) error {
 	c.cmd = exec.CommandContext(ctx, c.target, c.args...)
 	if len(c.env) > 0 {
@@ -170,6 +187,22 @@ func (c *Client) connectStdio(ctx context.Context) error {
 		return fmt.Errorf("start command: %w", err)
 	}
 
+	// Start the dedicated reader goroutine. It forwards every line (or error)
+	// from the subprocess stdout into linesCh. The channel is buffered so the
+	// reader can write ahead while callStdio is in the select statement.
+	c.linesCh = make(chan stdioLine, 32)
+	c.readerDone = make(chan struct{})
+	go func() {
+		defer close(c.readerDone)
+		for {
+			line, err := c.stdout.ReadString('\n')
+			c.linesCh <- stdioLine{line, err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -180,6 +213,10 @@ func (c *Client) Close() error {
 			_ = c.stdin.Close()
 		}
 		_ = c.cmd.Wait()
+		// Wait for the reader goroutine to drain after the process exits.
+		if c.readerDone != nil {
+			<-c.readerDone
+		}
 	}
 	return nil
 }
@@ -379,7 +416,10 @@ func (c *Client) notify(ctx context.Context, method string, params interface{}) 
 	return nil
 }
 
-// callStdio sends a request over stdio and reads the response line.
+// callStdio sends a request over stdio and reads the matching response.
+// It reads from linesCh (populated by the dedicated reader goroutine) and
+// selects on context / per-request timeout so the function is never
+// permanently blocked if the server hangs or stops responding.
 func (c *Client) callStdio(ctx context.Context, req jsonrpcRequest) (json.RawMessage, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -391,49 +431,61 @@ func (c *Client) callStdio(ctx context.Context, req jsonrpcRequest) (json.RawMes
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	// Read response lines until we find one that matches our request ID.
-	// The server may send notifications before the actual response.
-	deadline := time.Now().Add(c.timeout)
-	for time.Now().Before(deadline) {
-		// Check context cancellation.
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
+	// Apply a per-request timeout on top of whatever the caller's context says.
+	timeoutCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
-		line, err := c.stdout.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
+	// reqIDStr is the canonical string form of our request ID used for matching.
+	reqIDStr := fmt.Sprintf("%v", req.ID)
+
+	// Drain linesCh until we find the response whose ID matches our request.
+	// The server may interleave JSON-RPC notifications before the actual reply.
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			return nil, fmt.Errorf("timeout waiting for response to method %s", req.Method)
+
+		case result, ok := <-c.linesCh:
+			if !ok {
+				// Reader goroutine closed the channel — process exited.
 				return nil, fmt.Errorf("server closed connection")
 			}
-			return nil, fmt.Errorf("read response: %w", err)
-		}
+			if result.err != nil {
+				if result.err == io.EOF {
+					return nil, fmt.Errorf("server closed connection")
+				}
+				return nil, fmt.Errorf("read response: %w", result.err)
+			}
 
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
+			line := strings.TrimSpace(result.line)
+			if line == "" {
+				continue
+			}
 
-		var resp jsonrpcResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			// May be a notification; skip it.
-			continue
-		}
+			var resp jsonrpcResponse
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				// May be a non-JSON log line; skip it.
+				continue
+			}
 
-		// Notifications have no ID.
-		if resp.ID == nil {
-			continue
-		}
+			// Skip JSON-RPC notifications (they have no ID).
+			if resp.ID == nil {
+				continue
+			}
 
-		if resp.Error != nil {
-			return nil, resp.Error
-		}
+			// Skip responses whose ID does not match this request — they may
+			// be stale responses from a previous timed-out request.
+			if fmt.Sprintf("%v", resp.ID) != reqIDStr {
+				continue
+			}
 
-		return resp.Result, nil
+			if resp.Error != nil {
+				return nil, resp.Error
+			}
+
+			return resp.Result, nil
+		}
 	}
-
-	return nil, fmt.Errorf("timeout waiting for response to method %s", req.Method)
 }
 
 // callHTTP sends a request over HTTP and reads the JSON response.
@@ -456,7 +508,7 @@ func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMess
 	}
 	defer httpResp.Body.Close()
 
-	body, err := io.ReadAll(httpResp.Body)
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
@@ -506,7 +558,7 @@ func (c *Client) callSSE(ctx context.Context, req jsonrpcRequest) (json.RawMessa
 	}
 
 	// Treat as plain JSON response.
-	body, err := io.ReadAll(httpResp.Body)
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read SSE response: %w", err)
 	}

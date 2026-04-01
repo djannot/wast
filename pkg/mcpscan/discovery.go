@@ -57,10 +57,10 @@ func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *Disco
 		Errors:  []string{},
 	}
 
+	// HTTP paths to probe (excludes /sse which is probed separately as SSE).
 	paths := []string{
 		"/.well-known/mcp",
 		"/mcp",
-		"/sse",
 		"/api/mcp",
 		"/v1/mcp",
 	}
@@ -77,24 +77,15 @@ func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *Disco
 		}
 	}
 
-	// Also check SSE endpoint.
+	// Probe the /sse endpoint separately as an SSE transport.
 	sseURL := strings.TrimRight(baseURL, "/") + "/sse"
+	result.Sources = append(result.Sources, sseURL)
 	if d.probeSSEEndpoint(ctx, sseURL) {
-		// Only add if not already added.
-		already := false
-		for _, s := range result.Servers {
-			if s.Target == sseURL {
-				already = true
-				break
-			}
-		}
-		if !already {
-			result.Servers = append(result.Servers, DiscoveredServer{
-				Transport: "sse",
-				Target:    sseURL,
-				Source:    "network_probe",
-			})
-		}
+		result.Servers = append(result.Servers, DiscoveredServer{
+			Transport: "sse",
+			Target:    sseURL,
+			Source:    "network_probe",
+		})
 	}
 
 	return result
@@ -304,7 +295,6 @@ func parseMCPJsonConfig(raw map[string]json.RawMessage) ([]DiscoveredServer, err
 func serverDefsToDiscovered(servers map[string]mcpServerDef) []DiscoveredServer {
 	result := make([]DiscoveredServer, 0, len(servers))
 	for name, def := range servers {
-		_ = name
 		transport := def.Type
 		if transport == "" {
 			if def.URL != "" {
@@ -325,6 +315,7 @@ func serverDefsToDiscovered(servers map[string]mcpServerDef) []DiscoveredServer 
 		}
 
 		result = append(result, DiscoveredServer{
+			Name:      name, // human-readable key from the config file
 			Transport: transport,
 			Target:    target,
 			Args:      def.Args,

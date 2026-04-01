@@ -126,6 +126,8 @@ type MCPScanResult struct {
 
 // DiscoveredServer represents an MCP server found during discovery.
 type DiscoveredServer struct {
+	// Name is the human-readable key from the configuration file (e.g., "my-server").
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// Transport is one of "stdio", "sse", or "http".
 	Transport string `json:"transport" yaml:"transport"`
 	// Target is the connection target.

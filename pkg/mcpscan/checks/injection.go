@@ -64,7 +64,12 @@ func (c *InjectionChecker) checkTool(ctx context.Context, tool ToolInfo, caller 
 
 func (c *InjectionChecker) testParam(ctx context.Context, tool ToolInfo, param ParamInfo, caller ToolCaller) []Finding {
 	var findings []Finding
-	allPayloads := append(append(sqlInjectionPayloads, cmdInjectionPayloads...), pathTraversalPayloads...)
+	// Build allPayloads with an explicit allocation to avoid mutating the
+	// package-level slice variables if they ever gain spare capacity.
+	allPayloads := make([]injectionPayload, 0, len(sqlInjectionPayloads)+len(cmdInjectionPayloads)+len(pathTraversalPayloads))
+	allPayloads = append(allPayloads, sqlInjectionPayloads...)
+	allPayloads = append(allPayloads, cmdInjectionPayloads...)
+	allPayloads = append(allPayloads, pathTraversalPayloads...)
 
 	for _, payload := range allPayloads {
 		args := map[string]interface{}{param.Name: payload.Value}

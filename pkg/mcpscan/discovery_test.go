@@ -54,6 +54,9 @@ func TestDiscoverer_ParseClaudeDesktopConfig(t *testing.T) {
 	if servers[0].Transport != "stdio" {
 		t.Errorf("expected transport 'stdio', got %q", servers[0].Transport)
 	}
+	if servers[0].Name != "my-server" {
+		t.Errorf("expected name 'my-server' (from config key), got %q", servers[0].Name)
+	}
 }
 
 func TestDiscoverer_ParseMCPJsonWithURL(t *testing.T) {
@@ -120,6 +123,22 @@ func TestDiscoverer_DiscoverNetwork_HTTPEndpoint(t *testing.T) {
 	}
 }
 
+func TestDiscoverer_DiscoverNetwork_SSENotDuplicated(t *testing.T) {
+	// Verify that the /sse path appears exactly once in Sources even though
+	// it is probed both as an HTTP endpoint and as an SSE endpoint.
+	d := NewDiscoverer().WithHTTPTimeout(200 * time.Millisecond)
+	result := d.DiscoverNetwork(context.Background(), "http://127.0.0.1:19998")
+	sseCount := 0
+	for _, src := range result.Sources {
+		if src == "http://127.0.0.1:19998/sse" {
+			sseCount++
+		}
+	}
+	if sseCount != 1 {
+		t.Errorf("expected /sse to appear exactly once in Sources, got %d times", sseCount)
+	}
+}
+
 func TestDiscoverer_DiscoverNetwork_NoServer(t *testing.T) {
 	// Non-existent host.
 	d := NewDiscoverer().WithHTTPTimeout(500 * time.Millisecond)
@@ -158,5 +177,12 @@ func TestServerDefsToDiscovered_InferTransport(t *testing.T) {
 	}
 	if servers2[0].Target != "https://api.example.com/mcp" {
 		t.Errorf("expected target URL, got %q", servers2[0].Target)
+	}
+	if servers2[0].Name != "http-server" {
+		t.Errorf("expected name 'http-server' (from config key), got %q", servers2[0].Name)
+	}
+	// Also verify cmd-server name is preserved.
+	if servers[0].Name != "cmd-server" {
+		t.Errorf("expected name 'cmd-server', got %q", servers[0].Name)
 	}
 }

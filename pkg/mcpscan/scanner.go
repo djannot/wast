@@ -78,14 +78,16 @@ func (s *Scanner) Scan(ctx context.Context) (*MCPScanResult, error) {
 	checkTools := toCheckTools(tools)
 
 	// Run passive checks.
-	passiveFindings := s.runPassiveChecks(checkTools)
-	result.Summary.PassiveChecks = 4
+	var passiveChecksRun int
+	passiveFindings := s.runPassiveChecks(checkTools, &passiveChecksRun)
+	result.Summary.PassiveChecks = passiveChecksRun
 
 	// Run active checks if enabled.
 	var activeFindings []MCPFinding
 	if s.cfg.ActiveMode {
-		activeFindings = s.runActiveChecks(ctx, checkTools, client)
-		result.Summary.ActiveChecks = 4
+		var activeChecksRun int
+		activeFindings = s.runActiveChecks(ctx, checkTools, client, &activeChecksRun)
+		result.Summary.ActiveChecks = activeChecksRun
 	}
 
 	// Aggregate findings.
@@ -123,41 +125,51 @@ func (s *Scanner) buildClient() (*Client, error) {
 }
 
 // runPassiveChecks runs all safe, read-only checks.
-func (s *Scanner) runPassiveChecks(tools []checks.ToolInfo) []MCPFinding {
+// n is incremented for each checker executed.
+func (s *Scanner) runPassiveChecks(tools []checks.ToolInfo, n *int) []MCPFinding {
 	var findings []MCPFinding
 
 	schemaChecker := checks.NewSchemaChecker()
 	findings = append(findings, convertFindings(schemaChecker.Check(tools))...)
+	*n++
 
 	promptChecker := checks.NewPromptChecker()
 	findings = append(findings, convertFindings(promptChecker.Check(tools))...)
+	*n++
 
 	permissionsChecker := checks.NewPermissionsChecker()
 	findings = append(findings, convertFindings(permissionsChecker.Check(tools))...)
+	*n++
 
 	shadowingChecker := checks.NewShadowingChecker()
 	findings = append(findings, convertFindings(shadowingChecker.Check(tools))...)
+	*n++
 
 	return findings
 }
 
 // runActiveChecks runs checks that invoke tools with potentially harmful payloads.
-func (s *Scanner) runActiveChecks(ctx context.Context, tools []checks.ToolInfo, client *Client) []MCPFinding {
+// n is incremented for each checker executed.
+func (s *Scanner) runActiveChecks(ctx context.Context, tools []checks.ToolInfo, client *Client, n *int) []MCPFinding {
 	var findings []MCPFinding
 
 	injectionChecker := checks.NewInjectionChecker()
 	findings = append(findings, convertFindings(injectionChecker.Check(ctx, tools, client))...)
+	*n++
 
 	exposureChecker := checks.NewExposureChecker()
 	findings = append(findings, convertFindings(exposureChecker.Check(ctx, tools, client))...)
+	*n++
 
 	ssrfChecker := checks.NewSSRFChecker()
 	findings = append(findings, convertFindings(ssrfChecker.Check(ctx, tools, client))...)
+	*n++
 
 	// Auth checks only apply to HTTP/SSE transports.
 	if s.cfg.Transport == TransportHTTP || s.cfg.Transport == TransportSSE {
 		authChecker := checks.NewAuthChecker(s.cfg.Target)
 		findings = append(findings, convertFindings(authChecker.CheckUnauthenticated(ctx, tools))...)
+		*n++
 	}
 
 	return findings

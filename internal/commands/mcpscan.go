@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -71,8 +72,8 @@ Examples:
 			}
 			formatter := getFormatter()
 
-			if activeMode && formatter.Format() == output.FormatText {
-				formatter.Info("⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
+			if activeMode {
+				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
 			}
 
 			cfg := mcpscan.ScanConfig{
@@ -100,8 +101,8 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			formatter := getFormatter()
 
-			if activeMode && formatter.Format() == output.FormatText {
-				formatter.Info("⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
+			if activeMode {
+				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
 			}
 
 			cfg := mcpscan.ScanConfig{
@@ -128,8 +129,8 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			formatter := getFormatter()
 
-			if activeMode && formatter.Format() == output.FormatText {
-				formatter.Info("⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
+			if activeMode {
+				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to the MCP server.")
 			}
 
 			cfg := mcpscan.ScanConfig{
@@ -185,8 +186,12 @@ Use --network to also probe for MCP endpoints on an HTTP target:
 				} else {
 					formatter.Info(fmt.Sprintf("Found %d MCP server(s):", len(result.Servers)))
 					for i, s := range result.Servers {
-						formatter.Info(fmt.Sprintf("  [%d] transport=%s target=%s source=%s",
-							i+1, s.Transport, s.Target, s.Source))
+						line := fmt.Sprintf("  [%d] transport=%s target=%s source=%s",
+							i+1, s.Transport, s.Target, s.Source)
+						if s.Name != "" {
+							line += fmt.Sprintf(" name=%s", s.Name)
+						}
+						formatter.Info(line)
 					}
 				}
 				for _, e := range result.Errors {

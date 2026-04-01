@@ -2,10 +2,19 @@ package checks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// maxAuthBodyBytes caps the response body read in auth check probes.
+const maxAuthBodyBytes = 1 << 20 // 1 MiB
+
+// defaultAuthTimeout is the per-request timeout for httpMCPConnector.
+const defaultAuthTimeout = 10 * time.Second
 
 // HTTPClientFactory creates a bare HTTP client for auth bypass tests.
 // Abstracted to make testing without a live server possible.
@@ -35,6 +44,14 @@ func NewAuthChecker(target string) *AuthChecker {
 	return &AuthChecker{Target: target}
 }
 
+// newHTTPMCPConnector creates the production connector with a timeout-guarded client.
+func newHTTPMCPConnector(target string) *httpMCPConnector {
+	return &httpMCPConnector{
+		target: target,
+		client: &http.Client{Timeout: defaultAuthTimeout},
+	}
+}
+
 // CheckUnauthenticated attempts to connect to the MCP server without credentials
 // and reports findings if the server does not require authentication.
 func (c *AuthChecker) CheckUnauthenticated(ctx context.Context, tools []ToolInfo) []Finding {
@@ -46,7 +63,7 @@ func (c *AuthChecker) CheckUnauthenticated(ctx context.Context, tools []ToolInfo
 
 	connector := c.Connector
 	if connector == nil {
-		connector = &httpMCPConnector{target: c.Target}
+		connector = newHTTPMCPConnector(c.Target)
 	}
 
 	name, version, err := connector.Connect(ctx)
@@ -120,6 +137,8 @@ func (c *AuthChecker) CheckUnauthenticated(ctx context.Context, tools []ToolInfo
 // It imports nothing from the parent mcpscan package to avoid circular imports.
 type httpMCPConnector struct {
 	target string
+	// client has an explicit timeout; never use http.DefaultClient.
+	client *http.Client
 }
 
 func (h *httpMCPConnector) Connect(ctx context.Context) (string, string, error) {
@@ -131,7 +150,7 @@ func (h *httpMCPConnector) Connect(ctx context.Context) (string, string, error) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -141,7 +160,33 @@ func (h *httpMCPConnector) Connect(ctx context.Context) (string, string, error) 
 		return "", "", fmt.Errorf("HTTP %d: authentication required", resp.StatusCode)
 	}
 
-	return "unknown", "unknown", nil
+	// Try to extract the server name/version from the initialize response.
+	rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAuthBodyBytes))
+	if readErr != nil {
+		return "unknown", "unknown", nil
+	}
+
+	var initResp struct {
+		Result struct {
+			ServerInfo struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"serverInfo"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rawBody, &initResp); err != nil {
+		return "unknown", "unknown", nil
+	}
+
+	name := initResp.Result.ServerInfo.Name
+	version := initResp.Result.ServerInfo.Version
+	if name == "" {
+		name = "unknown"
+	}
+	if version == "" {
+		version = "unknown"
+	}
+	return name, version, nil
 }
 
 func (h *httpMCPConnector) ListTools(ctx context.Context) ([]string, error) {
@@ -152,7 +197,7 @@ func (h *httpMCPConnector) ListTools(ctx context.Context) ([]string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +207,33 @@ func (h *httpMCPConnector) ListTools(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	return []string{"(listed)"}, nil
+	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, maxAuthBodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read tools/list response: %w", err)
+	}
+
+	// Parse the JSON-RPC tools/list response to get actual tool names.
+	var listResp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rawBody, &listResp); err != nil {
+		return nil, fmt.Errorf("parse tools/list response: %w", err)
+	}
+
+	names := make([]string, 0, len(listResp.Result.Tools))
+	for _, t := range listResp.Result.Tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no tools returned by server")
+	}
+	return names, nil
 }
 
 func (h *httpMCPConnector) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (bool, error) {
@@ -173,7 +244,7 @@ func (h *httpMCPConnector) CallTool(ctx context.Context, toolName string, args m
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return false, err
 	}

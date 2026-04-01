@@ -19,7 +19,7 @@ func TestNewServer(t *testing.T) {
 	}
 
 	// Verify tools are registered
-	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers", "wast_verify"}
+	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers", "wast_verify", "wast_mcpscan"}
 	for _, toolName := range expectedTools {
 		if _, ok := server.tools[toolName]; !ok {
 			t.Errorf("Expected tool %s to be registered", toolName)
