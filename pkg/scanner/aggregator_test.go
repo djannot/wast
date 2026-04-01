@@ -2056,3 +2056,194 @@ func TestCorrelateFindings_SSRFFileWithPathTraversal_DifferentParameters(t *test
 		t.Errorf("Expected no correlation for SSRF file:// + PathTraversal on different parameters, got %d", len(result.Correlations))
 	}
 }
+
+// TestCorrelation7_SSRFRawFindingsSuppressed verifies that after aggregation the
+// file:// SSRF finding is removed from u.SSRF.Findings so API consumers
+// iterating the raw array do not see the duplicate.
+func TestCorrelation7_SSRFRawFindingsSuppressed(t *testing.T) {
+	target := "http://test.com"
+	pageURL := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Type:       "blind",
+				Confidence: "high",
+			},
+		},
+		Summary: SSRFSummary{VulnerabilitiesFound: 1},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	// The file:// SSRF finding must be removed from the raw findings array
+	if len(result.SSRF.Findings) != 0 {
+		t.Errorf("Expected 0 raw SSRF findings after deduplication, got %d", len(result.SSRF.Findings))
+	}
+
+	// The SSRF summary count must reflect the suppression
+	if result.SSRF.Summary.VulnerabilitiesFound != 0 {
+		t.Errorf("Expected SSRF.Summary.VulnerabilitiesFound == 0 after deduplication, got %d", result.SSRF.Summary.VulnerabilitiesFound)
+	}
+
+	// Exactly one correlation must exist
+	if len(result.Correlations) != 1 {
+		t.Errorf("Expected 1 correlation, got %d", len(result.Correlations))
+	}
+}
+
+// TestCorrelation7_SSRFTypeAnnotation verifies that the SSRF finding in the
+// correlation's RelatedFindings is annotated as "lfi-via-file-protocol".
+func TestCorrelation7_SSRFTypeAnnotation(t *testing.T) {
+	target := "http://test.com"
+	pageURL := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Type:       "blind",
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	if len(result.Correlations) != 1 {
+		t.Fatalf("Expected 1 correlation, got %d", len(result.Correlations))
+	}
+	corr := result.Correlations[0]
+
+	if len(corr.RelatedFindings) != 1 {
+		t.Fatalf("Expected 1 related finding, got %d", len(corr.RelatedFindings))
+	}
+
+	ssrfFinding, ok := corr.RelatedFindings[0].(SSRFFinding)
+	if !ok {
+		t.Fatalf("Expected RelatedFinding to be SSRFFinding")
+	}
+	if ssrfFinding.Type != "lfi-via-file-protocol" {
+		t.Errorf("Expected SSRF finding Type to be 'lfi-via-file-protocol', got %q", ssrfFinding.Type)
+	}
+}
+
+// TestCorrelation7_PathTraversalGainsRelatedFindings verifies that after
+// aggregation the PathTraversal finding has a RelatedFindings entry pointing
+// back to the corroborating SSRF probe.
+func TestCorrelation7_PathTraversalGainsRelatedFindings(t *testing.T) {
+	target := "http://test.com"
+	pageURL := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Type:       "blind",
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	if len(result.PathTraversal.Findings) != 1 {
+		t.Fatalf("Expected 1 PathTraversal finding, got %d", len(result.PathTraversal.Findings))
+	}
+	ptFinding := result.PathTraversal.Findings[0]
+
+	if len(ptFinding.RelatedFindings) != 1 {
+		t.Errorf("Expected PathTraversalFinding.RelatedFindings to have 1 entry, got %d", len(ptFinding.RelatedFindings))
+	}
+}
+
+// TestCorrelation7_NonFileSSRFNotSuppressed verifies that an SSRF finding
+// whose payload does NOT start with "file://" is not suppressed even when a
+// PathTraversal finding exists for the same (url, parameter) pair.
+func TestCorrelation7_NonFileSSRFNotSuppressed(t *testing.T) {
+	target := "http://test.com"
+	pageURL := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "http://169.254.169.254/latest/meta-data/",
+				Severity:   SeverityHigh,
+				Type:       "blind",
+				Confidence: "high",
+			},
+		},
+		Summary: SSRFSummary{VulnerabilitiesFound: 1},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	// The non-file:// SSRF finding must remain in the raw findings array
+	if len(result.SSRF.Findings) != 1 {
+		t.Errorf("Expected 1 raw SSRF finding (non-file:// should not be suppressed), got %d", len(result.SSRF.Findings))
+	}
+	// No Correlation 7 should be created for a non-file:// payload
+	if len(result.Correlations) != 0 {
+		t.Errorf("Expected 0 correlations for non-file:// SSRF, got %d", len(result.Correlations))
+	}
+}
