@@ -85,11 +85,12 @@ func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *Disco
 	for _, path := range paths {
 		url := strings.TrimRight(baseURL, "/") + path
 		result.Sources = append(result.Sources, url)
-		if d.probeHTTPEndpoint(ctx, url) {
+		if probe := d.probeHTTPEndpoint(ctx, url); probe.found {
 			result.Servers = append(result.Servers, DiscoveredServer{
-				Transport: "http",
-				Target:    url,
-				Source:    "network_probe",
+				Transport:    "http",
+				Target:       url,
+				Source:       "network_probe",
+				AuthRequired: probe.authRequired,
 			})
 		}
 	}
@@ -108,28 +109,44 @@ func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *Disco
 	return result
 }
 
+// probeResult holds the result of an HTTP MCP endpoint probe.
+type probeResult struct {
+	found        bool
+	authRequired bool
+}
+
 // probeHTTPEndpoint checks if an endpoint responds to MCP initialize.
-func (d *Discoverer) probeHTTPEndpoint(ctx context.Context, url string) bool {
+// Returns found=true for 200 (open) or 401 (auth-protected) MCP endpoints.
+func (d *Discoverer) probeHTTPEndpoint(ctx context.Context, url string) probeResult {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"wast-discover","version":"1.0.0"},"capabilities":{}}}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
-		return false
+		return probeResult{}
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return false
+		return probeResult{}
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return false
+	contentType := resp.Header.Get("Content-Type")
+	isJSON := strings.Contains(contentType, "application/json")
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if isJSON {
+			return probeResult{found: true}
+		}
+	case http.StatusUnauthorized:
+		// A 401 with JSON response indicates an auth-protected MCP endpoint.
+		if isJSON {
+			return probeResult{found: true, authRequired: true}
+		}
 	}
 
-	// Check for JSON-RPC 2.0 response indicators.
-	contentType := resp.Header.Get("Content-Type")
-	return strings.Contains(contentType, "application/json")
+	return probeResult{}
 }
 
 // probeSSEEndpoint checks if an endpoint responds with SSE content type.

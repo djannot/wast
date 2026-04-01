@@ -198,6 +198,9 @@ pyproject.toml for outdated MCP server dependencies:
 						if s.Name != "" {
 							line += fmt.Sprintf(" name=%s", s.Name)
 						}
+						if s.AuthRequired {
+							line += " (auth required)"
+						}
 						formatter.Info(line)
 					}
 				}

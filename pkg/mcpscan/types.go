@@ -141,6 +141,8 @@ type DiscoveredServer struct {
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
 	// Env contains environment variables for stdio servers.
 	Env map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+	// AuthRequired indicates the server responded with 401 (requires authentication).
+	AuthRequired bool `json:"auth_required,omitempty" yaml:"auth_required,omitempty"`
 }
 
 // DiscoveryResult is the result of MCP server discovery.
