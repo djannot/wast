@@ -352,6 +352,11 @@ func scanDiscoveredTargets(ctx context.Context, cfg ScanConfig, targets []Discov
 		}
 	}
 
+	// Apply canary domain for redirect payloads if configured.
+	if cfg.RedirectCanaryDomain != "" {
+		redirectOpts = append(redirectOpts, WithRedirectCanaryDomain(cfg.RedirectCanaryDomain))
+	}
+
 	// Create scanners
 	headerScanner := NewHTTPHeadersScanner(headerOpts...)
 

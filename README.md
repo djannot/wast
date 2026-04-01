@@ -116,6 +116,21 @@ wast scan https://example.com --safe-mode=false
 
 ⚠️ **WARNING**: Active testing sends attack payloads to the target. Only use `--active` on systems you own or have written permission to test. Unauthorized testing may be illegal and could trigger security alerts.
 
+#### Open Redirect Canary Domain
+
+Open redirect detection works by injecting a canary domain into redirect payloads and checking whether the application redirects to that domain. By default, WAST uses `example.com` (an RFC 2606-reserved domain) as the canary.
+
+To eliminate false positives and confirm real redirect vulnerabilities, use a domain you control:
+
+```bash
+# Use a custom canary domain you own
+wast scan https://example.com --active --redirect-canary-domain redirect-canary.yourdomain.com
+```
+
+With a domain you control you can also verify findings independently by monitoring DNS or HTTP requests to that domain during the scan.
+
+> **Note**: The `--redirect-canary-domain` flag is only meaningful when active testing is enabled (`--active`).
+
 ### Output Formats
 
 WAST supports multiple output formats for different use cases:
@@ -397,7 +412,7 @@ wast --mcp
 | Tool Name | Description | Parameters |
 |-----------|-------------|------------|
 | `wast_recon` | Reconnaissance and information gathering | `target`, `timeout`, `include_subdomains` |
-| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
+| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `redirect_canary_domain` |
 | `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
 | `wast_headers` | Passive-only security header analysis | `target`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |

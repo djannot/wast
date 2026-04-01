@@ -80,7 +80,7 @@ func executeRecon(ctx context.Context, target string, timeout time.Duration, inc
 }
 
 // executeScan performs security scanning on a target URL.
-func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, scanners []string, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback scanner.ProgressCallback, callbackURL string) interface{} {
+func executeScan(ctx context.Context, target string, timeout int, safeMode bool, verifyFindings bool, discover bool, depth int, concurrency int, scanConcurrency int, scanners []string, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, tracer trace.Tracer, progressCallback scanner.ProgressCallback, callbackURL string, redirectCanaryDomain string) interface{} {
 	// Create tracing span if tracer is available
 	if tracer != nil {
 		var span trace.Span
@@ -92,15 +92,16 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 	if discover {
 		discoveryCfg := scanner.DiscoveryScanConfig{
 			ScanConfig: scanner.ScanConfig{
-				Target:          target,
-				Timeout:         timeout,
-				SafeMode:        safeMode,
-				VerifyFindings:  verifyFindings,
-				Scanners:        scanners,
-				AuthConfig:      authConfig,
-				RateLimitConfig: rateLimitConfig,
-				Tracer:          tracer,
-				CallbackURL:     callbackURL,
+				Target:               target,
+				Timeout:              timeout,
+				SafeMode:             safeMode,
+				VerifyFindings:       verifyFindings,
+				Scanners:             scanners,
+				AuthConfig:           authConfig,
+				RateLimitConfig:      rateLimitConfig,
+				Tracer:               tracer,
+				CallbackURL:          callbackURL,
+				RedirectCanaryDomain: redirectCanaryDomain,
 			},
 			CrawlDepth:       depth,
 			Concurrency:      concurrency,
@@ -114,15 +115,16 @@ func executeScan(ctx context.Context, target string, timeout int, safeMode bool,
 
 	// Create scan configuration
 	scanCfg := scanner.ScanConfig{
-		Target:          target,
-		Timeout:         timeout,
-		SafeMode:        safeMode,
-		VerifyFindings:  verifyFindings,
-		Scanners:        scanners,
-		AuthConfig:      authConfig,
-		RateLimitConfig: rateLimitConfig,
-		Tracer:          tracer,
-		CallbackURL:     callbackURL,
+		Target:               target,
+		Timeout:              timeout,
+		SafeMode:             safeMode,
+		VerifyFindings:       verifyFindings,
+		Scanners:             scanners,
+		AuthConfig:           authConfig,
+		RateLimitConfig:      rateLimitConfig,
+		Tracer:               tracer,
+		CallbackURL:          callbackURL,
+		RedirectCanaryDomain: redirectCanaryDomain,
 	}
 
 	// Execute the scan using the shared executor

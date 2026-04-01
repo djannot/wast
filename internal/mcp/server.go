@@ -511,6 +511,10 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 				"type":        "string",
 				"description": "Callback server base URL for out-of-band SSRF detection (e.g., http://callback.example.com:8888)",
 			},
+			"redirect_canary_domain": map[string]interface{}{
+				"type":        "string",
+				"description": "Canary domain substituted into open-redirect payloads (default: example.com). Set to a domain you control to eliminate false positives.",
+			},
 			"scanners": map[string]interface{}{
 				"type":        "array",
 				"description": "List of scanner names to run (e.g. [\"xss\",\"sqli\"]). Valid: xss, sqli, nosqli, csrf, ssrf, redirect, cmdi, pathtraversal, ssti, xxe, headers. Default: all scanners",
@@ -544,9 +548,10 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		LoginPassField    string   `json:"login_pass_field"`
 		LoginContentType  string   `json:"login_content_type"`
 		LoginTokenField   string   `json:"login_token_field"`
-		RequestsPerSecond float64  `json:"requests_per_second"`
-		CallbackURL       string   `json:"callback_url"`
-		Scanners          []string `json:"scanners"`
+		RequestsPerSecond    float64  `json:"requests_per_second"`
+		CallbackURL          string   `json:"callback_url"`
+		RedirectCanaryDomain string   `json:"redirect_canary_domain"`
+		Scanners             []string `json:"scanners"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -624,7 +629,7 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 		}
 	}
 
-	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, args.Scanners, authConfig, rateLimitConfig, t.server.tracer, progressCallback, args.CallbackURL)
+	result := executeScan(ctx, args.Target, args.Timeout, !args.Active, args.Verify, args.Discover, args.Depth, args.Concurrency, args.ScanConcurrency, args.Scanners, authConfig, rateLimitConfig, t.server.tracer, progressCallback, args.CallbackURL, args.RedirectCanaryDomain)
 
 	return result, nil
 }

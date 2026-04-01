@@ -62,16 +62,17 @@ func isScannerEnabled(name string, scanners []string) bool {
 
 // ScanConfig encapsulates all parameters needed for scan execution.
 type ScanConfig struct {
-	Target          string
-	Timeout         int
-	SafeMode        bool
-	VerifyFindings  bool
-	Scanners        []string // optional list of scanner names to run; empty means all
-	AuthConfig      *auth.AuthConfig
-	RateLimitConfig ratelimit.Config
-	Tracer          trace.Tracer // optional, for MCP tracing
-	CallbackURL     string       // optional, for out-of-band SSRF detection
-	HTTPClient      *http.Client // optional, shared HTTP client with cookie jar for session handling
+	Target               string
+	Timeout              int
+	SafeMode             bool
+	VerifyFindings       bool
+	Scanners             []string // optional list of scanner names to run; empty means all
+	AuthConfig           *auth.AuthConfig
+	RateLimitConfig      ratelimit.Config
+	Tracer               trace.Tracer // optional, for MCP tracing
+	CallbackURL          string       // optional, for out-of-band SSRF detection
+	HTTPClient           *http.Client // optional, shared HTTP client with cookie jar for session handling
+	RedirectCanaryDomain string       // optional, canary domain for redirect payloads (defaults to "example.com")
 }
 
 // IntermediateScanResult represents the combined results of all security scans
@@ -248,6 +249,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				},
 			}
 			redirectExtraOpts = append(redirectExtraOpts, WithRedirectHTTPClient(noRedirectClient))
+		}
+		if cfg.RedirectCanaryDomain != "" {
+			redirectExtraOpts = append(redirectExtraOpts, WithRedirectCanaryDomain(cfg.RedirectCanaryDomain))
 		}
 		redirectScanner := NewRedirectScannerFromBase(baseOpts, redirectExtraOpts...)
 
