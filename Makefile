@@ -83,6 +83,13 @@ test-webgoat:
 	$(GOTEST) -v -tags=integration -race -timeout 15m ./test/integration/webgoat/...
 	@echo "WebGoat integration tests complete"
 
+# Run MCP scan integration tests
+.PHONY: test-mcpscan
+test-mcpscan:
+	@echo "Running MCP scan integration tests..."
+	$(GOTEST) -v -tags=integration -race -timeout 5m ./test/integration/mcpscan/...
+	@echo "MCP scan integration tests complete"
+
 # Run tests with coverage report
 .PHONY: test-coverage
 test-coverage: test
@@ -184,6 +191,7 @@ help:
 	@echo "  test-dvwa        Run DVWA integration tests"
 	@echo "  test-juiceshop   Run Juice Shop integration tests"
 	@echo "  test-webgoat     Run WebGoat integration tests"
+	@echo "  test-mcpscan     Run MCP scan integration tests"
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  fmt-check        Check code formatting"
