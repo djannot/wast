@@ -146,6 +146,7 @@ Examples:
 
 	// discover subcommand
 	var networkTarget string
+	var projectDir string
 
 	discoverCmd := &cobra.Command{
 		Use:   "discover",
@@ -161,7 +162,11 @@ Checks known MCP config file locations:
   - Cline: ~/Library/Application Support/Code/User/...
 
 Use --network to also probe for MCP endpoints on an HTTP target:
-  wast mcpscan discover --network https://example.com`,
+  wast mcpscan discover --network https://example.com
+
+Use --project-dir to scan a project's package.json / requirements.txt /
+pyproject.toml for outdated MCP server dependencies:
+  wast mcpscan discover --project-dir /path/to/project`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			formatter := getFormatter()
 			ctx := cmd.Context()
@@ -170,6 +175,7 @@ Use --network to also probe for MCP endpoints on an HTTP target:
 			}
 
 			discoverer := mcpscan.NewDiscoverer()
+			discoverer.ProjectDir = projectDir
 			result := discoverer.Discover(ctx)
 
 			if networkTarget != "" {
@@ -194,18 +200,31 @@ Use --network to also probe for MCP endpoints on an HTTP target:
 						formatter.Info(line)
 					}
 				}
+				if len(result.Findings) > 0 {
+					formatter.Info(fmt.Sprintf("\nDependency findings: %d", len(result.Findings)))
+					for i, f := range result.Findings {
+						formatter.Info(fmt.Sprintf("  [%d] %s | %s",
+							i+1, strings.ToUpper(string(f.Severity)), f.Title))
+						formatter.Info("      " + f.Description)
+						if f.Remediation != "" {
+							formatter.Info("      Fix: " + f.Remediation)
+						}
+					}
+				}
 				for _, e := range result.Errors {
 					formatter.Info(fmt.Sprintf("  warning: %s", e))
 				}
 			}
 
-			formatter.Success("mcpscan discover", fmt.Sprintf("Discovery complete: %d server(s) found", len(result.Servers)), result)
+			formatter.Success("mcpscan discover", fmt.Sprintf("Discovery complete: %d server(s) found, %d finding(s)", len(result.Servers), len(result.Findings)), result)
 			return nil
 		},
 	}
 
 	discoverCmd.Flags().StringVar(&networkTarget, "network", "",
 		"Base URL to probe for network-accessible MCP endpoints")
+	discoverCmd.Flags().StringVar(&projectDir, "project-dir", "",
+		"Project directory to scan for MCP server dependencies in package.json, requirements.txt, or pyproject.toml")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd)
 

@@ -42,7 +42,7 @@ Before scanning, you need to find MCP servers. Discovery methods:
 - [ ] **Network discovery** — Scan for HTTP/SSE MCP endpoints:
   - Probe common MCP paths on a target: `/.well-known/mcp`, `/mcp`, `/sse`, `/api/mcp`
   - Check response for JSON-RPC 2.0 handshake indicators
-- [ ] **NPM/PyPI registry scanning** — Given a project, identify MCP server dependencies in `package.json`/`requirements.txt` and flag known-vulnerable versions
+- [x] **NPM/PyPI registry scanning** — Given a project, identify MCP server dependencies in `package.json`/`requirements.txt` and flag known-vulnerable versions
 - [ ] Wire discovery into both CLI (`wast mcpscan discover`) and MCP tool (`wast_mcpscan` with `discover` mode)
 
 ### Phase 3: Passive checks (safe mode, no tool invocation)

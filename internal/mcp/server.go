@@ -1511,24 +1511,32 @@ func (t *MCPScanTool) Name() string {
 }
 
 func (t *MCPScanTool) Description() string {
-	return "Scan an MCP (Model Context Protocol) server for security vulnerabilities. " +
+	return "Scan an MCP (Model Context Protocol) server for security vulnerabilities, or " +
+		"discover MCP servers and outdated MCP dependencies. " +
 		"Supports stdio, SSE, and HTTP transports. " +
 		"Passive checks (always run): schema analysis, prompt injection detection, permission auditing, tool shadowing. " +
-		"Active checks (opt-in via active=true): injection testing, data exposure, SSRF, auth bypass."
+		"Active checks (opt-in via active=true): injection testing, data exposure, SSRF, auth bypass. " +
+		"Use mode=discover with project_dir to scan a project's package.json/requirements.txt for outdated MCP packages."
 }
 
 func (t *MCPScanTool) InputSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
+			"mode": map[string]interface{}{
+				"type":        "string",
+				"description": "Operation mode: 'scan' (default) to scan a running MCP server, or 'discover' to find and audit MCP servers/dependencies",
+				"enum":        []string{"scan", "discover"},
+				"default":     "scan",
+			},
 			"transport": map[string]interface{}{
 				"type":        "string",
-				"description": "Transport type: stdio, sse, or http",
+				"description": "Transport type: stdio, sse, or http (required when mode=scan)",
 				"enum":        []string{"stdio", "sse", "http"},
 			},
 			"target": map[string]interface{}{
 				"type":        "string",
-				"description": "Connection target: command for stdio, URL for sse/http",
+				"description": "Connection target: command for stdio, URL for sse/http (required when mode=scan)",
 			},
 			"args": map[string]interface{}{
 				"type":        "array",
@@ -1545,32 +1553,49 @@ func (t *MCPScanTool) InputSchema() map[string]interface{} {
 				"description": "Per-request timeout in seconds",
 				"default":     30,
 			},
+			"project_dir": map[string]interface{}{
+				"type":        "string",
+				"description": "Project directory to scan for MCP server dependencies (package.json, requirements.txt, pyproject.toml) when mode=discover",
+			},
+			"network": map[string]interface{}{
+				"type":        "string",
+				"description": "Base URL to probe for network-accessible MCP endpoints when mode=discover",
+			},
 		},
-		"required": []string{"transport", "target"},
 	}
 }
 
 func (t *MCPScanTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Transport string   `json:"transport"`
-		Target    string   `json:"target"`
-		Args      []string `json:"args"`
-		Active    bool     `json:"active"`
-		Timeout   int      `json:"timeout"`
+		Mode       string   `json:"mode"`
+		Transport  string   `json:"transport"`
+		Target     string   `json:"target"`
+		Args       []string `json:"args"`
+		Active     bool     `json:"active"`
+		Timeout    int      `json:"timeout"`
+		ProjectDir string   `json:"project_dir"`
+		Network    string   `json:"network"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	if args.Timeout <= 0 {
+		args.Timeout = 30
+	}
+
+	// discover mode: find MCP servers and/or audit dependencies.
+	if args.Mode == "discover" {
+		return executeMCPDiscover(ctx, args.ProjectDir, args.Network, args.Timeout), nil
+	}
+
+	// scan mode (default).
 	if args.Transport == "" {
 		return nil, fmt.Errorf("transport is required (stdio, sse, or http)")
 	}
 	if args.Target == "" {
 		return nil, fmt.Errorf("target is required")
-	}
-	if args.Timeout <= 0 {
-		args.Timeout = 30
 	}
 
 	result := executeMCPScan(ctx, args.Transport, args.Target, args.Args, args.Active, args.Timeout, t.server.tracer)

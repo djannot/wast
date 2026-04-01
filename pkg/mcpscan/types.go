@@ -148,4 +148,6 @@ type DiscoveryResult struct {
 	Sources []string `json:"sources" yaml:"sources"`
 	// Errors lists non-fatal errors during discovery.
 	Errors []string `json:"errors,omitempty" yaml:"errors,omitempty"`
+	// Findings lists security findings from dependency scanning (e.g. outdated packages).
+	Findings []MCPFinding `json:"findings,omitempty" yaml:"findings,omitempty"`
 }

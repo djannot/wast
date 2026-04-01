@@ -764,3 +764,20 @@ func executeMCPScan(ctx context.Context, transport string, target string, args [
 
 	return result
 }
+
+// executeMCPDiscover discovers MCP servers from local config files and optionally
+// scans project dependencies for outdated MCP packages.
+func executeMCPDiscover(ctx context.Context, projectDir string, networkTarget string, timeout int) interface{} {
+	discoverer := mcpscanpkg.NewDiscoverer().WithHTTPTimeout(time.Duration(timeout) * time.Second)
+	discoverer.ProjectDir = projectDir
+	result := discoverer.Discover(ctx)
+
+	if networkTarget != "" {
+		networkResult := discoverer.DiscoverNetwork(ctx, networkTarget)
+		result.Servers = append(result.Servers, networkResult.Servers...)
+		result.Sources = append(result.Sources, networkResult.Sources...)
+		result.Errors = append(result.Errors, networkResult.Errors...)
+	}
+
+	return result
+}
