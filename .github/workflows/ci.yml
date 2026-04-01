@@ -151,6 +151,18 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.juiceshop.yml down -v
 
+  integration-mcpscan:
+    name: MCP Scan Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - run: make deps
+      - run: make test-mcpscan
+
   integration-webgoat:
     name: WebGoat Integration Tests
     runs-on: ubuntu-latest
