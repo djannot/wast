@@ -1732,7 +1732,8 @@ func TestGenerateSummary_AllScannerResultTypes(t *testing.T) {
 	}
 	ssrf := &SSRFScanResult{
 		Findings: []SSRFFinding{
-			{Severity: SeverityMedium, Confidence: "medium"},
+			// Use a distinct URL/parameter to avoid accidental Correlation 5 (CMDi+SSRF) or Correlation 7 (SSRF file://+PathTraversal)
+			{URL: "http://test.com/ssrf", Parameter: "url", Payload: "http://169.254.169.254/", Severity: SeverityMedium, Confidence: "medium"},
 		},
 	}
 	redirect := &RedirectScanResult{
@@ -1742,12 +1743,14 @@ func TestGenerateSummary_AllScannerResultTypes(t *testing.T) {
 	}
 	cmdi := &CMDiScanResult{
 		Findings: []CMDiFinding{
-			{Severity: SeverityHigh, Confidence: "high"},
+			// Use a distinct URL/parameter to avoid accidental Correlation 5 (CMDi+SSRF)
+			{URL: "http://test.com/cmdi", Parameter: "cmd", Severity: SeverityHigh, Confidence: "high"},
 		},
 	}
 	pathtraversal := &PathTraversalScanResult{
 		Findings: []PathTraversalFinding{
-			{Severity: SeverityMedium, Confidence: "medium"},
+			// Use a distinct URL/parameter to avoid accidental Correlation 7 (SSRF file://+PathTraversal)
+			{URL: "http://test.com/pt", Parameter: "path", Severity: SeverityMedium, Confidence: "medium"},
 		},
 	}
 	ssti := &SSTIScanResult{
@@ -1898,5 +1901,158 @@ func TestGenerateSummary_EmptyResultsHandling(t *testing.T) {
 	}
 	if len(result.Summary.PriorityActions) != 0 {
 		t.Errorf("Expected 0 priority actions for empty results, got %d", len(result.Summary.PriorityActions))
+	}
+}
+
+// TestCorrelateFindings_SSRFFileWithPathTraversal tests Correlation 7:
+// SSRF file:// findings on the same URL+parameter as PathTraversal findings are correlated,
+// and the SSRF finding is not double-counted in the summary.
+func TestCorrelateFindings_SSRFFileWithPathTraversal(t *testing.T) {
+	target := "http://test.com"
+	url := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        url,
+				Parameter:  param,
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        url,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	// Should produce exactly one correlation
+	if len(result.Correlations) != 1 {
+		t.Errorf("Expected 1 correlation for SSRF file:// + PathTraversal on same parameter, got %d", len(result.Correlations))
+	}
+
+	corr := result.Correlations[0]
+
+	// Primary finding should be the PathTraversal finding
+	ptFinding, ok := corr.PrimaryFinding.(PathTraversalFinding)
+	if !ok {
+		t.Errorf("Expected PrimaryFinding to be PathTraversalFinding")
+	} else if ptFinding.Parameter != param {
+		t.Errorf("Expected PrimaryFinding parameter %s, got %s", param, ptFinding.Parameter)
+	}
+
+	// Related findings should contain the SSRF finding
+	if len(corr.RelatedFindings) != 1 {
+		t.Errorf("Expected 1 related finding, got %d", len(corr.RelatedFindings))
+	} else {
+		ssrfFinding, ok := corr.RelatedFindings[0].(SSRFFinding)
+		if !ok {
+			t.Errorf("Expected RelatedFinding to be SSRFFinding")
+		} else if ssrfFinding.Parameter != param {
+			t.Errorf("Expected RelatedFinding parameter %s, got %s", param, ssrfFinding.Parameter)
+		}
+	}
+
+	// Effective severity should be high
+	if corr.EffectiveSeverity != SeverityHigh {
+		t.Errorf("Expected EffectiveSeverity %s, got %s", SeverityHigh, corr.EffectiveSeverity)
+	}
+
+	// Explanation should mention both scanners
+	if !strings.Contains(corr.Explanation, "Path Traversal") || !strings.Contains(corr.Explanation, "SSRF") {
+		t.Errorf("Expected explanation to mention both Path Traversal and SSRF, got: %s", corr.Explanation)
+	}
+
+	// The SSRF finding should NOT be counted in the summary (it's in a correlation)
+	// Total findings = 1 PathTraversal (SSRF is correlated, not standalone)
+	expectedTotal := 1
+	if result.Summary.TotalFindings != expectedTotal {
+		t.Errorf("Expected %d total findings (SSRF deduplicated via correlation), got %d", expectedTotal, result.Summary.TotalFindings)
+	}
+}
+
+// TestCorrelateFindings_SSRFFileWithPathTraversal_NonFilePayloadNotCorrelated tests that
+// SSRF findings with non-file:// payloads are NOT correlated with PathTraversal findings.
+func TestCorrelateFindings_SSRFFileWithPathTraversal_NonFilePayloadNotCorrelated(t *testing.T) {
+	target := "http://test.com"
+	url := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        url,
+				Parameter:  param,
+				Payload:    "http://169.254.169.254/latest/meta-data/",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        url,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	// No correlation expected since SSRF payload is not file://
+	if len(result.Correlations) != 0 {
+		t.Errorf("Expected no correlation for non-file:// SSRF + PathTraversal, got %d", len(result.Correlations))
+	}
+}
+
+// TestCorrelateFindings_SSRFFileWithPathTraversal_DifferentParameters tests that
+// SSRF file:// and PathTraversal findings on DIFFERENT parameters are NOT correlated.
+func TestCorrelateFindings_SSRFFileWithPathTraversal_DifferentParameters(t *testing.T) {
+	target := "http://test.com"
+	url := target + "/fi/"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        url,
+				Parameter:  "src",
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        url,
+				Parameter:  "page",
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	// No correlation expected since parameters differ
+	if len(result.Correlations) != 0 {
+		t.Errorf("Expected no correlation for SSRF file:// + PathTraversal on different parameters, got %d", len(result.Correlations))
 	}
 }

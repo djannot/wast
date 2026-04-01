@@ -310,6 +310,38 @@ func (u *UnifiedScanResult) correlateFindings() {
 			}
 		}
 	}
+
+	// Correlation 7: SSRF (file://) + PathTraversal on same parameter
+	if u.SSRF != nil && u.PathTraversal != nil {
+		// Build a map of parameters with PathTraversal findings
+		ptParams := make(map[string]PathTraversalFinding)
+		for _, finding := range u.PathTraversal.Findings {
+			key := fmt.Sprintf("%s:%s", finding.URL, finding.Parameter)
+			ptParams[key] = finding
+		}
+
+		// Check for SSRF file:// findings on same parameters
+		for _, ssrfFinding := range u.SSRF.Findings {
+			if !strings.HasPrefix(ssrfFinding.Payload, "file://") {
+				continue
+			}
+			key := fmt.Sprintf("%s:%s", ssrfFinding.URL, ssrfFinding.Parameter)
+			if ptFinding, found := ptParams[key]; found {
+				correlationID++
+				correlation := CorrelatedFinding{
+					ID:             fmt.Sprintf("CORR-%d", correlationID),
+					PrimaryFinding: ptFinding,
+					RelatedFindings: []interface{}{
+						ssrfFinding,
+					},
+					EffectiveSeverity: SeverityHigh,
+					Confidence:        u.calculateConfidence(ptFinding.Confidence, u.parseConfidenceString(ssrfFinding.Confidence)),
+					Explanation:       fmt.Sprintf("Parameter '%s' confirmed for local file read by both the Path Traversal and SSRF (file://) scanners independently, indicating a high-confidence LFI vulnerability.", ssrfFinding.Parameter),
+				}
+				u.Correlations = append(u.Correlations, correlation)
+			}
+		}
+	}
 }
 
 // calculateRiskScore computes overall risk score and breakdown by category.
@@ -521,6 +553,9 @@ func (u *UnifiedScanResult) generateSummary() {
 
 	if u.SSRF != nil {
 		for _, finding := range u.SSRF.Findings {
+			if u.isInCorrelations(finding) {
+				continue
+			}
 			summary.TotalFindings++
 			severityCounts[finding.Severity]++
 		}
