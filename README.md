@@ -1,13 +1,14 @@
-# WAST - Web Application Security Testing
+# WAST - Web & AI Security Testing
 
-WAST is a modern web application security testing tool designed for both AI agents and human operators. It provides comprehensive security testing capabilities with structured output formats for seamless automation.
+WAST is a modern security testing tool designed for both AI agents and human operators. It provides comprehensive web application security testing and MCP (Model Context Protocol) server security scanning, with structured output formats for seamless automation.
 
 ## Features
 
 - **Safe by Default**: Testing runs in safe mode by default (passive checks only), preventing accidental active testing
 - **AI-First Design**: All commands support structured output formats (JSON/YAML/SARIF) for seamless AI agent integration
+- **MCP Server Security Scanning**: Discover and scan MCP servers for vulnerabilities — prompt injection, tool injection, excessive permissions, auth bypass
 - **SARIF Output**: Native support for SARIF 2.1.0 format for integration with GitHub Code Scanning, VS Code, and other security tools
-- **Comprehensive Testing**: Full-spectrum web security testing from reconnaissance to vulnerability scanning
+- **Comprehensive Web Testing**: Full-spectrum web security testing from reconnaissance to vulnerability scanning
 - **Cross-Platform**: Single binary distribution for Linux, macOS, and Windows
 - **Modular Architecture**: Command-based structure for targeted testing
 
@@ -20,6 +21,7 @@ WAST is a modern web application security testing tool designed for both AI agen
 | `wast intercept` | Traffic interception and analysis |
 | `wast scan` | Security vulnerability scanning |
 | `wast api` | API security testing |
+| `wast mcpscan` | MCP server discovery and security scanning |
 | `wast serve --mcp` | Start MCP server for AI agent integration |
 
 ## Installation
@@ -72,6 +74,9 @@ wast scan https://example.com
 
 # Run active vulnerability testing (requires explicit permission)
 wast scan https://example.com --active
+
+# Discover and scan with crawling (finds forms, endpoints, then scans them)
+wast scan https://example.com --active --discover --depth 3
 ```
 
 ### Safe Mode
@@ -114,7 +119,21 @@ wast scan https://example.com --safe-mode=false
 - Server-Side Template Injection (SSTI) testing
 - XML External Entity (XXE) injection testing
 
-⚠️ **WARNING**: Active testing sends attack payloads to the target. Only use `--active` on systems you own or have written permission to test. Unauthorized testing may be illegal and could trigger security alerts.
+#### Discovery Mode
+
+Discovery mode crawls the target to find forms and endpoints, then scans all discovered attack surfaces with their actual field names:
+
+```bash
+# Crawl and scan all discovered forms/endpoints
+wast scan https://example.com --active --discover
+
+# Control crawl depth (default: 2)
+wast scan https://example.com --active --discover --depth 3
+
+# Authenticated discovery scan
+wast scan https://example.com --active --discover \
+  --cookie "session=abc123" --cookie "security=low"
+```
 
 #### Open Redirect Canary Domain
 
@@ -130,6 +149,63 @@ wast scan https://example.com --active --redirect-canary-domain redirect-canary.
 With a domain you control you can also verify findings independently by monitoring DNS or HTTP requests to that domain during the scan.
 
 > **Note**: The `--redirect-canary-domain` flag is only meaningful when active testing is enabled (`--active`).
+
+### MCP Server Security Scanning
+
+WAST can discover and scan MCP (Model Context Protocol) servers for security vulnerabilities. MCP servers expose tools via JSON-RPC 2.0 — these tools are a new attack surface that traditional web scanners don't cover.
+
+#### Discovery
+
+Find MCP servers configured on your machine:
+
+```bash
+# Discover all configured MCP servers
+wast mcpscan discover
+
+# Scan a project directory for MCP dependencies
+wast mcpscan discover --project-dir /path/to/project
+
+# Probe a network endpoint for MCP servers
+wast mcpscan discover --network https://example.com
+```
+
+Discovery checks:
+- Claude Desktop config (`claude_desktop_config.json`)
+- Claude Code config (`.claude.json`, `.mcp.json`)
+- Cursor config (`~/.cursor/mcp.json`)
+- VS Code / Copilot config (`.vscode/mcp.json`)
+- Cline and Windsurf configs
+- NPM/PyPI dependencies for known MCP server packages
+
+#### Scanning
+
+Scan an MCP server for vulnerabilities:
+
+```bash
+# Scan a stdio-based MCP server (passive checks only)
+wast mcpscan stdio -- npx @modelcontextprotocol/server-filesystem /tmp
+
+# Scan an SSE-based MCP server
+wast mcpscan sse https://example.com/sse
+
+# Scan an HTTP-based MCP server
+wast mcpscan http https://example.com/mcp
+
+# Enable active checks (sends payloads to tool parameters)
+wast mcpscan stdio --active -- node my-server.js
+```
+
+**Passive checks (safe mode):**
+- **Schema analysis** — Enumerate tools, flag missing input validation, overly permissive parameters
+- **Prompt injection detection** — Analyze tool descriptions for hidden AI-directed instructions, Unicode tricks, encoded payloads
+- **Permission auditing** — Flag dangerous capabilities (file system access, shell execution, network requests)
+- **Tool shadowing** — Detect name collisions and typosquatting across multiple servers
+
+**Active checks (requires `--active`):**
+- **Tool parameter injection** — Send SQLi, CMDi, path traversal payloads through tool parameters
+- **Data exposure** — Invoke tools and scan responses for leaked credentials, PII, internal paths
+- **SSRF via tools** — Test URL-accepting parameters for server-side request forgery
+- **Auth bypass** — Test unauthenticated access and per-tool authorization
 
 ### Output Formats
 
@@ -160,7 +236,7 @@ SARIF (Static Analysis Results Interchange Format) is the industry-standard form
 
 **SARIF Output Features:**
 - Complete rule definitions with CWE references
-- Severity mapping (high→error, medium→warning, low→note)
+- Severity mapping (high->error, medium->warning, low->note)
 - Location information with URIs
 - Markdown-formatted remediation guidance
 - Full compliance with SARIF 2.1.0 specification
@@ -244,8 +320,6 @@ wast --mcp
 export WAST_OTEL_INSECURE=true
 ```
 
-⚠️ **Warning**: Only use `WAST_OTEL_INSECURE=true` in local development environments. In production, always use secure TLS connections to protect sensitive scan data.
-
 #### Example: Running with Jaeger
 
 ```bash
@@ -308,6 +382,7 @@ wast/
 │   │   ├── intercept.go      # Traffic interception command
 │   │   ├── scan.go           # Security scanning command
 │   │   ├── api.go            # API testing command
+│   │   ├── mcpscan.go        # MCP server security scanning command
 │   │   └── serve.go          # MCP server command
 │   └── mcp/                  # MCP protocol implementation
 │       └── server.go         # MCP server and tools
@@ -315,18 +390,38 @@ wast/
 │   ├── auth/                 # Authentication configuration
 │   ├── crawler/              # Web crawling functionality
 │   ├── dns/                  # DNS enumeration
-│   ├── scanner/              # Vulnerability scanning
+│   ├── scanner/              # Web vulnerability scanning
+│   ├── mcpscan/              # MCP server security scanning
+│   │   ├── client.go         # MCP client (stdio/SSE/HTTP transports)
+│   │   ├── scanner.go        # Scan orchestrator
+│   │   ├── discovery.go      # MCP server discovery
+│   │   └── checks/           # Security checks
+│   │       ├── schema.go     # Schema analysis
+│   │       ├── prompt.go     # Prompt injection detection
+│   │       ├── permissions.go # Permission auditing
+│   │       ├── shadowing.go  # Tool name collision detection
+│   │       ├── injection.go  # Parameter injection testing
+│   │       ├── exposure.go   # Data exposure analysis
+│   │       ├── ssrf.go       # SSRF via tool parameters
+│   │       └── auth.go       # Auth bypass testing
 │   ├── api/                  # API testing
 │   ├── proxy/                # Traffic interception proxy
 │   ├── tls/                  # TLS analysis
 │   ├── output/               # Output formatting (JSON/YAML/SARIF)
 │   └── ratelimit/            # Rate limiting
+├── test/
+│   └── integration/          # Integration tests
+│       ├── dvwa_test.go      # DVWA benchmark tests
+│       ├── juiceshop/        # Juice Shop benchmark tests
+│       ├── webgoat/          # WebGoat benchmark tests
+│       └── mcpscan/          # MCP scan integration tests
 ├── docs/                     # Comprehensive documentation
 │   ├── getting-started.md    # Quick start guide for humans and AI agents
 │   ├── mcp-integration.md    # MCP protocol documentation with examples
 │   ├── cli-reference.md      # Complete CLI command reference
 │   ├── authentication.md     # Authentication methods guide
 │   └── safe-mode.md          # Safe vs active mode explanation
+├── docker-compose.test.yml   # DVWA integration test environment
 ├── Makefile
 ├── go.mod
 ├── go.sum
@@ -341,6 +436,7 @@ wast/
 
 - Go 1.26 or later
 - Make (optional, for using Makefile)
+- Docker (for integration tests)
 
 ### Building
 
@@ -355,11 +451,20 @@ make build-all
 ### Testing
 
 ```bash
-# Run all tests
+# Run all unit tests
 make test
 
 # Run tests with coverage report
 make test-coverage
+
+# Run coverage check (enforced minimum threshold)
+make coverage-check
+
+# Run DVWA integration tests (requires Docker)
+make test-dvwa
+
+# Run MCP scan integration tests
+make test-mcpscan
 ```
 
 ### Linting
@@ -387,11 +492,12 @@ make deps
 WAST is designed with first-class support for AI agent integration. Key features:
 
 1. **MCP Server Mode**: Native Model Context Protocol (MCP) server for direct AI agent integration
-2. **Structured Output**: All commands support `--output json`, `--output yaml`, and `--output sarif` for machine-readable output
-3. **SARIF Compliance**: Full SARIF 2.1.0 support for seamless integration with security tools and platforms
-4. **Consistent Schema**: Output follows a consistent structure across all commands
-5. **Exit Codes**: Meaningful exit codes for success/failure detection
-6. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
+2. **MCP Security Scanning**: Scan other MCP servers for vulnerabilities via `wast_mcpscan` tool
+3. **Structured Output**: All commands support `--output json`, `--output yaml`, and `--output sarif` for machine-readable output
+4. **SARIF Compliance**: Full SARIF 2.1.0 support for seamless integration with security tools and platforms
+5. **Consistent Schema**: Output follows a consistent structure across all commands
+6. **Exit Codes**: Meaningful exit codes for success/failure detection
+7. **Quiet Mode**: `--quiet` flag for suppressing non-essential output
 
 ### MCP Server Mode
 
@@ -409,16 +515,17 @@ wast --mcp
 
 **Available MCP Tools:**
 
-| Tool Name | Description | Parameters |
-|-----------|-------------|------------|
+| Tool Name | Description | Key Parameters |
+|-----------|-------------|----------------|
 | `wast_recon` | Reconnaissance and information gathering | `target`, `timeout`, `include_subdomains` |
-| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `timeout`, `active`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `redirect_canary_domain` |
-| `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `respect_robots`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
-| `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
-| `wast_headers` | Passive-only security header analysis | `target`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |
-| `wast_intercept` | Intercept and analyze HTTP/HTTPS traffic via proxy | `port`, `duration`, `save_file`, `https_interception`, `max_requests` |
-| `wast_verify` | Verify individual security findings to reduce false positives | `finding_type`, `finding_url`, `parameter`, `payload`, `max_retries`, `delay`, `bearer_token`, `basic_auth`, `auth_header`, `cookies` |
-| `wast_websocket` | WebSocket security scanning (CSWSH, insecure protocols) | `target`, `active`, `timeout`, `bearer_token`, `basic_auth`, `auth_header`, `cookies`, `requests_per_second` |
+| `wast_scan` | Security vulnerability scanning (safe mode by default) | `target`, `active`, `discover`, `depth`, `scanners`, `cookies` |
+| `wast_crawl` | Web crawling and content discovery | `target`, `depth`, `timeout`, `cookies` |
+| `wast_api` | API discovery and testing | `target`, `spec_file`, `dry_run` |
+| `wast_headers` | Passive-only security header analysis | `target`, `timeout` |
+| `wast_intercept` | Intercept and analyze HTTP/HTTPS traffic | `port`, `duration`, `save_file` |
+| `wast_verify` | Verify individual findings to reduce false positives | `finding_type`, `finding_url`, `parameter`, `payload` |
+| `wast_websocket` | WebSocket security scanning | `target`, `active`, `timeout` |
+| `wast_mcpscan` | MCP server discovery and security scanning | `mode`, `transport`, `target`, `active` |
 
 **MCP Integration Example (Claude Desktop):**
 
@@ -441,11 +548,14 @@ After restarting Claude Desktop, you can use natural language to invoke WAST too
 User: "Can you scan example.com for security issues?"
 Claude: [Uses wast_scan tool with target="https://example.com"]
 
-User: "Perform reconnaissance on test.com and include subdomains"
-Claude: [Uses wast_recon tool with include_subdomains=true]
+User: "Scan example.com actively and discover all forms"
+Claude: [Uses wast_scan tool with active=true, discover=true, depth=3]
 
-User: "Scan api.example.com with bearer token authentication"
-Claude: [Uses wast_scan tool with bearer_token="your-token-here"]
+User: "Discover all MCP servers on my machine"
+Claude: [Uses wast_mcpscan tool with mode="discover"]
+
+User: "Scan the filesystem MCP server for vulnerabilities"
+Claude: [Uses wast_mcpscan tool with transport="stdio", target="npx", args=["@modelcontextprotocol/server-filesystem", "/tmp"]]
 ```
 
 **Authentication Parameters:**
@@ -461,6 +571,7 @@ All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`)
 - `login_pass` (string): Password for automated login
 - `login_user_field` (string): Form field name for username (default: 'username')
 - `login_pass_field` (string): Form field name for password (default: 'password')
+- `login_token_field` (string): Dot-separated JSON path to extract a bearer token from login response body
 
 **Authentication Examples:**
 
@@ -489,13 +600,6 @@ All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`)
   "cookies": ["session=abc123", "user_id=456"]
 }
 
-// Multiple authentication methods (combined)
-{
-  "target": "https://api.example.com",
-  "bearer_token": "token123",
-  "cookies": ["session=xyz789"]
-}
-
 // Automated login flow (form-based)
 {
   "target": "https://app.example.com/dashboard",
@@ -504,41 +608,29 @@ All MCP tools that perform HTTP requests (`wast_scan`, `wast_crawl`, `wast_api`)
   "login_pass": "password123"
 }
 
-// Automated login with custom field names
+// JWT-based login (extract token from response body)
 {
-  "target": "https://app.example.com/admin",
-  "login_url": "https://app.example.com/auth/login",
+  "target": "https://api.example.com",
+  "login_url": "https://api.example.com/rest/user/login",
   "login_user": "admin@example.com",
-  "login_pass": "secretpass",
-  "login_user_field": "email",
-  "login_pass_field": "pwd"
+  "login_pass": "admin123",
+  "login_content_type": "json",
+  "login_token_field": "authentication.token"
 }
 ```
 
 **Automated Login Flow:**
 
-WAST supports automated login flows for testing session-based web applications. Instead of manually extracting cookies, WAST can authenticate by submitting credentials to a login endpoint and automatically capturing session cookies.
-
-This feature is useful for:
-- Testing authenticated areas of web applications
-- AI agents testing real-world applications autonomously
-- Automated security testing in CI/CD pipelines
+WAST supports automated login flows for testing session-based web applications. Instead of manually extracting cookies, WAST can authenticate by submitting credentials to a login endpoint and automatically capturing session cookies or JWT tokens.
 
 **CLI Examples:**
 
 ```bash
 # Basic login flow (form-based authentication)
-# Recommended: Use environment variable for password
 export WAST_LOGIN_PASS="password123"
 wast crawl https://app.example.com/dashboard \
   --login-url https://app.example.com/login \
   --login-user testuser
-
-# Alternative: Pass password directly (NOT RECOMMENDED - exposes in shell history)
-wast crawl https://app.example.com/dashboard \
-  --login-url https://app.example.com/login \
-  --login-user testuser \
-  --login-pass password123
 
 # Login with custom field names
 export WAST_LOGIN_PASS="secretpass"
@@ -548,54 +640,21 @@ wast scan https://app.example.com/admin \
   --login-user-field email \
   --login-pass-field pwd
 
-# API testing with login flow
-export WAST_LOGIN_PASS="apipass"
-wast api https://api.example.com \
-  --login-url https://api.example.com/auth/login \
-  --login-user apiuser
+# JWT-based login (e.g., OWASP Juice Shop)
+export WAST_LOGIN_PASS="admin123"
+wast scan https://juice-shop.example.com \
+  --login-url https://juice-shop.example.com/rest/user/login \
+  --login-user admin@juice-sh.op \
+  --login-content-type json \
+  --login-token-field authentication.token
 ```
-
-**How it works:**
-1. WAST submits credentials to the specified login endpoint via POST request
-2. The server responds with session cookies (and potentially redirects)
-3. WAST captures these cookies automatically
-4. Subsequent requests include the captured session cookies
-5. WAST detects login failures (wrong status codes, error messages in response)
-
-**Supported login types:**
-- Form-based authentication (default, Content-Type: application/x-www-form-urlencoded)
-- JSON API authentication (Content-Type: application/json)
-- Redirects after successful login (302/303 status codes)
 
 **Security Best Practices:**
 
-⚠️ **IMPORTANT:** Passing credentials via command-line flags exposes them in shell history and process listings. Follow these security best practices:
-
-**Recommended: Use Environment Variables**
-```bash
-# Set password via environment variable to avoid shell history exposure
-export WAST_LOGIN_PASS="your_password_here"
-
-# Run WAST without exposing password in command line
-wast crawl https://app.example.com/dashboard \
-  --login-url https://app.example.com/login \
-  --login-user testuser
-
-# Clear the environment variable when done
-unset WAST_LOGIN_PASS
-```
-
-**Alternative: Use MCP Protocol with Secure Credential Management**
-- When using MCP (Model Context Protocol), credentials are passed as parameters
-- MCP parameters may be logged by clients/servers
-- Consider implementing secure credential storage in your MCP client
-
-**Additional Security Considerations:**
-- Only use automated login for testing/development environments
-- Never hardcode credentials in scripts or configuration files
+- Set password via `WAST_LOGIN_PASS` environment variable to avoid shell history exposure
 - Use unique test accounts with minimal privileges
-- Rotate credentials regularly
-- Monitor for unauthorized access attempts
+- Only use automated login for testing/development environments
+- When using MCP, be aware that credentials in parameters may be logged by clients/servers
 
 **MCP Protocol Details:**
 - Protocol: JSON-RPC 2.0 over stdio
