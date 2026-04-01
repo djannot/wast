@@ -62,9 +62,9 @@ type stdioLine struct {
 // Client is an MCP JSON-RPC 2.0 client that supports stdio, SSE, and HTTP transports.
 type Client struct {
 	transport Transport
-	target    string       // URL for SSE/HTTP, command for stdio
-	args      []string     // additional args for stdio
-	env       []string     // extra env vars for stdio (KEY=VALUE)
+	target    string   // URL for SSE/HTTP, command for stdio
+	args      []string // additional args for stdio
+	env       []string // extra env vars for stdio (KEY=VALUE)
 	timeout   time.Duration
 	idCounter uint64
 
@@ -105,10 +105,10 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 // command is the executable; args are its arguments.
 func NewStdioClient(command string, args []string, opts ...ClientOption) *Client {
 	c := &Client{
-		transport: TransportStdio,
-		target:    command,
-		args:      args,
-		timeout:   30 * time.Second,
+		transport:  TransportStdio,
+		target:     command,
+		args:       args,
+		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 	for _, o := range opts {
@@ -120,9 +120,9 @@ func NewStdioClient(command string, args []string, opts ...ClientOption) *Client
 // NewSSEClient creates a Client that communicates with an SSE-based MCP server.
 func NewSSEClient(url string, opts ...ClientOption) *Client {
 	c := &Client{
-		transport: TransportSSE,
-		target:    url,
-		timeout:   30 * time.Second,
+		transport:  TransportSSE,
+		target:     url,
+		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 	for _, o := range opts {
@@ -134,9 +134,9 @@ func NewSSEClient(url string, opts ...ClientOption) *Client {
 // NewHTTPClient creates a Client that communicates with an HTTP-based MCP server.
 func NewHTTPClient(url string, opts ...ClientOption) *Client {
 	c := &Client{
-		transport: TransportHTTP,
-		target:    url,
-		timeout:   30 * time.Second,
+		transport:  TransportHTTP,
+		target:     url,
+		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 	for _, o := range opts {
