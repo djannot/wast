@@ -2076,7 +2076,8 @@ func TestCorrelation7_SSRFRawFindingsSuppressed(t *testing.T) {
 				Confidence: "high",
 			},
 		},
-		Summary: SSRFSummary{VulnerabilitiesFound: 1},
+		// Mirror what calculateSummary would produce for this single High finding.
+		Summary: SSRFSummary{VulnerabilitiesFound: 1, HighSeverityCount: 1},
 	}
 	pt := &PathTraversalScanResult{
 		Findings: []PathTraversalFinding{
@@ -2097,9 +2098,20 @@ func TestCorrelation7_SSRFRawFindingsSuppressed(t *testing.T) {
 		t.Errorf("Expected 0 raw SSRF findings after deduplication, got %d", len(result.SSRF.Findings))
 	}
 
-	// The SSRF summary count must reflect the suppression
+	// VulnerabilitiesFound must reflect the suppression
 	if result.SSRF.Summary.VulnerabilitiesFound != 0 {
 		t.Errorf("Expected SSRF.Summary.VulnerabilitiesFound == 0 after deduplication, got %d", result.SSRF.Summary.VulnerabilitiesFound)
+	}
+
+	// Per-severity counts must also be zeroed — not left stale from pre-suppression state
+	if result.SSRF.Summary.HighSeverityCount != 0 {
+		t.Errorf("Expected SSRF.Summary.HighSeverityCount == 0 after deduplication, got %d", result.SSRF.Summary.HighSeverityCount)
+	}
+	if result.SSRF.Summary.MediumSeverityCount != 0 {
+		t.Errorf("Expected SSRF.Summary.MediumSeverityCount == 0 after deduplication, got %d", result.SSRF.Summary.MediumSeverityCount)
+	}
+	if result.SSRF.Summary.LowSeverityCount != 0 {
+		t.Errorf("Expected SSRF.Summary.LowSeverityCount == 0 after deduplication, got %d", result.SSRF.Summary.LowSeverityCount)
 	}
 
 	// Exactly one correlation must exist
@@ -2245,5 +2257,62 @@ func TestCorrelation7_NonFileSSRFNotSuppressed(t *testing.T) {
 	// No Correlation 7 should be created for a non-file:// payload
 	if len(result.Correlations) != 0 {
 		t.Errorf("Expected 0 correlations for non-file:// SSRF, got %d", len(result.Correlations))
+	}
+}
+
+// TestCorrelation7_PrimaryFindingIsCleanSnapshot verifies that the PrimaryFinding
+// stored in the CorrelatedFinding does NOT contain the SSRF entry in its own
+// RelatedFindings. The SSRF evidence must appear only in
+// correlation.RelatedFindings, not duplicated inside PrimaryFinding.RelatedFindings.
+func TestCorrelation7_PrimaryFindingIsCleanSnapshot(t *testing.T) {
+	target := "http://test.com"
+	pageURL := target + "/fi/"
+	param := "page"
+
+	ssrf := &SSRFScanResult{
+		Findings: []SSRFFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "file:///etc/passwd",
+				Severity:   SeverityHigh,
+				Type:       "blind",
+				Confidence: "high",
+			},
+		},
+	}
+	pt := &PathTraversalScanResult{
+		Findings: []PathTraversalFinding{
+			{
+				URL:        pageURL,
+				Parameter:  param,
+				Payload:    "../../../../etc/passwd",
+				Severity:   SeverityHigh,
+				Confidence: "high",
+			},
+		},
+	}
+
+	result := NewUnifiedScanResult(ScanResultOptions{Target: target, PassiveOnly: false, SSRF: ssrf, PathTraversal: pt})
+
+	if len(result.Correlations) != 1 {
+		t.Fatalf("Expected 1 correlation, got %d", len(result.Correlations))
+	}
+	corr := result.Correlations[0]
+
+	// The PrimaryFinding snapshot must be clean — taken before RelatedFindings
+	// was populated — so iterating correlation.RelatedFindings is the single
+	// canonical place to find the SSRF evidence.
+	ptPrimary, ok := corr.PrimaryFinding.(PathTraversalFinding)
+	if !ok {
+		t.Fatalf("Expected PrimaryFinding to be PathTraversalFinding")
+	}
+	if len(ptPrimary.RelatedFindings) != 0 {
+		t.Errorf("Expected PrimaryFinding.RelatedFindings to be empty (clean snapshot), got %d entries", len(ptPrimary.RelatedFindings))
+	}
+
+	// The SSRF evidence must still appear in correlation.RelatedFindings
+	if len(corr.RelatedFindings) != 1 {
+		t.Errorf("Expected correlation.RelatedFindings to have 1 entry, got %d", len(corr.RelatedFindings))
 	}
 }
