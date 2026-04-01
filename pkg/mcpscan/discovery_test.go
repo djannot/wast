@@ -517,8 +517,8 @@ func TestIsOutdated(t *testing.T) {
 		{"1.2.4", "1.2.3", false},
 		{"^1.0.0", "2.0.0", true},
 		{"~1.2.0", "1.3.0", true},
-		{"", "1.0.0", false},   // empty installed → do not flag
-		{"1.0.0", "", false},   // empty latest → do not flag
+		{"", "1.0.0", false}, // empty installed → do not flag
+		{"1.0.0", "", false}, // empty latest → do not flag
 		{"1.0.0", "1.0.0", false},
 		{"1.0.0-beta", "1.0.0", false}, // pre-release treated same as 1.0.0
 	}
