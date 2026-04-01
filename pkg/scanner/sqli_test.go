@@ -3319,3 +3319,136 @@ func TestResponseSignificantlyDiffers(t *testing.T) {
 		})
 	}
 }
+
+// docParamMock simulates a content-routing parameter (e.g. DVWA's ?doc=PDF) that slips
+// past the first-pass isContentRouting check because the random-string response is close in
+// size to the original value's response. Both true and false SQL payloads produce the same
+// "unknown doc" page — a similar delta from the baseline — which is the pattern the secondary
+// mutual-difference check is designed to catch.
+type docParamMock struct {
+	requests     []*http.Request
+	originalBody string // response for the baseline value (e.g. doc=PDF)
+	randomBody   string // response for random strings — close in size to originalBody
+	sqlErrorBody string // response for SQL payloads (both true AND false get this same body)
+}
+
+func (m *docParamMock) Do(req *http.Request) (*http.Response, error) {
+	m.requests = append(m.requests, req)
+
+	var paramVal string
+	if vals := req.URL.Query()["doc"]; len(vals) > 0 {
+		paramVal = vals[0]
+	}
+
+	var body string
+	isSQLPayload := strings.Contains(paramVal, "'") || strings.Contains(paramVal, "OR")
+	if isSQLPayload {
+		body = m.sqlErrorBody
+	} else if paramVal == "PDF" {
+		body = m.originalBody
+	} else {
+		// random string — returned close in size to original so isContentRouting passes
+		body = m.randomBody
+	}
+
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestSecondaryContentRoutingCheck_NoFalsePositive verifies that testBooleanBased does NOT
+// report a finding when both the true and false SQL payloads produce responses that differ
+// from the baseline by similar amounts (the hallmark of a content-routing parameter).
+//
+// This is the regression test for the 4 false positives on the DVWA ?doc=PDF parameter.
+func TestSecondaryContentRoutingCheck_NoFalsePositive(t *testing.T) {
+	// Baseline: valid doc=PDF page (5000 bytes of actual documentation).
+	originalBody := strings.Repeat("x", 5000)
+
+	// Random string: returns a page that is close in size to the baseline (within 10%)
+	// so the first-pass isContentRouting check does NOT skip this parameter.
+	randomBody := strings.Repeat("y", 4900) // 2% smaller — within 10% threshold
+
+	// Both SQL payloads produce the same "unknown doc" error page, which is notably
+	// different from the original but identical in size for true vs. false payloads.
+	sqlErrorBody := strings.Repeat("z", 3500) // ~30% smaller than baseline
+
+	mock := &docParamMock{
+		originalBody: originalBody,
+		randomBody:   randomBody,
+		sqlErrorBody: sqlErrorBody,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "https://example.com/instructions.php?doc=PDF")
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	for _, f := range result.Findings {
+		if f.Type == "boolean-based" {
+			t.Errorf("secondary mutual-difference check should have suppressed this FP: param=%s payload=%s evidence=%s",
+				f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+}
+
+// TestSecondaryContentRoutingCheck_TruePositiveUnaffected verifies that the secondary
+// mutual-difference check does NOT suppress genuine boolean-based SQLi findings where the
+// true payload returns substantially more data than the false payload.
+//
+// The baseline is padded above smallResponseSizeThreshold (1024 bytes) so that the
+// isMutualContentRouting guard is actually entered; both the true and false deltas exceed
+// 5 % of the baseline, and the mutual body difference between them is large — confirming
+// that the secondary check correctly refrains from suppressing the finding.
+func TestSecondaryContentRoutingCheck_TruePositiveUnaffected(t *testing.T) {
+	// Baseline: a page with one row of data (like DVWA id=1), padded to ≥ 1024 bytes so
+	// the isMutualContentRouting guard is entered.  The padding is an HTML comment so it
+	// does not affect structural element or word counts.
+	basePad := strings.Repeat("x", 1400)
+	baseBody := `<html><!-- ` + basePad + ` --><body><table><tr><td>ID: 1</td><td>Name: admin</td></tr></table></body></html>`
+	// baseline ≈ 1500 bytes; threshold = 1024; 5% = 75 bytes.
+
+	mock := &contentRoutingMock{
+		originalValue: "1",
+		originalBody:  baseBody,
+		// trueBody returns many rows (true SQLi: OR 1=1 dumps all users).
+		// It differs from the baseline by far more than 5 %, and it differs from
+		// falseBody by far more than 5 % of the baseline — so the secondary check
+		// recognises this as a real injection and does NOT suppress the finding.
+		trueBody: `<html><body><table>` +
+			`<tr><td>ID: 1</td><td>Name: admin</td></tr>` +
+			`<tr><td>ID: 2</td><td>Name: Gordon</td></tr>` +
+			`<tr><td>ID: 3</td><td>Name: Hack</td></tr>` +
+			`<tr><td>ID: 4</td><td>Name: Pablo</td></tr>` +
+			`<tr><td>ID: 5</td><td>Name: Bob</td></tr>` +
+			`</table></body></html>`,
+		// falseBody returns no rows (false condition: OR 1=2 matches nothing).
+		falseBody:  `<html><body><table></table></body></html>`,
+		injectable: true,
+	}
+
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "https://example.com/sqli/?id=1")
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	hasBooleanFinding := false
+	for _, f := range result.Findings {
+		if f.Type == "boolean-based" {
+			hasBooleanFinding = true
+			t.Logf("Correctly detected: param=%s payload=%s confidence=%s", f.Parameter, f.Payload, f.Confidence)
+			break
+		}
+	}
+	if !hasBooleanFinding {
+		t.Error("secondary mutual-difference check incorrectly suppressed a true positive boolean-based finding")
+	}
+}

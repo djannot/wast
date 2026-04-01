@@ -1546,6 +1546,20 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		}
 	}
 
+	// Secondary content-routing check: if both the true and false SQL payloads produce
+	// responses that differ from baseline by similar magnitudes AND the two payloads look
+	// very similar to each other (small mutual body-length and data-word differences), the
+	// parameter routes to different content pages (e.g., "unknown doc"), not SQL injection.
+	// For genuine boolean-based SQLi the true payload returns noticeably more data than the
+	// false payload, so their mutual difference will be significant.
+	//
+	// This runs AFTER the SQL error scan so that error-based findings (high-confidence) are
+	// never suppressed: an error page pair where both responses are the same size and notably
+	// different from the baseline would otherwise be falsely classified as content-routing.
+	if isMutualContentRouting(trueResp, falseResp, baseline) {
+		return nil
+	}
+
 	// Differential analysis: compare true vs false responses
 	// For SQL injection: true and false conditions should produce different responses
 	trueDiffFromBaseline := abs(trueResp.BodyLength - baseline.BodyLength)
@@ -1986,6 +2000,20 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 		}
 	}
 
+	// Secondary content-routing check: if both the true and false SQL payloads produce
+	// responses that differ from baseline by similar magnitudes AND the two payloads look
+	// very similar to each other (small mutual body-length and data-word differences), the
+	// parameter routes to different content pages (e.g., "unknown doc"), not SQL injection.
+	// For genuine boolean-based SQLi the true payload returns noticeably more data than the
+	// false payload, so their mutual difference will be significant.
+	//
+	// This runs AFTER the SQL error scan so that error-based findings (high-confidence) are
+	// never suppressed: an error page pair where both responses are the same size and notably
+	// different from the baseline would otherwise be falsely classified as content-routing.
+	if isMutualContentRouting(trueResp, falseResp, baseline) {
+		return nil
+	}
+
 	// Adaptive thresholds based on baseline characteristics
 	isSmallResponse := baseline.BodyLength < smallResponseSizeThreshold
 	hasFewStructuralElements := trueResp.StructuralElements < fewStructuralElementsLimit || falseResp.StructuralElements < fewStructuralElementsLimit
@@ -2329,6 +2357,33 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// isMutualContentRouting reports whether the true and false SQL-payload responses look like
+// a content-routing parameter rather than a genuine boolean-based injection point.
+//
+// The heuristic fires when ALL of the following hold:
+//  1. The baseline is at least 1 KB (tiny stubs make every response "different").
+//  2. Both payloads deviate from the baseline by more than 5 % (they land on a different page).
+//  3. The two payloads are mutually similar in both body length AND data-word count (≤ 5 % /
+//     ≤ 1 word apart).  For genuine boolean-based SQLi the true condition returns noticeably
+//     more data than the false condition, keeping the mutual difference large.
+//
+// This helper is shared by testBooleanBased (GET) and testBooleanBasedPOST (POST) and is
+// intentionally called AFTER the SQL error pattern scan so that error-based findings
+// (high-confidence path) are never suppressed.
+func isMutualContentRouting(trueResp, falseResp *responseCharacteristics, baseline *baselineResponse) bool {
+	if baseline.BodyLength < smallResponseSizeThreshold {
+		return false
+	}
+	trueDelta := abs(trueResp.BodyLength - baseline.BodyLength)
+	falseDelta := abs(falseResp.BodyLength - baseline.BodyLength)
+	if trueDelta <= baseline.BodyLength/20 || falseDelta <= baseline.BodyLength/20 {
+		return false
+	}
+	mutualBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+	mutualDataWordDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
+	return mutualBodyDiff <= baseline.BodyLength/20 && mutualDataWordDiff <= 1
 }
 
 // VerifyFinding re-tests a SQLi finding with payload variants using differential analysis.

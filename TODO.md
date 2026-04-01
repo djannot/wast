@@ -23,7 +23,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 4 FPs on `doc` param | **FAIL** |
+| SQLi | 0 findings on non-injectable params | 0 (secondary mutual-diff check added) | **PASS** |
 | CMDi | 0 findings on non-injectable params | 0 | **PASS** |
 | SSRF | 0 false positives on non-SSRF params | 0 (1 arguable — see note) | **REVIEW** |
 | All others | 0 false positives | 0 | **PASS** |
@@ -32,11 +32,16 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 ## Remaining work
 
-### SQLi: 4 false positives on `doc` param
+### ~~SQLi: 4 false positives on `doc` param~~ FIXED (issue #326)
 
-The content-routing pre-check eliminated some `doc` FPs but 4 remain (`doc=PDF`, `doc=copying`, `doc=PHPIDS-license`). The pre-check sends a random string and compares against baseline — but these `doc` values also produce different responses from each other, so the differential analysis still triggers.
-
-**What to do:** The pre-check may need to be stricter. If `randomstring` produces a different response from baseline AND the true/false SQL payloads ALSO produce different responses, the param is likely content-routing. An alternative: if the true payload (`' OR '1'='1`) and false payload (`' OR '1'='2`) both produce responses that differ from baseline by a similar amount, it's content-routing (both are just "unknown doc values"), not injection (where true and false should differ from each other).
+A secondary mutual-difference check was added after the existing content-routing pre-check.
+After fetching both true and false SQL payloads, if both differ from the baseline by >5% AND
+are mutually similar (body-length diff ≤5% of baseline AND data-word diff ≤1), the parameter
+is classified as content-routing and skipped. This eliminates the remaining false positives on
+three distinct `doc` values (`doc=PDF`, `doc=copying`, `doc=PHPIDS-license`) without affecting
+real SQLi detection. The "4 FPs" count in the issue title and table reflects 4 separate scanner
+findings: `doc=copying` was flagged by two different boolean payloads, yielding 4 findings total
+from 3 distinct parameter values.
 
 ### SSRF: 1 finding on `page` param with `file:///etc/passwd`
 
