@@ -3336,10 +3336,8 @@ func (m *docParamMock) Do(req *http.Request) (*http.Response, error) {
 	m.requests = append(m.requests, req)
 
 	var paramVal string
-	for _, vals := range req.URL.Query() {
-		if len(vals) > 0 {
-			paramVal = vals[0]
-		}
+	if vals := req.URL.Query()["doc"]; len(vals) > 0 {
+		paramVal = vals[0]
 	}
 
 	var body string
@@ -3402,14 +3400,26 @@ func TestSecondaryContentRoutingCheck_NoFalsePositive(t *testing.T) {
 // TestSecondaryContentRoutingCheck_TruePositiveUnaffected verifies that the secondary
 // mutual-difference check does NOT suppress genuine boolean-based SQLi findings where the
 // true payload returns substantially more data than the false payload.
+//
+// The baseline is padded above smallResponseSizeThreshold (1024 bytes) so that the
+// isMutualContentRouting guard is actually entered; both the true and false deltas exceed
+// 5 % of the baseline, and the mutual body difference between them is large — confirming
+// that the secondary check correctly refrains from suppressing the finding.
 func TestSecondaryContentRoutingCheck_TruePositiveUnaffected(t *testing.T) {
-	// Baseline: a page with one row of data (like DVWA id=1).
-	baseBody := `<html><body><table><tr><td>ID: 1</td><td>Name: admin</td></tr></table></body></html>`
+	// Baseline: a page with one row of data (like DVWA id=1), padded to ≥ 1024 bytes so
+	// the isMutualContentRouting guard is entered.  The padding is an HTML comment so it
+	// does not affect structural element or word counts.
+	basePad := strings.Repeat("x", 1400)
+	baseBody := `<html><!-- ` + basePad + ` --><body><table><tr><td>ID: 1</td><td>Name: admin</td></tr></table></body></html>`
+	// baseline ≈ 1500 bytes; threshold = 1024; 5% = 75 bytes.
 
 	mock := &contentRoutingMock{
 		originalValue: "1",
 		originalBody:  baseBody,
-		// trueBody returns many rows (true SQLi: OR 1=1 dumps all users)
+		// trueBody returns many rows (true SQLi: OR 1=1 dumps all users).
+		// It differs from the baseline by far more than 5 %, and it differs from
+		// falseBody by far more than 5 % of the baseline — so the secondary check
+		// recognises this as a real injection and does NOT suppress the finding.
 		trueBody: `<html><body><table>` +
 			`<tr><td>ID: 1</td><td>Name: admin</td></tr>` +
 			`<tr><td>ID: 2</td><td>Name: Gordon</td></tr>` +
@@ -3417,8 +3427,8 @@ func TestSecondaryContentRoutingCheck_TruePositiveUnaffected(t *testing.T) {
 			`<tr><td>ID: 4</td><td>Name: Pablo</td></tr>` +
 			`<tr><td>ID: 5</td><td>Name: Bob</td></tr>` +
 			`</table></body></html>`,
-		// falseBody returns no rows (false condition: OR 1=2 matches nothing)
-		falseBody: `<html><body><table></table></body></html>`,
+		// falseBody returns no rows (false condition: OR 1=2 matches nothing).
+		falseBody:  `<html><body><table></table></body></html>`,
 		injectable: true,
 	}
 

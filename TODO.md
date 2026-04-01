@@ -37,8 +37,11 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 A secondary mutual-difference check was added after the existing content-routing pre-check.
 After fetching both true and false SQL payloads, if both differ from the baseline by >5% AND
 are mutually similar (body-length diff ≤5% of baseline AND data-word diff ≤1), the parameter
-is classified as content-routing and skipped. This eliminates the remaining `doc=PDF`,
-`doc=copying`, and `doc=PHPIDS-license` false positives without affecting real SQLi detection.
+is classified as content-routing and skipped. This eliminates the remaining false positives on
+three distinct `doc` values (`doc=PDF`, `doc=copying`, `doc=PHPIDS-license`) without affecting
+real SQLi detection. The "4 FPs" count in the issue title and table reflects 4 separate scanner
+findings: `doc=copying` was flagged by two different boolean payloads, yielding 4 findings total
+from 3 distinct parameter values.
 
 ### SSRF: 1 finding on `page` param with `file:///etc/passwd`
 
