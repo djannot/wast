@@ -220,6 +220,7 @@ func init() {
 	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig, getRateLimitConfig))
 	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig, getRateLimitConfig))
 	rootCmd.AddCommand(commands.NewServeCmd(getFormatter))
+	rootCmd.AddCommand(commands.NewMCPScanCmd(getFormatter))
 }
 
 // getFormatter returns a new formatter with the current global settings.
