@@ -1523,6 +1523,34 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		return nil
 	}
 
+	// Secondary content-routing check: if both the true and false SQL payloads produce
+	// responses that differ from baseline by similar magnitudes AND the two payloads look
+	// very similar to each other (small mutual body-length and data-word differences), the
+	// parameter routes to different content pages (e.g., "unknown doc"), not SQL injection.
+	// For genuine boolean-based SQLi the true payload returns noticeably more data than the
+	// false payload, so their mutual difference will be significant.
+	//
+	// Guard: only apply this check when the baseline is at least 1 KB. A tiny baseline
+	// (e.g., a redirect stub or empty form) makes every response look "different", which
+	// would cause spurious content-routing classifications on legitimate injection paths.
+	if baseline.BodyLength >= smallResponseSizeThreshold {
+		trueDelta := abs(trueResp.BodyLength - baseline.BodyLength)
+		falseDelta := abs(falseResp.BodyLength - baseline.BodyLength)
+		// Both payloads must deviate from baseline by at least 5 % to bother checking.
+		if trueDelta > baseline.BodyLength/20 && falseDelta > baseline.BodyLength/20 {
+			// Require that true and false are mutually similar in BOTH body length and
+			// data word count. A small body-length difference alone is insufficient (the
+			// false payload may echo the SQL string, inflating byte count). Requiring
+			// small data-word difference ensures we only skip parameters where both
+			// payloads return genuinely equivalent responses (e.g., identical error pages).
+			mutualBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+			mutualDataWordDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
+			if mutualBodyDiff <= baseline.BodyLength/20 && mutualDataWordDiff <= 1 {
+				return nil
+			}
+		}
+	}
+
 	// Check if either response has SQL errors (indicates vulnerability)
 	for _, pattern := range sqlErrorPatterns {
 		if pattern.MatchString(trueResp.Body) || pattern.MatchString(falseResp.Body) {
@@ -1952,6 +1980,34 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 	falseResp, err := s.makeRequestPOST(ctx, baseURL, paramName, falsePayload, allParameters)
 	if err != nil {
 		return nil
+	}
+
+	// Secondary content-routing check: if both the true and false SQL payloads produce
+	// responses that differ from baseline by similar magnitudes AND the two payloads look
+	// very similar to each other (small mutual body-length and data-word differences), the
+	// parameter routes to different content pages (e.g., "unknown doc"), not SQL injection.
+	// For genuine boolean-based SQLi the true payload returns noticeably more data than the
+	// false payload, so their mutual difference will be significant.
+	//
+	// Guard: only apply this check when the baseline is at least 1 KB. A tiny baseline
+	// (e.g., a redirect stub or empty form) makes every response look "different", which
+	// would cause spurious content-routing classifications on legitimate injection paths.
+	if baseline.BodyLength >= smallResponseSizeThreshold {
+		trueDelta := abs(trueResp.BodyLength - baseline.BodyLength)
+		falseDelta := abs(falseResp.BodyLength - baseline.BodyLength)
+		// Both payloads must deviate from baseline by at least 5 % to bother checking.
+		if trueDelta > baseline.BodyLength/20 && falseDelta > baseline.BodyLength/20 {
+			// Require that true and false are mutually similar in BOTH body length and
+			// data word count. A small body-length difference alone is insufficient (the
+			// false payload may echo the SQL string, inflating byte count). Requiring
+			// small data-word difference ensures we only skip parameters where both
+			// payloads return genuinely equivalent responses (e.g., identical error pages).
+			mutualBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+			mutualDataWordDiff := abs(trueResp.DataWordCount - falseResp.DataWordCount)
+			if mutualBodyDiff <= baseline.BodyLength/20 && mutualDataWordDiff <= 1 {
+				return nil
+			}
+		}
 	}
 
 	// Check for SQL errors in either response
