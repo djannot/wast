@@ -633,3 +633,214 @@ func TestDiscover_WithProjectDir(t *testing.T) {
 		t.Error("expected findings when ProjectDir is set, got none")
 	}
 }
+
+// --------------------------------------------------------------------------
+// New tests addressing review feedback
+// --------------------------------------------------------------------------
+
+// TestParseRequirementsTxt_WithExtras verifies that extras notation like
+// "mcp[cli]==1.0.0" is parsed correctly — the package name should be "mcp"
+// and the version should be "1.0.0", not empty.
+func TestParseRequirementsTxt_WithExtras(t *testing.T) {
+	input := `mcp[cli]==1.0.0
+requests[security]>=2.28.0
+fastmcp[all]~=2.0.0
+`
+	r := strings.NewReader(input)
+	pkgs := parseRequirementsTxt(r)
+
+	cases := []struct {
+		name    string
+		wantVer string
+	}{
+		{"mcp", "1.0.0"},
+		{"requests", "2.28.0"},
+		{"fastmcp", "2.0.0"},
+	}
+	for _, tc := range cases {
+		v, ok := pkgs[tc.name]
+		if !ok {
+			t.Errorf("package %q missing from parsed result", tc.name)
+			continue
+		}
+		if v != tc.wantVer {
+			t.Errorf("package %q: got version %q, want %q", tc.name, v, tc.wantVer)
+		}
+	}
+}
+
+// TestDiscoverDependencies_RequirementsTxt_Extras verifies that an MCP package
+// declared with extras notation is flagged as outdated when a newer version
+// is available in the registry.
+func TestDiscoverDependencies_RequirementsTxt_Extras(t *testing.T) {
+	srv := mockRegistryHandler(
+		nil,
+		map[string]string{"mcp": "2.5.0"},
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("mcp[cli]==1.0.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newDiscovererWithMockRegistry(srv)
+	result := d.DiscoverDependencies(context.Background(), dir)
+
+	found := false
+	for _, f := range result.Findings {
+		if strings.Contains(f.Title, "mcp") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a finding for outdated 'mcp[cli]==1.0.0', got %+v", result.Findings)
+	}
+}
+
+// TestDiscoverDependencies_PyprojectToml_MultiLine verifies that multi-line
+// [project].dependencies arrays are parsed correctly.
+func TestDiscoverDependencies_PyprojectToml_MultiLine(t *testing.T) {
+	srv := mockRegistryHandler(
+		nil,
+		map[string]string{"mcp": "2.0.0", "fastmcp": "3.0.0"},
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	toml := `[project]
+name = "my-project"
+dependencies = [
+  "mcp==1.0.0",
+  "fastmcp>=1.5.0",
+  "httpx>=0.24.0",
+]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(toml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newDiscovererWithMockRegistry(srv)
+	result := d.DiscoverDependencies(context.Background(), dir)
+
+	// Both mcp and fastmcp should be flagged as outdated.
+	found := map[string]bool{}
+	for _, f := range result.Findings {
+		if strings.Contains(f.Title, "mcp") {
+			found["mcp"] = true
+		}
+		if strings.Contains(f.Title, "fastmcp") {
+			found["fastmcp"] = true
+		}
+	}
+	if !found["mcp"] {
+		t.Errorf("expected finding for outdated 'mcp', got %+v", result.Findings)
+	}
+	if !found["fastmcp"] {
+		t.Errorf("expected finding for outdated 'fastmcp', got %+v", result.Findings)
+	}
+}
+
+// TestDiscoverDependencies_PyprojectPoetry verifies that [tool.poetry.dependencies]
+// packages are parsed and checked for outdated versions.
+func TestDiscoverDependencies_PyprojectPoetry(t *testing.T) {
+	srv := mockRegistryHandler(
+		nil,
+		map[string]string{"mcp": "2.0.0"},
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	toml := `[tool.poetry.dependencies]
+python = "^3.10"
+mcp = "^1.0.0"
+httpx = "^0.24.0"
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(toml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newDiscovererWithMockRegistry(srv)
+	result := d.DiscoverDependencies(context.Background(), dir)
+
+	found := false
+	for _, f := range result.Findings {
+		if strings.Contains(f.Title, "mcp") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected finding for outdated poetry 'mcp', got %+v", result.Findings)
+	}
+}
+
+// TestDiscoverDependencies_PyprojectToml_SectionWithComment verifies that
+// section headers with trailing inline comments are handled correctly.
+func TestDiscoverDependencies_PyprojectToml_SectionWithComment(t *testing.T) {
+	srv := mockRegistryHandler(
+		nil,
+		map[string]string{"mcp": "2.0.0"},
+	)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	// The [project] header has a trailing comment — should still be detected.
+	toml := `[project]  # my cool project
+name = "my-project"
+dependencies = ["mcp==1.0.0"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(toml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newDiscovererWithMockRegistry(srv)
+	result := d.DiscoverDependencies(context.Background(), dir)
+
+	found := false
+	for _, f := range result.Findings {
+		if strings.Contains(f.Title, "mcp") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected finding for outdated 'mcp' in file with commented section header, got %+v", result.Findings)
+	}
+}
+
+// TestDiscoverDependencies_RegistryError verifies that non-200/non-404 registry
+// responses produce an error entry in the result rather than panicking or
+// silently swallowing the failure.
+func TestDiscoverDependencies_RegistryError(t *testing.T) {
+	// Registry that always returns 500 Internal Server Error.
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer errSrv.Close()
+
+	// Reuse newDiscovererWithMockRegistry — it redirects all HTTP calls to errSrv.
+	d := newDiscovererWithMockRegistry(errSrv)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("mcp==1.0.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := d.DiscoverDependencies(context.Background(), dir)
+
+	// Should have an error entry, not a finding.
+	if len(result.Errors) == 0 {
+		t.Error("expected at least one error from 500 registry response, got none")
+	}
+	if len(result.Findings) != 0 {
+		t.Errorf("expected 0 findings on registry error, got %d", len(result.Findings))
+	}
+}
+
+// TestFindingCategory verifies that dependency findings use CategoryDependency,
+// not CategoryPermissions.
+func TestFindingCategory(t *testing.T) {
+	f := buildOutdatedFinding("npm", "mcp-server-test", "1.0.0", "2.0.0")
+	if f.Category != CategoryDependency {
+		t.Errorf("expected category %q, got %q", CategoryDependency, f.Category)
+	}
+}

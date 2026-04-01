@@ -28,6 +28,9 @@ const (
 	CategoryExposure    CheckCategory = "data_exposure"
 	CategorySSRF        CheckCategory = "ssrf"
 	CategoryAuth        CheckCategory = "auth_bypass"
+	// CategoryDependency covers supply-chain / dependency hygiene findings such as
+	// outdated MCP server packages detected via NPM or PyPI registry scanning.
+	CategoryDependency CheckCategory = "dependency"
 )
 
 // MCPFinding represents a single security finding from an MCP server scan.

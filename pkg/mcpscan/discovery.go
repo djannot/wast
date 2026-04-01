@@ -461,9 +461,13 @@ func (d *Discoverer) fetchNPMLatestVersion(ctx context.Context, pkg string) (str
 		return "", fmt.Errorf("NPM registry returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	const maxNPMResponseSize = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNPMResponseSize))
 	if err != nil {
 		return "", err
+	}
+	if len(body) == maxNPMResponseSize {
+		return "", fmt.Errorf("NPM registry response too large (>1 MiB)")
 	}
 
 	var doc struct {
@@ -540,22 +544,38 @@ func parseRequirementsTxt(r io.Reader) map[string]string {
 }
 
 // parseRequirementLine splits a requirement spec into package name and pinned version.
+// It correctly handles extras notation such as "mcp[cli]==1.0.0" or
+// "requests[security]>=2.28.0" by stripping the extras bracket before searching for
+// the version operator, while still returning only the bare package name.
 func parseRequirementLine(line string) (name, version string) {
-	// Strip extras like package[extra].
-	line = strings.Split(line, "[")[0]
-	// Find version operator.
+	// Build a bracket-stripped line for operator search.
+	// "mcp[cli]==1.0.0"           → stripped = "mcp==1.0.0"
+	// "requests[security]>=2.28.0"→ stripped = "requests>=2.28.0"
+	// "mcp==1.0.0"                → stripped = "mcp==1.0.0"  (unchanged)
+	stripped := line
+	if bStart := strings.Index(line, "["); bStart >= 0 {
+		if bEnd := strings.Index(line, "]"); bEnd > bStart {
+			stripped = line[:bStart] + line[bEnd+1:]
+		}
+	}
+
+	// Find version operator in the bracket-stripped line; the name is everything
+	// before the operator.
 	for _, op := range []string{"==", "~=", ">=", "<=", "!=", ">", "<"} {
-		if idx := strings.Index(line, op); idx >= 0 {
-			n := strings.TrimSpace(line[:idx])
-			v := strings.TrimSpace(line[idx+len(op):])
+		if idx := strings.Index(stripped, op); idx >= 0 {
+			n := strings.TrimSpace(stripped[:idx])
+			v := strings.TrimSpace(stripped[idx+len(op):])
 			// For ranges like ">=1.0,<2.0" take the first segment only.
 			v = strings.Split(v, ",")[0]
 			v = strings.TrimSpace(v)
 			return n, v
 		}
 	}
-	// No version specifier — bare package name.
-	return strings.TrimSpace(line), ""
+	// No version specifier — return the bare package name (without any extras).
+	if bStart := strings.Index(stripped, "["); bStart >= 0 {
+		return strings.TrimSpace(stripped[:bStart]), ""
+	}
+	return strings.TrimSpace(stripped), ""
 }
 
 // normalizePackageName lowercases and replaces underscores/dots with hyphens per PEP 503.
@@ -591,41 +611,73 @@ func (d *Discoverer) scanPyprojectToml(ctx context.Context, projectDir string, r
 
 // parsePyprojectToml extracts dependencies from a pyproject.toml file using
 // simple line-by-line parsing (no external TOML library required).
-// It handles both [project] dependencies and [tool.poetry.dependencies].
+// It handles both [project] dependencies (inline and multi-line arrays) and
+// [tool.poetry.dependencies] (key-per-line format).
+// Section headers may have trailing inline comments, e.g. "[project]  # my project".
 func parsePyprojectToml(content string) map[string]string {
 	result := make(map[string]string)
 	inDepsSection := false
 	inPoetryDeps := false
+	// inDepsArray tracks whether we are inside a multi-line [project] deps array.
+	inDepsArray := false
+
+	addItem := func(raw string) {
+		item := strings.Trim(strings.TrimSpace(raw), `"'`)
+		if item == "" || strings.HasPrefix(item, "#") {
+			return
+		}
+		name, version := parseRequirementLine(item)
+		if name != "" {
+			result[normalizePackageName(name)] = version
+		}
+	}
 
 	lines := strings.Split(content, "\n")
-	for _, raw := range lines {
-		line := strings.TrimSpace(raw)
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
 
-		// Detect section headers.
+		// If we are collecting lines of a multi-line deps array, accumulate until "]".
+		if inDepsArray {
+			if closeIdx := strings.Index(line, "]"); closeIdx >= 0 {
+				// Items may appear before the closing bracket on this line.
+				for _, item := range strings.Split(line[:closeIdx], ",") {
+					addItem(item)
+				}
+				inDepsArray = false
+			} else {
+				// Strip trailing comma; the item is the whole (trimmed) line.
+				addItem(strings.TrimRight(line, ","))
+			}
+			continue
+		}
+
+		// Detect section headers. Strip trailing inline comments to handle
+		// forms like "[project]  # description".
 		if strings.HasPrefix(line, "[") {
-			inDepsSection = line == "[project]"
-			inPoetryDeps = line == "[tool.poetry.dependencies]"
+			// Remove inline comment: take the part before any " #" outside the brackets.
+			headerLine := line
+			if ci := strings.Index(line, " #"); ci >= 0 {
+				headerLine = strings.TrimSpace(line[:ci])
+			}
+			inDepsSection = headerLine == "[project]"
+			inPoetryDeps = headerLine == "[tool.poetry.dependencies]"
+			// Any new section ends a multi-line array (defensive reset).
+			inDepsArray = false
 			continue
 		}
 
 		// Inside [project], look for "dependencies = [...]" array.
 		if inDepsSection && strings.HasPrefix(line, "dependencies") {
-			// Inline array like: dependencies = ["mcp==1.0", "fastmcp>=2.0"]
-			if idx := strings.Index(line, "["); idx >= 0 {
-				end := strings.Index(line, "]")
-				if end < 0 {
-					end = len(line)
-				}
-				inner := line[idx+1 : end]
-				for _, item := range strings.Split(inner, ",") {
-					item = strings.Trim(strings.TrimSpace(item), `"'`)
-					if item == "" {
-						continue
+			if openIdx := strings.Index(line, "["); openIdx >= 0 {
+				if closeIdx := strings.Index(line, "]"); closeIdx > openIdx {
+					// Single-line array: dependencies = ["mcp==1.0", "fastmcp>=2.0"]
+					inner := line[openIdx+1 : closeIdx]
+					for _, item := range strings.Split(inner, ",") {
+						addItem(item)
 					}
-					name, version := parseRequirementLine(item)
-					if name != "" {
-						result[normalizePackageName(name)] = version
-					}
+				} else {
+					// Multi-line array: opening "[" with no closing "]" on this line.
+					inDepsArray = true
 				}
 			}
 			continue
@@ -694,9 +746,13 @@ func (d *Discoverer) fetchPyPILatestVersion(ctx context.Context, pkg string) (st
 		return "", fmt.Errorf("PyPI returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	const maxPyPIResponseSize = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPyPIResponseSize))
 	if err != nil {
 		return "", err
+	}
+	if len(body) == maxPyPIResponseSize {
+		return "", fmt.Errorf("PyPI registry response too large (>1 MiB)")
 	}
 
 	var doc struct {
@@ -804,21 +860,19 @@ func isOutdated(installed, latest string) bool {
 }
 
 // buildOutdatedFinding constructs an MCPFinding for an out-of-date MCP package.
+// installedVersion must be non-empty (callers gate on isOutdated which returns
+// false for empty installed versions).
 func buildOutdatedFinding(registry, pkg, installedVersion, latestVersion string) MCPFinding {
-	installedDisplay := installedVersion
-	if installedDisplay == "" {
-		installedDisplay = "(unpinned)"
-	}
 	return MCPFinding{
-		Category: CategoryPermissions,
+		Category: CategoryDependency,
 		Severity: SeverityMedium,
 		Title:    fmt.Sprintf("Outdated MCP package: %s", pkg),
 		Description: fmt.Sprintf(
 			"The %s package %q is pinned to version %s, but the latest available version is %s. "+
 				"Running outdated MCP server packages may expose the application to known security vulnerabilities.",
-			registry, pkg, installedDisplay, latestVersion,
+			registry, pkg, installedVersion, latestVersion,
 		),
-		Evidence: fmt.Sprintf("installed=%s latest=%s registry=%s", installedDisplay, latestVersion, registry),
+		Evidence: fmt.Sprintf("installed=%s latest=%s registry=%s", installedVersion, latestVersion, registry),
 		Remediation: fmt.Sprintf(
 			"Upgrade %s to version %s or later to ensure you have the latest security fixes.",
 			pkg, latestVersion,
