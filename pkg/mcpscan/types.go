@@ -28,6 +28,9 @@ const (
 	CategoryExposure    CheckCategory = "data_exposure"
 	CategorySSRF        CheckCategory = "ssrf"
 	CategoryAuth        CheckCategory = "auth_bypass"
+	// CategoryDependency covers supply-chain / dependency hygiene findings such as
+	// outdated MCP server packages detected via NPM or PyPI registry scanning.
+	CategoryDependency CheckCategory = "dependency"
 )
 
 // MCPFinding represents a single security finding from an MCP server scan.
@@ -148,4 +151,6 @@ type DiscoveryResult struct {
 	Sources []string `json:"sources" yaml:"sources"`
 	// Errors lists non-fatal errors during discovery.
 	Errors []string `json:"errors,omitempty" yaml:"errors,omitempty"`
+	// Findings lists security findings from dependency scanning (e.g. outdated packages).
+	Findings []MCPFinding `json:"findings,omitempty" yaml:"findings,omitempty"`
 }

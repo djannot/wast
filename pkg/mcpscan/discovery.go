@@ -1,13 +1,16 @@
 package mcpscan
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +21,9 @@ type Discoverer struct {
 	HTTPTimeout time.Duration
 	// httpClient is used for network probing (overrideable in tests).
 	httpClient *http.Client
+	// ProjectDir, when set, causes Discover() to also run DiscoverDependencies
+	// against the given directory and surface out-of-date MCP packages as findings.
+	ProjectDir string
 }
 
 // NewDiscoverer creates a new Discoverer with sensible defaults.
@@ -36,15 +42,26 @@ func (d *Discoverer) WithHTTPTimeout(t time.Duration) *Discoverer {
 }
 
 // Discover scans for MCP servers using all available discovery methods.
+// If d.ProjectDir is set, dependency scanning is also performed and any
+// out-of-date MCP packages are surfaced as MCPFinding entries.
 func (d *Discoverer) Discover(ctx context.Context) *DiscoveryResult {
 	result := &DiscoveryResult{
-		Servers: []DiscoveredServer{},
-		Sources: []string{},
-		Errors:  []string{},
+		Servers:  []DiscoveredServer{},
+		Sources:  []string{},
+		Errors:   []string{},
+		Findings: []MCPFinding{},
 	}
 
 	// Discover from local config files.
 	d.discoverLocalConfigs(result)
+
+	// Scan project dependencies if a project directory is configured.
+	if d.ProjectDir != "" {
+		depResult := d.DiscoverDependencies(ctx, d.ProjectDir)
+		result.Sources = append(result.Sources, depResult.Sources...)
+		result.Errors = append(result.Errors, depResult.Errors...)
+		result.Findings = append(result.Findings, depResult.Findings...)
+	}
 
 	return result
 }
@@ -323,4 +340,542 @@ func serverDefsToDiscovered(servers map[string]mcpServerDef) []DiscoveredServer 
 		})
 	}
 	return result
+}
+
+// --------------------------------------------------------------------------
+// Dependency / registry scanning
+// --------------------------------------------------------------------------
+
+// DiscoverDependencies reads package.json, requirements.txt, and pyproject.toml
+// inside projectDir, identifies known MCP server packages, queries NPM and PyPI
+// for the latest versions, and returns any out-of-date packages as MCPFinding
+// entries in the result.
+func (d *Discoverer) DiscoverDependencies(ctx context.Context, projectDir string) *DiscoveryResult {
+	result := &DiscoveryResult{
+		Servers:  []DiscoveredServer{},
+		Sources:  []string{},
+		Errors:   []string{},
+		Findings: []MCPFinding{},
+	}
+
+	// Scan NPM dependencies from package.json.
+	d.scanPackageJSON(ctx, projectDir, result)
+
+	// Scan Python dependencies from requirements.txt.
+	d.scanRequirementsTxt(ctx, projectDir, result)
+
+	// Scan Python dependencies from pyproject.toml.
+	d.scanPyprojectToml(ctx, projectDir, result)
+
+	return result
+}
+
+// --------------------------------------------------------------------------
+// NPM scanning
+// --------------------------------------------------------------------------
+
+// npmMCPPatterns reports whether an NPM package name looks like an MCP server.
+func npmMCPPackage(name string) bool {
+	if strings.HasPrefix(name, "@modelcontextprotocol/") {
+		return true
+	}
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, "-mcp-server") ||
+		strings.HasPrefix(lower, "mcp-server-") ||
+		strings.HasSuffix(lower, "-mcp")
+}
+
+// scanPackageJSON reads package.json from projectDir, identifies MCP packages,
+// queries the NPM registry for the latest version, and appends findings.
+func (d *Discoverer) scanPackageJSON(ctx context.Context, projectDir string, result *DiscoveryResult) {
+	pkgPath := filepath.Join(projectDir, "package.json")
+	result.Sources = append(result.Sources, pkgPath)
+
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", pkgPath, err))
+		}
+		return
+	}
+
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("%s: parse error: %v", pkgPath, err))
+		return
+	}
+
+	allDeps := make(map[string]string)
+	for k, v := range pkg.Dependencies {
+		allDeps[k] = v
+	}
+	for k, v := range pkg.DevDependencies {
+		allDeps[k] = v
+	}
+
+	for name, versionSpec := range allDeps {
+		if !npmMCPPackage(name) {
+			continue
+		}
+		installedVersion := cleanVersionSpec(versionSpec)
+		latest, err := d.fetchNPMLatestVersion(ctx, name)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("npm registry query for %s: %v", name, err))
+			continue
+		}
+		if isOutdated(installedVersion, latest) {
+			result.Findings = append(result.Findings, buildOutdatedFinding("npm", name, installedVersion, latest))
+		}
+	}
+}
+
+// fetchNPMLatestVersion queries the NPM registry for the latest version of pkg.
+func (d *Discoverer) fetchNPMLatestVersion(ctx context.Context, pkg string) (string, error) {
+	// NPM package names with scope (e.g. @org/name) must be URL-encoded as %40org%2Fname.
+	encoded := strings.ReplaceAll(pkg, "/", "%2F")
+	if strings.HasPrefix(pkg, "@") {
+		// The leading @ must also be encoded for scoped packages.
+		encoded = "%40" + strings.TrimPrefix(encoded, "@")
+	}
+	url := "https://registry.npmjs.org/" + encoded
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("package not found on NPM")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("NPM registry returned HTTP %d", resp.StatusCode)
+	}
+
+	const maxNPMResponseSize = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNPMResponseSize))
+	if err != nil {
+		return "", err
+	}
+	if len(body) == maxNPMResponseSize {
+		return "", fmt.Errorf("NPM registry response too large (>1 MiB)")
+	}
+
+	var doc struct {
+		DistTags struct {
+			Latest string `json:"latest"`
+		} `json:"dist-tags"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", fmt.Errorf("parse NPM response: %w", err)
+	}
+	if doc.DistTags.Latest == "" {
+		return "", fmt.Errorf("NPM registry did not return a latest version")
+	}
+	return doc.DistTags.Latest, nil
+}
+
+// --------------------------------------------------------------------------
+// PyPI scanning
+// --------------------------------------------------------------------------
+
+// pypiMCPPackage reports whether a PyPI package name looks like an MCP server.
+func pypiMCPPackage(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "mcp" ||
+		lower == "fastmcp" ||
+		strings.HasPrefix(lower, "mcp-server-") ||
+		strings.HasPrefix(lower, "mcp_server_")
+}
+
+// scanRequirementsTxt reads requirements.txt from projectDir, identifies MCP
+// packages, queries PyPI for the latest version, and appends findings.
+func (d *Discoverer) scanRequirementsTxt(ctx context.Context, projectDir string, result *DiscoveryResult) {
+	reqPath := filepath.Join(projectDir, "requirements.txt")
+	result.Sources = append(result.Sources, reqPath)
+
+	f, err := os.Open(reqPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", reqPath, err))
+		}
+		return
+	}
+	defer f.Close()
+
+	packages := parseRequirementsTxt(f)
+	for name, version := range packages {
+		if !pypiMCPPackage(name) {
+			continue
+		}
+		d.checkPyPIPackage(ctx, name, version, result)
+	}
+}
+
+// parseRequirementsTxt parses a requirements.txt reader and returns package→version map.
+func parseRequirementsTxt(r io.Reader) map[string]string {
+	result := make(map[string]string)
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") {
+			continue
+		}
+		// Strip inline comments.
+		if idx := strings.Index(line, " #"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		// Parse "name==version", "name>=version", "name~=version", "name[extra]==version", etc.
+		name, version := parseRequirementLine(line)
+		if name != "" {
+			result[normalizePackageName(name)] = version
+		}
+	}
+	return result
+}
+
+// parseRequirementLine splits a requirement spec into package name and pinned version.
+// It correctly handles extras notation such as "mcp[cli]==1.0.0" or
+// "requests[security]>=2.28.0" by stripping the extras bracket before searching for
+// the version operator, while still returning only the bare package name.
+func parseRequirementLine(line string) (name, version string) {
+	// Build a bracket-stripped line for operator search.
+	// "mcp[cli]==1.0.0"           → stripped = "mcp==1.0.0"
+	// "requests[security]>=2.28.0"→ stripped = "requests>=2.28.0"
+	// "mcp==1.0.0"                → stripped = "mcp==1.0.0"  (unchanged)
+	stripped := line
+	if bStart := strings.Index(line, "["); bStart >= 0 {
+		if bEnd := strings.Index(line, "]"); bEnd > bStart {
+			stripped = line[:bStart] + line[bEnd+1:]
+		}
+	}
+
+	// Find version operator in the bracket-stripped line; the name is everything
+	// before the operator.
+	for _, op := range []string{"==", "~=", ">=", "<=", "!=", ">", "<"} {
+		if idx := strings.Index(stripped, op); idx >= 0 {
+			n := strings.TrimSpace(stripped[:idx])
+			v := strings.TrimSpace(stripped[idx+len(op):])
+			// For ranges like ">=1.0,<2.0" take the first segment only.
+			v = strings.Split(v, ",")[0]
+			v = strings.TrimSpace(v)
+			return n, v
+		}
+	}
+	// No version specifier — return the bare package name (without any extras).
+	if bStart := strings.Index(stripped, "["); bStart >= 0 {
+		return strings.TrimSpace(stripped[:bStart]), ""
+	}
+	return strings.TrimSpace(stripped), ""
+}
+
+// normalizePackageName lowercases and replaces underscores/dots with hyphens per PEP 503.
+func normalizePackageName(name string) string {
+	lower := strings.ToLower(name)
+	lower = strings.ReplaceAll(lower, "_", "-")
+	lower = strings.ReplaceAll(lower, ".", "-")
+	return lower
+}
+
+// scanPyprojectToml reads pyproject.toml from projectDir, extracts dependencies,
+// and checks for MCP packages.
+func (d *Discoverer) scanPyprojectToml(ctx context.Context, projectDir string, result *DiscoveryResult) {
+	tomlPath := filepath.Join(projectDir, "pyproject.toml")
+	result.Sources = append(result.Sources, tomlPath)
+
+	data, err := os.ReadFile(tomlPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", tomlPath, err))
+		}
+		return
+	}
+
+	packages := parsePyprojectToml(string(data))
+	for name, version := range packages {
+		if !pypiMCPPackage(name) {
+			continue
+		}
+		d.checkPyPIPackage(ctx, name, version, result)
+	}
+}
+
+// parsePyprojectToml extracts dependencies from a pyproject.toml file using
+// simple line-by-line parsing (no external TOML library required).
+// It handles both [project] dependencies (inline and multi-line arrays) and
+// [tool.poetry.dependencies] (key-per-line format).
+// Section headers may have trailing inline comments, e.g. "[project]  # my project".
+func parsePyprojectToml(content string) map[string]string {
+	result := make(map[string]string)
+	inDepsSection := false
+	inPoetryDeps := false
+	// inDepsArray tracks whether we are inside a multi-line [project] deps array.
+	inDepsArray := false
+
+	addItem := func(raw string) {
+		item := strings.Trim(strings.TrimSpace(raw), `"'`)
+		if item == "" || strings.HasPrefix(item, "#") {
+			return
+		}
+		name, version := parseRequirementLine(item)
+		if name != "" {
+			result[normalizePackageName(name)] = version
+		}
+	}
+
+	lines := strings.Split(content, "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+
+		// If we are collecting lines of a multi-line deps array, accumulate until "]".
+		if inDepsArray {
+			if closeIdx := strings.Index(line, "]"); closeIdx >= 0 {
+				// Items may appear before the closing bracket on this line.
+				for _, item := range strings.Split(line[:closeIdx], ",") {
+					addItem(item)
+				}
+				inDepsArray = false
+			} else {
+				// Strip trailing comma; the item is the whole (trimmed) line.
+				addItem(strings.TrimRight(line, ","))
+			}
+			continue
+		}
+
+		// Detect section headers. Strip trailing inline comments to handle
+		// forms like "[project]  # description".
+		if strings.HasPrefix(line, "[") {
+			// Remove inline comment: take the part before any " #" outside the brackets.
+			headerLine := line
+			if ci := strings.Index(line, " #"); ci >= 0 {
+				headerLine = strings.TrimSpace(line[:ci])
+			}
+			inDepsSection = headerLine == "[project]"
+			inPoetryDeps = headerLine == "[tool.poetry.dependencies]"
+			// Any new section ends a multi-line array (defensive reset).
+			inDepsArray = false
+			continue
+		}
+
+		// Inside [project], look for "dependencies = [...]" array.
+		if inDepsSection && strings.HasPrefix(line, "dependencies") {
+			if openIdx := strings.Index(line, "["); openIdx >= 0 {
+				if closeIdx := strings.Index(line, "]"); closeIdx > openIdx {
+					// Single-line array: dependencies = ["mcp==1.0", "fastmcp>=2.0"]
+					inner := line[openIdx+1 : closeIdx]
+					for _, item := range strings.Split(inner, ",") {
+						addItem(item)
+					}
+				} else {
+					// Multi-line array: opening "[" with no closing "]" on this line.
+					inDepsArray = true
+				}
+			}
+			continue
+		}
+
+		// Inside [tool.poetry.dependencies], look for key = "version" or key = {version = "..."}
+		if inPoetryDeps && line != "" && !strings.HasPrefix(line, "#") {
+			if idx := strings.Index(line, "="); idx >= 0 {
+				name := strings.TrimSpace(line[:idx])
+				valPart := strings.TrimSpace(line[idx+1:])
+				if name == "python" {
+					continue
+				}
+				// Strip quotes.
+				version := strings.Trim(valPart, `"'^~>=`)
+				// Handle {version = "^1.2.3"} inline tables.
+				if strings.HasPrefix(valPart, "{") {
+					if vi := strings.Index(valPart, "version"); vi >= 0 {
+						rest := valPart[vi:]
+						if ei := strings.Index(rest, "="); ei >= 0 {
+							v := strings.TrimSpace(rest[ei+1:])
+							v = strings.Trim(v, `"'^~>=, }`)
+							version = v
+						}
+					}
+				}
+				result[normalizePackageName(name)] = cleanVersionSpec(version)
+			}
+		}
+	}
+	return result
+}
+
+// checkPyPIPackage queries PyPI for the latest version of a package and, if the
+// installed version is out of date, appends a finding to result.
+func (d *Discoverer) checkPyPIPackage(ctx context.Context, name, installedVersion string, result *DiscoveryResult) {
+	latest, err := d.fetchPyPILatestVersion(ctx, name)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("pypi query for %s: %v", name, err))
+		return
+	}
+	if isOutdated(installedVersion, latest) {
+		result.Findings = append(result.Findings, buildOutdatedFinding("pypi", name, installedVersion, latest))
+	}
+}
+
+// fetchPyPILatestVersion queries the PyPI JSON API for the latest version of pkg.
+func (d *Discoverer) fetchPyPILatestVersion(ctx context.Context, pkg string) (string, error) {
+	url := "https://pypi.org/pypi/" + pkg + "/json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("package not found on PyPI")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("PyPI returned HTTP %d", resp.StatusCode)
+	}
+
+	const maxPyPIResponseSize = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPyPIResponseSize))
+	if err != nil {
+		return "", err
+	}
+	if len(body) == maxPyPIResponseSize {
+		return "", fmt.Errorf("PyPI registry response too large (>1 MiB)")
+	}
+
+	var doc struct {
+		Info struct {
+			Version string `json:"version"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", fmt.Errorf("parse PyPI response: %w", err)
+	}
+	if doc.Info.Version == "" {
+		return "", fmt.Errorf("PyPI did not return a version")
+	}
+	return doc.Info.Version, nil
+}
+
+// --------------------------------------------------------------------------
+// Version comparison helpers
+// --------------------------------------------------------------------------
+
+// cleanVersionSpec strips NPM-style range operators (^, ~, >=, >, <=, <, =)
+// from the front of a version string so that a bare semver remains.
+func cleanVersionSpec(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	for len(v) > 0 {
+		ch := v[0]
+		if ch == '^' || ch == '~' || ch == '>' || ch == '<' || ch == '=' || ch == ' ' {
+			v = v[1:]
+		} else {
+			break
+		}
+	}
+	if v == "" {
+		return ""
+	}
+	// Take only the first version part for ranges like "1.0.0 || >=2.0.0".
+	fields := strings.Fields(v)
+	if len(fields) == 0 {
+		return ""
+	}
+	v = fields[0]
+	v = strings.Split(v, ",")[0]
+	return v
+}
+
+// parseVersion splits a dotted version string into numeric segments.
+// Non-numeric suffixes (e.g. "-beta") are ignored for the purposes of comparison.
+func parseVersion(v string) []int {
+	// Drop pre-release suffix after first non-numeric, non-dot character run.
+	for i, ch := range v {
+		if ch != '.' && (ch < '0' || ch > '9') {
+			v = v[:i]
+			break
+		}
+	}
+	parts := strings.Split(strings.TrimRight(v, "."), ".")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			break
+		}
+		nums = append(nums, n)
+	}
+	return nums
+}
+
+// isOutdated returns true when installed is strictly less than latest.
+// If installed is empty or cannot be parsed, it is considered outdated.
+func isOutdated(installed, latest string) bool {
+	installed = cleanVersionSpec(installed)
+	latest = cleanVersionSpec(latest)
+	if installed == "" || installed == latest {
+		return false
+	}
+	iv := parseVersion(installed)
+	lv := parseVersion(latest)
+	if len(iv) == 0 {
+		// Cannot parse installed version — flag it.
+		return true
+	}
+	maxLen := len(iv)
+	if len(lv) > maxLen {
+		maxLen = len(lv)
+	}
+	for i := 0; i < maxLen; i++ {
+		var a, b int
+		if i < len(iv) {
+			a = iv[i]
+		}
+		if i < len(lv) {
+			b = lv[i]
+		}
+		if a < b {
+			return true
+		}
+		if a > b {
+			return false
+		}
+	}
+	return false
+}
+
+// buildOutdatedFinding constructs an MCPFinding for an out-of-date MCP package.
+// installedVersion must be non-empty (callers gate on isOutdated which returns
+// false for empty installed versions).
+func buildOutdatedFinding(registry, pkg, installedVersion, latestVersion string) MCPFinding {
+	return MCPFinding{
+		Category: CategoryDependency,
+		Severity: SeverityMedium,
+		Title:    fmt.Sprintf("Outdated MCP package: %s", pkg),
+		Description: fmt.Sprintf(
+			"The %s package %q is pinned to version %s, but the latest available version is %s. "+
+				"Running outdated MCP server packages may expose the application to known security vulnerabilities.",
+			registry, pkg, installedVersion, latestVersion,
+		),
+		Evidence: fmt.Sprintf("installed=%s latest=%s registry=%s", installedVersion, latestVersion, registry),
+		Remediation: fmt.Sprintf(
+			"Upgrade %s to version %s or later to ensure you have the latest security fixes.",
+			pkg, latestVersion,
+		),
+	}
 }
