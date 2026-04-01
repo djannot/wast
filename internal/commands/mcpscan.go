@@ -176,13 +176,14 @@ pyproject.toml for outdated MCP server dependencies:
 
 			discoverer := mcpscan.NewDiscoverer()
 			discoverer.ProjectDir = projectDir
-			result := discoverer.Discover(ctx)
 
+			var result *mcpscan.DiscoveryResult
 			if networkTarget != "" {
-				networkResult := discoverer.DiscoverNetwork(ctx, networkTarget)
-				result.Servers = append(result.Servers, networkResult.Servers...)
-				result.Sources = append(result.Sources, networkResult.Sources...)
-				result.Errors = append(result.Errors, networkResult.Errors...)
+				// Network-only discovery: probe the target for MCP endpoints
+				result = discoverer.DiscoverNetwork(ctx, networkTarget)
+			} else {
+				// Local discovery: scan config files and project dependencies
+				result = discoverer.Discover(ctx)
 			}
 
 			if formatter.Format() == output.FormatText {
