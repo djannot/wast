@@ -23,7 +23,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 5 FPs on `doc` param | **FAIL** |
+| SQLi | 0 findings on non-injectable params | 0 | **PASS** |
 | CMDi | 0 findings on non-injectable params | 0 | **PASS** |
 | SSRF | 0 false positives on non-SSRF params | 0 (deduplicated via Correlation 7) | **PASS** |
 | All others | 0 false positives | 0 | **PASS** |

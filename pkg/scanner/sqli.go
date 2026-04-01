@@ -1546,6 +1546,18 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 		}
 	}
 
+	// Early exit: if true and false responses are virtually identical (within CSRF token
+	// noise), the parameter has no observable effect and cannot be injectable.  This catches
+	// the case where the parameter is completely ignored by the application — every response
+	// is byte-identical regardless of the payload value — so no differential signal can exist.
+	// We use a word-count tolerance of 4 to absorb CSRF token churn while still catching the
+	// real false-positive pattern seen on DVWA's ?doc= parameter at the root URL.
+	trueFalseBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
+	trueFalseWordDiff := abs(trueResp.WordCount - falseResp.WordCount)
+	if trueFalseBodyDiff == 0 && trueFalseWordDiff <= 4 {
+		return nil
+	}
+
 	// Secondary content-routing check: if both the true and false SQL payloads produce
 	// responses that differ from baseline by similar magnitudes AND the two payloads look
 	// very similar to each other (small mutual body-length and data-word differences), the
@@ -1998,6 +2010,14 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 				Confidence:  "high",
 			}
 		}
+	}
+
+	// Early exit: if true and false responses are virtually identical (within CSRF token
+	// noise), the parameter has no observable effect and cannot be injectable.
+	trueFalseBodyDiffPOST := abs(trueResp.BodyLength - falseResp.BodyLength)
+	trueFalseWordDiffPOST := abs(trueResp.WordCount - falseResp.WordCount)
+	if trueFalseBodyDiffPOST == 0 && trueFalseWordDiffPOST <= 4 {
+		return nil
 	}
 
 	// Secondary content-routing check: if both the true and false SQL payloads produce

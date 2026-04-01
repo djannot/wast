@@ -3452,3 +3452,43 @@ func TestSecondaryContentRoutingCheck_TruePositiveUnaffected(t *testing.T) {
 		t.Error("secondary mutual-difference check incorrectly suppressed a true positive boolean-based finding")
 	}
 }
+
+// byteIdenticalMock simulates a parameter that is completely ignored by the application.
+// Every request — baseline, random, true SQL payload, false SQL payload — returns the
+// exact same response body, reproducing the DVWA ?doc= false-positive scenario.
+type byteIdenticalMock struct {
+	body string
+}
+
+func (m *byteIdenticalMock) Do(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(m.body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestByteIdenticalResponses_NoFalsePositive verifies that the scanner does NOT report a
+// boolean-based finding when the target application returns byte-identical responses for
+// every payload value (i.e. the parameter is completely ignored).  This is the regression
+// test for the 5 false positives on DVWA's ?doc= parameter at the root URL.
+func TestByteIdenticalResponses_NoFalsePositive(t *testing.T) {
+	// Reproduce the DVWA ?doc= scenario: 6721-byte response regardless of the value.
+	body := strings.Repeat("a", 6721)
+
+	mock := &byteIdenticalMock{body: body}
+	scanner := NewSQLiScanner(WithSQLiHTTPClient(mock))
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "https://example.com/?doc=readme")
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	for _, f := range result.Findings {
+		if f.Type == "boolean-based" {
+			t.Errorf("byte-identical early-exit guard should have suppressed this FP: param=%s payload=%q evidence=%s",
+				f.Parameter, f.Payload, f.Evidence)
+		}
+	}
+}
