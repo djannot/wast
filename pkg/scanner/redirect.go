@@ -683,6 +683,10 @@ func (s *RedirectScanner) isRedirectToPayload(location string, locationURL *url.
 // This is a medium-confidence signal used when exact hostname matching fails — for
 // example when the server returns a backslash-prefixed URL that url.Parse cannot
 // fully resolve, but the canary domain still appears somewhere in the location.
+//
+// Like isRedirectToPayload, this function uses Hostname() extraction rather than
+// strings.Contains to avoid substring false positives such as "notevil.com" when
+// the canary domain is "evil.com".
 func (s *RedirectScanner) isPartialRedirectMatch(location string, payload redirectPayload) bool {
 	// The javascript: target is already handled by isRedirectToPayload; skip here
 	// to avoid spurious medium-confidence findings on ordinary pages that contain
@@ -691,12 +695,21 @@ func (s *RedirectScanner) isPartialRedirectMatch(location string, payload redire
 		return false
 	}
 
-	// Check whether the canary domain appears anywhere in the location header.
-	if payload.Target != "" && strings.Contains(location, payload.Target) {
-		return true
+	if payload.Target == "" {
+		return false
 	}
 
-	return false
+	// Prefer exact hostname matching via url.Parse to avoid substring false positives.
+	u, err := url.Parse(location)
+	if err == nil && u.Hostname() != "" {
+		h := u.Hostname()
+		return h == payload.Target || strings.HasSuffix(h, "."+payload.Target)
+	}
+
+	// Fallback for locations that url.Parse cannot resolve (e.g. backslash-prefixed
+	// paths like "\\evil.com" where Hostname() returns ""). Use boundary-aware checks
+	// to reduce — but not fully eliminate — false positives.
+	return strings.Contains(location, "."+payload.Target) || strings.Contains(location, "/"+payload.Target)
 }
 
 // containsPayloadInBody checks if the response body contains our payload.

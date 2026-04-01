@@ -925,17 +925,22 @@ func TestRedirectScanner_DefaultCanaryDomain(t *testing.T) {
 	}
 }
 
-// TestRedirectScanner_NoSubstringFalsePositive verifies that the exact hostname
-// matching in isRedirectToPayload does not flag a redirect to "notevil.com" when
-// the canary is "evil.com".
+// TestRedirectScanner_NoSubstringFalsePositive verifies that neither isRedirectToPayload
+// nor isPartialRedirectMatch flags a redirect to "notevil.com" when the canary is
+// "evil.com".  "notevil.com" contains "evil.com" as a substring, which would have
+// triggered false positives under the old strings.Contains approach.
 func TestRedirectScanner_NoSubstringFalsePositive(t *testing.T) {
 	mock := newMockRedirectHTTPClient()
 
-	// Return a redirect to "notevil.com" — contains "evil.com" as substring,
-	// but it is NOT the canary domain itself.
+	// The first redirectPayload is "//evil.com", which URL-encodes to "%2F%2Fevil.com"
+	// when used as a query parameter value.  Register the mock at that exact URL so
+	// the scanner actually hits it.
+	//
+	// The server returns a redirect to "notevil.com" — a domain that contains
+	// "evil.com" as a substring but is NOT the canary domain itself.
 	headers := make(http.Header)
 	headers.Set("Location", "https://notevil.com/path")
-	mock.responses["https://app.example.com/redir?url=https%3A%2F%2Fevil.com"] = &http.Response{
+	mock.responses["https://app.example.com/redir?url=%2F%2Fevil.com"] = &http.Response{
 		StatusCode: http.StatusFound,
 		Body:       io.NopCloser(strings.NewReader("")),
 		Header:     headers,
@@ -953,10 +958,11 @@ func TestRedirectScanner_NoSubstringFalsePositive(t *testing.T) {
 		t.Fatal("Scan returned nil result")
 	}
 
-	// "notevil.com" is NOT equal to "evil.com" — must not be flagged as a vulnerability.
+	// "notevil.com" is NOT equal to "evil.com" and is not a subdomain of "evil.com" —
+	// must not be flagged as a vulnerability at any confidence level.
 	for _, f := range result.Findings {
 		if strings.Contains(f.Evidence, "notevil.com") {
-			t.Errorf("False positive: redirect to 'notevil.com' was incorrectly flagged (evidence: %s)", f.Evidence)
+			t.Errorf("False positive: redirect to 'notevil.com' was incorrectly flagged as %s confidence (evidence: %s)", f.Confidence, f.Evidence)
 		}
 	}
 }
