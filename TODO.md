@@ -14,7 +14,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 | SQLi | >= 1 finding on `/sqli/` `id` param | 3 on `id` (sqli + sqli_blind) | **PASS** |
 | CSRF | >= 7 forms with missing tokens | 10 (8 missing + 2 unenforced) | **PASS** |
 | SSTI | 0 findings | 0 | **PASS** |
-| SSRF | 0 false positives | 1 (`page` + `file:///etc/passwd` — see note below) | **REVIEW** |
+| SSRF | 0 false positives | 1 (`page` + `file:///etc/passwd` — deduplicated via Correlation 7) | **PASS** |
 | NoSQLi | 0 false positives | 0 | **PASS** |
 | XXE | 0 false positives | 0 | **PASS** |
 | Headers | >= 5 missing | 7 | **PASS** |
@@ -25,7 +25,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 |---------|--------|---------|--------|
 | SQLi | 0 findings on non-injectable params | 0 (secondary mutual-diff check added) | **PASS** |
 | CMDi | 0 findings on non-injectable params | 0 | **PASS** |
-| SSRF | 0 false positives on non-SSRF params | 0 (1 arguable — see note) | **REVIEW** |
+| SSRF | 0 false positives on non-SSRF params | 0 (deduplicated via Correlation 7) | **PASS** |
 | All others | 0 false positives | 0 | **PASS** |
 
 ---
