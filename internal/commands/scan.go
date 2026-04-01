@@ -36,6 +36,7 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var concurrency int
 	var scanConcurrency int
 	var scanners []string
+	var redirectCanaryDomain string
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -184,14 +185,15 @@ Examples:
 			if discover {
 				discoveryCfg := scanner.DiscoveryScanConfig{
 					ScanConfig: scanner.ScanConfig{
-						Target:          target,
-						Timeout:         timeout,
-						SafeMode:        safeMode,
-						VerifyFindings:  verify,
-						Scanners:        scanners,
-						AuthConfig:      authConfig,
-						RateLimitConfig: rateLimitConfig,
-						Tracer:          nil, // CLI doesn't use tracing
+						Target:               target,
+						Timeout:              timeout,
+						SafeMode:             safeMode,
+						VerifyFindings:       verify,
+						Scanners:             scanners,
+						AuthConfig:           authConfig,
+						RateLimitConfig:      rateLimitConfig,
+						Tracer:               nil, // CLI doesn't use tracing
+						RedirectCanaryDomain: redirectCanaryDomain,
 					},
 					CrawlDepth:      crawlDepth,
 					Concurrency:     concurrency,
@@ -201,14 +203,15 @@ Examples:
 				unifiedResult, stats = scanner.ExecuteDiscoveryScan(ctx, discoveryCfg)
 			} else {
 				scanCfg := scanner.ScanConfig{
-					Target:          target,
-					Timeout:         timeout,
-					SafeMode:        safeMode,
-					VerifyFindings:  verify,
-					Scanners:        scanners,
-					AuthConfig:      authConfig,
-					RateLimitConfig: rateLimitConfig,
-					Tracer:          nil, // CLI doesn't use tracing
+					Target:               target,
+					Timeout:              timeout,
+					SafeMode:             safeMode,
+					VerifyFindings:       verify,
+					Scanners:             scanners,
+					AuthConfig:           authConfig,
+					RateLimitConfig:      rateLimitConfig,
+					Tracer:               nil, // CLI doesn't use tracing
+					RedirectCanaryDomain: redirectCanaryDomain,
 				}
 				// Execute the scan using the shared executor
 				unifiedResult, stats = scanner.ExecuteScan(ctx, scanCfg)
@@ -255,6 +258,7 @@ Examples:
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Number of concurrent workers for the crawl phase (used with --discover)")
 	cmd.Flags().IntVar(&scanConcurrency, "scan-concurrency", 5, "Number of concurrent workers for scanning discovered targets (used with --discover)")
 	cmd.Flags().StringSliceVar(&scanners, "scanners", nil, fmt.Sprintf("Comma-separated list of scanners to run (e.g. xss,sqli,csrf). Valid: %s. Default: all", strings.Join(scanner.ValidScannerNames, ", ")))
+	cmd.Flags().StringVar(&redirectCanaryDomain, "redirect-canary-domain", "", "Canary domain used in open-redirect payloads (default: example.com). Use a domain you control to eliminate false positives.")
 
 	return cmd
 }

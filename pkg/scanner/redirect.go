@@ -16,9 +16,15 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// defaultCanaryDomain is the fallback canary domain used in redirect payloads
+// when no canary is explicitly configured. Using the IANA-reserved "example.com"
+// avoids sending live DNS lookups to a third-party host the project does not control.
+const defaultCanaryDomain = "example.com"
+
 // RedirectScanner performs active Open Redirect vulnerability detection.
 type RedirectScanner struct {
 	BaseScanner
+	canaryDomain string // domain substituted for "evil.com" in redirect payloads
 }
 
 // RedirectScanResult represents the result of an Open Redirect vulnerability scan.
@@ -230,11 +236,27 @@ func WithRedirectTracer(tracer trace.Tracer) RedirectOption {
 	return func(s *RedirectScanner) { s.tracer = tracer }
 }
 
+// WithRedirectCanaryDomain sets the canary domain substituted into redirect payloads
+// instead of the hard-coded "evil.com". All payload Target fields and payload strings
+// are rewritten to use this domain at scan time. Detection uses exact hostname matching
+// to eliminate substring false positives.
+// If d is empty the option is a no-op and the default ("example.com") is used.
+func WithRedirectCanaryDomain(d string) RedirectOption {
+	return func(s *RedirectScanner) {
+		if d != "" {
+			s.canaryDomain = d
+		}
+	}
+}
+
 // NewRedirectScanner creates a new RedirectScanner with the given options.
 func NewRedirectScanner(opts ...RedirectOption) *RedirectScanner {
 	s := &RedirectScanner{BaseScanner: DefaultBaseScanner()}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.canaryDomain == "" {
+		s.canaryDomain = defaultCanaryDomain
 	}
 	// IMPORTANT: For redirect testing, we need a client that does NOT follow redirects
 	if s.client == nil {
@@ -250,6 +272,9 @@ func NewRedirectScannerFromBase(baseOpts []BaseOption, extraOpts ...RedirectOpti
 	ApplyBaseOptions(&s.BaseScanner, baseOpts)
 	for _, opt := range extraOpts {
 		opt(s)
+	}
+	if s.canaryDomain == "" {
+		s.canaryDomain = defaultCanaryDomain
 	}
 	// IMPORTANT: For redirect testing, we need a client that does NOT follow redirects
 	if s.client == nil {
@@ -267,6 +292,23 @@ func NewNoRedirectHTTPClient(timeout time.Duration) HTTPClient {
 			return http.ErrUseLastResponse
 		},
 	}
+}
+
+// buildActivePayloads returns a copy of the global redirectPayloads slice with
+// the canary domain substituted for the hard-coded "evil.com" in both the
+// Payload string and the Target field. The javascript: payload is left unchanged
+// because its Target ("javascript") is unrelated to the canary domain.
+func (s *RedirectScanner) buildActivePayloads() []redirectPayload {
+	canary := s.canaryDomain
+	active := make([]redirectPayload, len(redirectPayloads))
+	for i, p := range redirectPayloads {
+		if p.Target != "javascript" {
+			p.Payload = strings.ReplaceAll(p.Payload, "evil.com", canary)
+			p.Target = canary
+		}
+		active[i] = p
+	}
+	return active
 }
 
 // Scan performs an Open Redirect vulnerability scan on the given target URL.
@@ -308,9 +350,12 @@ func (s *RedirectScanner) Scan(ctx context.Context, targetURL string) *RedirectS
 		params.Set("continue", "")
 	}
 
+	// Build payloads with the configured canary domain substituted for "evil.com".
+	activePayloads := s.buildActivePayloads()
+
 	// Test each parameter with each payload
 	for paramName := range params {
-		for _, payload := range redirectPayloads {
+		for _, payload := range activePayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
 				if err := s.rateLimiter.Wait(ctx); err != nil {
@@ -383,9 +428,12 @@ func (s *RedirectScanner) ScanPOST(ctx context.Context, targetURL string, parame
 		}
 	}
 
+	// Build payloads with the configured canary domain substituted for "evil.com".
+	activePayloads := s.buildActivePayloads()
+
 	// Test each parameter with each payload
 	for paramName := range params {
-		for _, payload := range redirectPayloads {
+		for _, payload := range activePayloads {
 			// Apply rate limiting before making the request
 			if s.rateLimiter != nil {
 				if err := s.rateLimiter.Wait(ctx); err != nil {
@@ -600,62 +648,68 @@ func (s *RedirectScanner) analyzeRedirectResponse(resp *http.Response, body stri
 }
 
 // isRedirectToPayload checks if the redirect location matches our payload target.
+// It uses exact hostname matching against the canary domain to avoid substring
+// false positives (e.g. "notevil.com" containing "evil.com").
 func (s *RedirectScanner) isRedirectToPayload(location string, locationURL *url.URL, payload redirectPayload) bool {
 	// For javascript: protocol, check if present
 	if payload.Target == "javascript" {
 		return strings.HasPrefix(strings.ToLower(location), "javascript:")
 	}
 
-	// Check if the host in the redirect matches our target domain
-	if locationURL.Host != "" {
-		// For @ symbol attacks, the host should be the domain after @
-		if strings.Contains(locationURL.Host, payload.Target) {
-			return true
-		}
+	// Use Hostname() (strips port, handles userinfo) for exact matching.
+	// url.Parse correctly sets Host for protocol-relative URLs like "//canary.com"
+	// and for @ symbol URLs like "https://user@canary.com" (Host = "canary.com").
+	hostname := locationURL.Hostname()
 
-		// For subdomain confusion, check if evil.com is in the host
-		if payload.Type == "subdomain" && strings.Contains(locationURL.Host, payload.Target) {
-			return true
-		}
-	}
-
-	// For protocol-relative URLs, check if the location starts with // and contains target
-	if payload.Type == "protocol-relative" || payload.Type == "encoded" {
-		cleanLocation := strings.TrimSpace(location)
-		// Check various forms of protocol-relative URLs
-		if strings.HasPrefix(cleanLocation, "//") || strings.HasPrefix(cleanLocation, "\\\\") {
-			if strings.Contains(cleanLocation, payload.Target) {
-				return true
-			}
-		}
-
-		// Check for decoded versions of encoded payloads
-		if strings.Contains(location, payload.Target) {
-			return true
-		}
-	}
-
-	// Check if the entire location matches our payload (for simple cases)
-	if strings.Contains(location, payload.Target) {
+	// Exact hostname match: covers protocol-relative, at-symbol, encoded, and most
+	// other redirect types without risking substring false positives.
+	if hostname == payload.Target {
 		return true
+	}
+
+	// Subdomain confusion: the redirect hostname ends with the canary domain,
+	// e.g. "example.com.canary.com" ends with ".canary.com".
+	// Use HasSuffix rather than Contains to avoid false positives like "notcanary.com".
+	if payload.Type == "subdomain" {
+		if strings.HasSuffix(hostname, "."+payload.Target) {
+			return true
+		}
 	}
 
 	return false
 }
 
 // isPartialRedirectMatch checks for partial matches that might indicate vulnerability.
+// This is a medium-confidence signal used when exact hostname matching fails — for
+// example when the server returns a backslash-prefixed URL that url.Parse cannot
+// fully resolve, but the canary domain still appears somewhere in the location.
+//
+// Like isRedirectToPayload, this function uses Hostname() extraction rather than
+// strings.Contains to avoid substring false positives such as "notevil.com" when
+// the canary domain is "evil.com".
 func (s *RedirectScanner) isPartialRedirectMatch(location string, payload redirectPayload) bool {
-	// Check if any part of our payload appears in the location
-	// This helps detect cases where the application partially processes the payload
-
-	// Skip very generic matches
-	if payload.Target == "javascript" || payload.Target == "evil.com" {
-		if strings.Contains(location, payload.Target) {
-			return true
-		}
+	// The javascript: target is already handled by isRedirectToPayload; skip here
+	// to avoid spurious medium-confidence findings on ordinary pages that contain
+	// the word "javascript" (e.g. <script type="text/javascript">).
+	if payload.Target == "javascript" {
+		return false
 	}
 
-	return false
+	if payload.Target == "" {
+		return false
+	}
+
+	// Prefer exact hostname matching via url.Parse to avoid substring false positives.
+	u, err := url.Parse(location)
+	if err == nil && u.Hostname() != "" {
+		h := u.Hostname()
+		return h == payload.Target || strings.HasSuffix(h, "."+payload.Target)
+	}
+
+	// Fallback for locations that url.Parse cannot resolve (e.g. backslash-prefixed
+	// paths like "\\evil.com" where Hostname() returns ""). Use boundary-aware checks
+	// to reduce — but not fully eliminate — false positives.
+	return strings.Contains(location, "."+payload.Target) || strings.Contains(location, "/"+payload.Target)
 }
 
 // containsPayloadInBody checks if the response body contains our payload.

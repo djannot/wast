@@ -120,7 +120,7 @@ func TestRedirectScanner_Scan_ProtocolRelativeRedirect(t *testing.T) {
 		Header:     headers,
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/redirect?url=test")
@@ -179,7 +179,7 @@ func TestRedirectScanner_Scan_AtSymbolBypass(t *testing.T) {
 		Header:     headers,
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/goto?next=test")
@@ -222,7 +222,7 @@ func TestRedirectScanner_Scan_EncodedPayload(t *testing.T) {
 		Header:     headers,
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/return?returnUrl=test")
@@ -269,7 +269,7 @@ func TestRedirectScanner_Scan_SubdomainConfusion(t *testing.T) {
 		Header:     headers,
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/continue?continue=test")
@@ -354,7 +354,7 @@ func TestRedirectScanner_Scan_ClientSideMetaRefresh(t *testing.T) {
 		Header:     make(http.Header),
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/page?dest=test")
@@ -396,7 +396,7 @@ func TestRedirectScanner_Scan_ClientSideJavaScript(t *testing.T) {
 		Header:     make(http.Header),
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/go?redirect=test")
@@ -651,7 +651,7 @@ func TestRedirectScanner_SeverityCounts(t *testing.T) {
 		Header:     mediumHeaders,
 	}
 
-	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock))
+	scanner := NewRedirectScanner(WithRedirectHTTPClient(mock), WithRedirectCanaryDomain("evil.com"))
 
 	ctx := context.Background()
 	result := scanner.Scan(ctx, "https://example.com/redir?url=test")
@@ -827,6 +827,142 @@ document.write("<option value='English'>English</option>");
 		if f.Type == "javascript" {
 			t.Errorf("False positive: javascript: payload incorrectly flagged as open redirect "+
 				"on DOM XSS page (param=%s evidence=%s)", f.Parameter, f.Evidence)
+		}
+	}
+}
+
+// TestRedirectScanner_CanaryDomainSubstitution verifies that WithRedirectCanaryDomain
+// correctly replaces "evil.com" in all payload strings and Target fields, and that
+// the updated payloads are sent to the server and detected when the server reflects
+// the canary domain back in a Location header.
+func TestRedirectScanner_CanaryDomainSubstitution(t *testing.T) {
+	const canary = "canary.redirect-test.invalid"
+
+	mock := newMockRedirectHTTPClient()
+
+	// Register a response for the protocol-relative payload with the custom canary.
+	// The payload "//canary.redirect-test.invalid" URL-encodes to "%2F%2Fcanary.redirect-test.invalid".
+	headers := make(http.Header)
+	headers.Set("Location", "//"+canary)
+	mock.responses["https://app.example.com/go?url=%2F%2Fcanary.redirect-test.invalid"] = &http.Response{
+		StatusCode: http.StatusFound,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     headers,
+	}
+
+	s := NewRedirectScanner(
+		WithRedirectHTTPClient(mock),
+		WithRedirectCanaryDomain(canary),
+	)
+
+	// Verify the canary domain was stored correctly.
+	if s.canaryDomain != canary {
+		t.Errorf("Expected canaryDomain %q, got %q", canary, s.canaryDomain)
+	}
+
+	// Verify buildActivePayloads substitutes the canary in every non-javascript payload.
+	active := s.buildActivePayloads()
+	for _, p := range active {
+		if p.Target == "javascript" {
+			// javascript payload must remain unchanged
+			if strings.Contains(p.Payload, canary) {
+				t.Errorf("javascript payload should not contain canary domain: %s", p.Payload)
+			}
+			continue
+		}
+		if p.Target != canary {
+			t.Errorf("Expected payload Target %q, got %q (payload: %s)", canary, p.Target, p.Payload)
+		}
+		// The hard-coded "evil.com" must not appear in any substituted payload.
+		if strings.Contains(p.Payload, "evil.com") {
+			t.Errorf("Payload still contains 'evil.com' after canary substitution: %s", p.Payload)
+		}
+	}
+
+	// Run a scan and confirm the vulnerability is detected using the canary.
+	ctx := context.Background()
+	result := s.Scan(ctx, "https://app.example.com/go?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+	if result.Summary.VulnerabilitiesFound == 0 {
+		t.Error("Expected at least one finding when canary domain is reflected in Location header")
+	}
+
+	// The finding payload should reference the custom canary, not "evil.com".
+	for _, f := range result.Findings {
+		if strings.Contains(f.Payload, "evil.com") {
+			t.Errorf("Finding payload still references 'evil.com': %s", f.Payload)
+		}
+	}
+
+	// Verify that the original "evil.com" payloads were NOT sent to the server.
+	for _, req := range mock.requests {
+		if strings.Contains(req.URL.String(), "evil.com") {
+			t.Errorf("Scanner sent a request containing 'evil.com' instead of the canary domain: %s", req.URL.String())
+		}
+	}
+}
+
+// TestRedirectScanner_DefaultCanaryDomain verifies that the default canary domain
+// is "example.com" (RFC 2606-reserved) when no canary is explicitly configured.
+func TestRedirectScanner_DefaultCanaryDomain(t *testing.T) {
+	s := NewRedirectScanner()
+	if s.canaryDomain != defaultCanaryDomain {
+		t.Errorf("Expected default canary domain %q, got %q", defaultCanaryDomain, s.canaryDomain)
+	}
+
+	// All non-javascript payloads must target the default canary.
+	active := s.buildActivePayloads()
+	for _, p := range active {
+		if p.Target == "javascript" {
+			continue
+		}
+		if p.Target != defaultCanaryDomain {
+			t.Errorf("Expected default canary target %q, got %q (payload: %s)", defaultCanaryDomain, p.Target, p.Payload)
+		}
+	}
+}
+
+// TestRedirectScanner_NoSubstringFalsePositive verifies that neither isRedirectToPayload
+// nor isPartialRedirectMatch flags a redirect to "notevil.com" when the canary is
+// "evil.com".  "notevil.com" contains "evil.com" as a substring, which would have
+// triggered false positives under the old strings.Contains approach.
+func TestRedirectScanner_NoSubstringFalsePositive(t *testing.T) {
+	mock := newMockRedirectHTTPClient()
+
+	// The first redirectPayload is "//evil.com", which URL-encodes to "%2F%2Fevil.com"
+	// when used as a query parameter value.  Register the mock at that exact URL so
+	// the scanner actually hits it.
+	//
+	// The server returns a redirect to "notevil.com" — a domain that contains
+	// "evil.com" as a substring but is NOT the canary domain itself.
+	headers := make(http.Header)
+	headers.Set("Location", "https://notevil.com/path")
+	mock.responses["https://app.example.com/redir?url=%2F%2Fevil.com"] = &http.Response{
+		StatusCode: http.StatusFound,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     headers,
+	}
+
+	s := NewRedirectScanner(
+		WithRedirectHTTPClient(mock),
+		WithRedirectCanaryDomain("evil.com"),
+	)
+
+	ctx := context.Background()
+	result := s.Scan(ctx, "https://app.example.com/redir?url=test")
+
+	if result == nil {
+		t.Fatal("Scan returned nil result")
+	}
+
+	// "notevil.com" is NOT equal to "evil.com" and is not a subdomain of "evil.com" —
+	// must not be flagged as a vulnerability at any confidence level.
+	for _, f := range result.Findings {
+		if strings.Contains(f.Evidence, "notevil.com") {
+			t.Errorf("False positive: redirect to 'notevil.com' was incorrectly flagged as %s confidence (evidence: %s)", f.Confidence, f.Evidence)
 		}
 	}
 }
