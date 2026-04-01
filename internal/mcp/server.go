@@ -529,25 +529,25 @@ func (t *ScanTool) InputSchema() map[string]interface{} {
 
 func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
 	var args struct {
-		Target            string   `json:"target"`
-		Timeout           int      `json:"timeout"`
-		Active            bool     `json:"active"`
-		Verify            bool     `json:"verify"`
-		Discover          bool     `json:"discover"`
-		Depth             int      `json:"depth"`
-		Concurrency       int      `json:"concurrency"`
-		ScanConcurrency   int      `json:"scan_concurrency"`
-		BearerToken       string   `json:"bearer_token"`
-		BasicAuth         string   `json:"basic_auth"`
-		AuthHeader        string   `json:"auth_header"`
-		Cookies           []string `json:"cookies"`
-		LoginURL          string   `json:"login_url"`
-		LoginUser         string   `json:"login_user"`
-		LoginPass         string   `json:"login_pass"`
-		LoginUserField    string   `json:"login_user_field"`
-		LoginPassField    string   `json:"login_pass_field"`
-		LoginContentType  string   `json:"login_content_type"`
-		LoginTokenField   string   `json:"login_token_field"`
+		Target               string   `json:"target"`
+		Timeout              int      `json:"timeout"`
+		Active               bool     `json:"active"`
+		Verify               bool     `json:"verify"`
+		Discover             bool     `json:"discover"`
+		Depth                int      `json:"depth"`
+		Concurrency          int      `json:"concurrency"`
+		ScanConcurrency      int      `json:"scan_concurrency"`
+		BearerToken          string   `json:"bearer_token"`
+		BasicAuth            string   `json:"basic_auth"`
+		AuthHeader           string   `json:"auth_header"`
+		Cookies              []string `json:"cookies"`
+		LoginURL             string   `json:"login_url"`
+		LoginUser            string   `json:"login_user"`
+		LoginPass            string   `json:"login_pass"`
+		LoginUserField       string   `json:"login_user_field"`
+		LoginPassField       string   `json:"login_pass_field"`
+		LoginContentType     string   `json:"login_content_type"`
+		LoginTokenField      string   `json:"login_token_field"`
 		RequestsPerSecond    float64  `json:"requests_per_second"`
 		CallbackURL          string   `json:"callback_url"`
 		RedirectCanaryDomain string   `json:"redirect_canary_domain"`
