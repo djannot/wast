@@ -19,7 +19,7 @@ func TestNewServer(t *testing.T) {
 	}
 
 	// Verify tools are registered
-	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers", "wast_verify"}
+	expectedTools := []string{"wast_recon", "wast_scan", "wast_crawl", "wast_api", "wast_intercept", "wast_headers", "wast_verify", "wast_mcpscan"}
 	for _, toolName := range expectedTools {
 		if _, ok := server.tools[toolName]; !ok {
 			t.Errorf("Expected tool %s to be registered", toolName)
@@ -70,8 +70,8 @@ func TestToolsListRequest(t *testing.T) {
 	if !ok {
 		t.Fatal("Tools is not a list")
 	}
-	if len(toolsList) != 8 {
-		t.Errorf("Expected 8 tools, got %d", len(toolsList))
+	if len(toolsList) != 9 {
+		t.Errorf("Expected 9 tools, got %d", len(toolsList))
 	}
 }
 

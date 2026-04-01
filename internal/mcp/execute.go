@@ -9,6 +9,7 @@ import (
 	"github.com/djannot/wast/pkg/auth"
 	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/dns"
+	mcpscanpkg "github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/proxy"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
@@ -733,4 +734,33 @@ func compactCrawlResult(result *crawler.CrawlResult) *CompactCrawlResult {
 	}
 
 	return compact
+}
+
+// executeMCPScan performs security scanning on an MCP server.
+func executeMCPScan(ctx context.Context, transport string, target string, args []string, activeMode bool, timeout int, tracer trace.Tracer) interface{} {
+	if tracer != nil {
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "wast.mcpscan")
+		defer span.End()
+	}
+
+	cfg := mcpscanpkg.ScanConfig{
+		Transport:  mcpscanpkg.Transport(transport),
+		Target:     target,
+		Args:       args,
+		Timeout:    time.Duration(timeout) * time.Second,
+		ActiveMode: activeMode,
+	}
+
+	scanner := mcpscanpkg.NewScanner(cfg)
+	result, err := scanner.Scan(ctx)
+	if err != nil {
+		return map[string]interface{}{
+			"error":     err.Error(),
+			"transport": transport,
+			"target":    target,
+		}
+	}
+
+	return result
 }

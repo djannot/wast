@@ -1559,8 +1559,21 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	// a substantial word-count difference (typically 10+ words) because the true condition
 	// returns additional data rows.  A difference of <= 6 words is indistinguishable from
 	// CSRF token rotation and concurrent scan mutations (stored XSS altering shared pages).
+	// Exceptions that bypass the CSRF noise check:
+	//   1. Data row count differences or structural element differences (e.g. DVWA-style
+	//      responses where the table row count changes but total word count is small).
+	//   2. Small baselines (< 1KB) or low word-count responses: for tiny pages even a
+	//      2-word difference is proportionally significant, so the noise threshold is
+	//      reduced to avoid masking the adaptive per-response analysis that follows.
 	trueFalseWordDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseWordDiff <= csrfNoiseWordThreshold {
+	trueFalseDataRowDiff := abs(trueResp.DataRowCount - falseResp.DataRowCount)
+	trueFalseStructuralDiff := abs(trueResp.StructuralElements - falseResp.StructuralElements)
+	adaptiveNoiseThreshold := csrfNoiseWordThreshold
+	if baseline.BodyLength < smallResponseSizeThreshold || trueResp.WordCount < minWordCountForPercentage || falseResp.WordCount < minWordCountForPercentage {
+		// For small responses any word difference > 1 is worth investigating further
+		adaptiveNoiseThreshold = 1
+	}
+	if trueFalseWordDiff <= adaptiveNoiseThreshold && trueFalseDataRowDiff == 0 && trueFalseStructuralDiff < minStructuralElementDifference {
 		return nil
 	}
 
@@ -2020,8 +2033,16 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 
 	// Early exit: if the word-count difference between the true and false responses is within
 	// the noise floor, the parameter cannot be injectable (same logic as GET variant above).
+	// The same exceptions apply: data row / structural differences and small responses bypass
+	// the CSRF noise threshold so that the adaptive analysis below can run.
 	trueFalseWordDiffPOST := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseWordDiffPOST <= csrfNoiseWordThreshold {
+	trueFalseDataRowDiffPOST := abs(trueResp.DataRowCount - falseResp.DataRowCount)
+	trueFalseStructuralDiffPOST := abs(trueResp.StructuralElements - falseResp.StructuralElements)
+	adaptiveNoiseThresholdPOST := csrfNoiseWordThreshold
+	if baseline.BodyLength < smallResponseSizeThreshold || trueResp.WordCount < minWordCountForPercentage || falseResp.WordCount < minWordCountForPercentage {
+		adaptiveNoiseThresholdPOST = 1
+	}
+	if trueFalseWordDiffPOST <= adaptiveNoiseThresholdPOST && trueFalseDataRowDiffPOST == 0 && trueFalseStructuralDiffPOST < minStructuralElementDifference {
 		return nil
 	}
 

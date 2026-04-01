@@ -103,6 +103,7 @@ func (s *Server) registerTools() {
 	s.tools["wast_headers"] = &HeadersTool{server: s}
 	s.tools["wast_verify"] = &VerifyTool{server: s}
 	s.tools["wast_websocket"] = &WebSocketTool{server: s}
+	s.tools["wast_mcpscan"] = &MCPScanTool{server: s}
 }
 
 // Run starts the MCP server and processes requests.
@@ -1497,5 +1498,81 @@ func (t *WebSocketTool) Execute(ctx context.Context, params json.RawMessage) (in
 	// Execute WebSocket scan logic
 	result := executeWebSocket(ctx, args.Target, args.Active, args.Timeout, authConfig, rateLimitConfig, t.server.tracer)
 
+	return result, nil
+}
+
+// MCPScanTool implements the wast_mcpscan MCP tool.
+type MCPScanTool struct {
+	server *Server
+}
+
+func (t *MCPScanTool) Name() string {
+	return "wast_mcpscan"
+}
+
+func (t *MCPScanTool) Description() string {
+	return "Scan an MCP (Model Context Protocol) server for security vulnerabilities. " +
+		"Supports stdio, SSE, and HTTP transports. " +
+		"Passive checks (always run): schema analysis, prompt injection detection, permission auditing, tool shadowing. " +
+		"Active checks (opt-in via active=true): injection testing, data exposure, SSRF, auth bypass."
+}
+
+func (t *MCPScanTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"transport": map[string]interface{}{
+				"type":        "string",
+				"description": "Transport type: stdio, sse, or http",
+				"enum":        []string{"stdio", "sse", "http"},
+			},
+			"target": map[string]interface{}{
+				"type":        "string",
+				"description": "Connection target: command for stdio, URL for sse/http",
+			},
+			"args": map[string]interface{}{
+				"type":        "array",
+				"description": "Command arguments for stdio transport",
+				"items":       map[string]interface{}{"type": "string"},
+			},
+			"active": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Enable active checks (injection, SSRF, data exposure, auth bypass). WARNING: sends potentially dangerous payloads.",
+				"default":     false,
+			},
+			"timeout": map[string]interface{}{
+				"type":        "integer",
+				"description": "Per-request timeout in seconds",
+				"default":     30,
+			},
+		},
+		"required": []string{"transport", "target"},
+	}
+}
+
+func (t *MCPScanTool) Execute(ctx context.Context, params json.RawMessage) (interface{}, error) {
+	var args struct {
+		Transport string   `json:"transport"`
+		Target    string   `json:"target"`
+		Args      []string `json:"args"`
+		Active    bool     `json:"active"`
+		Timeout   int      `json:"timeout"`
+	}
+
+	if err := json.Unmarshal(params, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	if args.Transport == "" {
+		return nil, fmt.Errorf("transport is required (stdio, sse, or http)")
+	}
+	if args.Target == "" {
+		return nil, fmt.Errorf("target is required")
+	}
+	if args.Timeout <= 0 {
+		args.Timeout = 30
+	}
+
+	result := executeMCPScan(ctx, args.Transport, args.Target, args.Args, args.Active, args.Timeout, t.server.tracer)
 	return result, nil
 }
