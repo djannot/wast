@@ -4,7 +4,7 @@
 
 The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every scanner must hit its target score **and** produce no false positives. All assertions use hard failures (`t.Errorf`) so regressions break the build.
 
-### DVWA target scores (latest live scan 2026-03-30)
+### DVWA target scores (latest live scan 2026-04-01)
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
@@ -14,7 +14,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 | SQLi | >= 1 finding on `/sqli/` `id` param | 3 on `id` (sqli + sqli_blind) | **PASS** |
 | CSRF | >= 7 forms with missing tokens | 10 (8 missing + 2 unenforced) | **PASS** |
 | SSTI | 0 findings | 0 | **PASS** |
-| SSRF | 0 false positives | 1 (`page` + `file:///etc/passwd` — deduplicated via Correlation 7) | **PASS** |
+| SSRF | 0 false positives | 1 (deduplicated via Correlation 7) | **PASS** |
 | NoSQLi | 0 false positives | 0 | **PASS** |
 | XXE | 0 false positives | 0 | **PASS** |
 | Headers | >= 5 missing | 7 | **PASS** |
@@ -23,7 +23,7 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 | Scanner | Target | Current | Status |
 |---------|--------|---------|--------|
-| SQLi | 0 findings on non-injectable params | 0 (secondary mutual-diff check added) | **PASS** |
+| SQLi | 0 findings on non-injectable params | 5 FPs on `doc` param | **FAIL** |
 | CMDi | 0 findings on non-injectable params | 0 | **PASS** |
 | SSRF | 0 false positives on non-SSRF params | 0 (deduplicated via Correlation 7) | **PASS** |
 | All others | 0 false positives | 0 | **PASS** |
@@ -32,17 +32,16 @@ The CI runs full discovery scans against DVWA, Juice Shop, and WebGoat. Every sc
 
 ## Remaining work
 
-### ~~SQLi: 4 false positives on `doc` param~~ FIXED (issue #326)
+### SQLi: 5 false positives on `doc` param (root URL)
 
-A secondary mutual-difference check was added after the existing content-routing pre-check.
-After fetching both true and false SQL payloads, if both differ from the baseline by >5% AND
-are mutually similar (body-length diff ≤5% of baseline AND data-word diff ≤1), the parameter
-is classified as content-routing and skipped. This eliminates the remaining false positives on
-three distinct `doc` values (`doc=PDF`, `doc=copying`, `doc=PHPIDS-license`) without affecting
-real SQLi detection. The "4 FPs" count in the issue title and table reflects 4 separate scanner
-findings: `doc=copying` was flagged by two different boolean payloads, yielding 4 findings total
-from 3 distinct parameter values.
+The `doc` param on `http://localhost:8080?doc=*` (root URL, NOT `instructions.php`) is completely ignored by DVWA — every response is byte-identical at 6721 bytes regardless of the `doc` value. Confirmed via curl: `doc=readme`, `doc=randomstring`, `doc=' OR '1'='1`, `doc=' OR '1'='2` all return identical responses.
 
-### SSRF: 1 finding on `page` param with `file:///etc/passwd`
+Despite this, the scanner reports a 4-word difference (568 vs 564) and differing content hashes between the true and false payloads. Since the raw HTTP responses are byte-identical, the difference must originate from non-determinism in the scanner's processing pipeline:
 
-This is a borderline case. The `page` param on `/fi/` IS vulnerable to file inclusion, and `file:///etc/passwd` IS a valid protocol for LFI. The SSRF scanner found it independently from the Path Traversal scanner. This could reasonably be classified as a true positive (protocol-based file access via SSRF) rather than a false positive. Consider whether `file://` protocol findings on params already flagged by Path Traversal should be deduplicated or kept as a separate finding class.
+1. **Session state drift:** The scanner's HTTP client cookie jar may cause subtle session changes between the baseline and payload requests (e.g., DVWA rotating session internally, causing a Set-Cookie that alters subsequent responses)
+2. **Race condition in normalization:** The `normalizeResponseContent()` regex patterns may not be idempotent or may interact with extracted content differently depending on timing
+3. **Concurrent request interference:** Discovery mode scans multiple targets concurrently — another concurrent request to a different DVWA page might alter shared session state (e.g., security level, stored XSS entries) between the baseline and payload requests for the `doc` param
+
+**What to do:** The mutual-diff check (`isMutualContentRouting`) should catch this case since both true and false payloads should produce identical responses. Debug why it doesn't fire:
+- Check if `trueDelta` and `falseDelta` are both 0 (identical to baseline) — if so, the check at line 2381 (`trueDelta <= baseline.BodyLength/20`) returns `false` and skips the mutual check, because the responses DON'T differ from baseline by >5%. The function requires BOTH payloads to deviate from baseline — but in this case neither deviates, so it falls through.
+- The fix: if both true and false responses are nearly identical to the baseline AND to each other (within CSRF token noise), the param is not injectable. Add an early return in `testBooleanBased()`: if the true-vs-false body length difference is 0 and the word count difference is <= the CSRF token noise threshold (4 words), skip the finding.
