@@ -140,6 +140,9 @@ func NewUnifiedScanResult(opts ScanResultOptions) *UnifiedScanResult {
 	// Perform correlation analysis
 	result.correlateFindings()
 
+	// Remove file:// SSRF findings already captured by PathTraversal correlations
+	result.suppressDuplicateSSRFFindings()
+
 	// Calculate risk score
 	result.calculateRiskScore()
 
@@ -313,33 +316,88 @@ func (u *UnifiedScanResult) correlateFindings() {
 
 	// Correlation 7: SSRF (file://) + PathTraversal on same parameter
 	if u.SSRF != nil && u.PathTraversal != nil {
-		// Build a map of parameters with PathTraversal findings
-		ptParams := make(map[string]PathTraversalFinding)
-		for _, finding := range u.PathTraversal.Findings {
+		// Build a map of PathTraversal finding indices by (url:parameter) key.
+		// If multiple PathTraversal findings share the same (url, parameter) pair
+		// (e.g. different payload variations), the last one in the slice wins.
+		// Only that entry will receive the RelatedFindings annotation and
+		// participate in the correlation.
+		ptParamIdx := make(map[string]int)
+		for i, finding := range u.PathTraversal.Findings {
 			key := fmt.Sprintf("%s:%s", finding.URL, finding.Parameter)
-			ptParams[key] = finding
+			ptParamIdx[key] = i
 		}
 
 		// Check for SSRF file:// findings on same parameters
-		for _, ssrfFinding := range u.SSRF.Findings {
+		for i, ssrfFinding := range u.SSRF.Findings {
 			if !strings.HasPrefix(ssrfFinding.Payload, "file://") {
 				continue
 			}
 			key := fmt.Sprintf("%s:%s", ssrfFinding.URL, ssrfFinding.Parameter)
-			if ptFinding, found := ptParams[key]; found {
+			if ptIdx, found := ptParamIdx[key]; found {
+				// Annotate the SSRF finding as LFI-via-file-protocol (not a true network SSRF)
+				u.SSRF.Findings[i].Type = "lfi-via-file-protocol"
+				annotatedSSRF := u.SSRF.Findings[i]
+
+				// Snapshot the PathTraversal finding *before* attaching RelatedFindings
+				// so that PrimaryFinding in the correlation is a clean finding without
+				// the self-referential SSRF link embedded in it. The canonical link lives
+				// in correlation.RelatedFindings.
+				primarySnapshot := u.PathTraversal.Findings[ptIdx]
+
+				// Link the corroborating SSRF probe evidence back to the PathTraversal finding
+				u.PathTraversal.Findings[ptIdx].RelatedFindings = append(
+					u.PathTraversal.Findings[ptIdx].RelatedFindings,
+					annotatedSSRF,
+				)
+
 				correlationID++
 				correlation := CorrelatedFinding{
 					ID:             fmt.Sprintf("CORR-%d", correlationID),
-					PrimaryFinding: ptFinding,
+					PrimaryFinding: primarySnapshot,
 					RelatedFindings: []interface{}{
-						ssrfFinding,
+						annotatedSSRF,
 					},
 					EffectiveSeverity: SeverityHigh,
-					Confidence:        u.calculateConfidence(ptFinding.Confidence, u.parseConfidenceString(ssrfFinding.Confidence)),
+					Confidence:        u.calculateConfidence(u.PathTraversal.Findings[ptIdx].Confidence, u.parseConfidenceString(ssrfFinding.Confidence)),
 					Explanation:       fmt.Sprintf("Parameter '%s' confirmed for local file read by both the Path Traversal and SSRF (file://) scanners independently, indicating a high-confidence LFI vulnerability.", ssrfFinding.Parameter),
 				}
 				u.Correlations = append(u.Correlations, correlation)
 			}
+		}
+	}
+}
+
+// suppressDuplicateSSRFFindings removes file:// SSRF findings from the raw
+// SSRF findings list when they are already captured by a Correlation 7
+// PathTraversal finding. This prevents API consumers iterating u.SSRF.Findings
+// directly from seeing duplicate LFI reports.
+func (u *UnifiedScanResult) suppressDuplicateSSRFFindings() {
+	if u.SSRF == nil {
+		return
+	}
+	filtered := u.SSRF.Findings[:0]
+	for _, f := range u.SSRF.Findings {
+		if u.isInCorrelations(f) {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+	u.SSRF.Findings = filtered
+
+	// Recompute all summary counts from the filtered slice so that
+	// VulnerabilitiesFound and every per-severity counter stay consistent.
+	u.SSRF.Summary.VulnerabilitiesFound = len(filtered)
+	u.SSRF.Summary.HighSeverityCount = 0
+	u.SSRF.Summary.MediumSeverityCount = 0
+	u.SSRF.Summary.LowSeverityCount = 0
+	for _, f := range filtered {
+		switch f.Severity {
+		case SeverityHigh:
+			u.SSRF.Summary.HighSeverityCount++
+		case SeverityMedium:
+			u.SSRF.Summary.MediumSeverityCount++
+		case SeverityLow:
+			u.SSRF.Summary.LowSeverityCount++
 		}
 	}
 }
@@ -552,10 +610,9 @@ func (u *UnifiedScanResult) generateSummary() {
 	}
 
 	if u.SSRF != nil {
+		// suppressDuplicateSSRFFindings has already removed correlated file://
+		// findings before generateSummary runs, so every entry here is counted.
 		for _, finding := range u.SSRF.Findings {
-			if u.isInCorrelations(finding) {
-				continue
-			}
 			summary.TotalFindings++
 			severityCounts[finding.Severity]++
 		}

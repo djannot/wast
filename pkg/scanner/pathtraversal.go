@@ -34,17 +34,18 @@ type PathTraversalScanResult struct {
 
 // PathTraversalFinding represents a single Path Traversal vulnerability finding.
 type PathTraversalFinding struct {
-	URL                  string `json:"url" yaml:"url"`
-	Parameter            string `json:"parameter" yaml:"parameter"`
-	Payload              string `json:"payload" yaml:"payload"`
-	Evidence             string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-	Severity             string `json:"severity" yaml:"severity"`
-	Type                 string `json:"type" yaml:"type"` // "unix", "windows", "encoded"
-	Description          string `json:"description" yaml:"description"`
-	Remediation          string `json:"remediation" yaml:"remediation"`
-	Confidence           string `json:"confidence" yaml:"confidence"`
-	Verified             bool   `json:"verified" yaml:"verified"`
-	VerificationAttempts int    `json:"verification_attempts,omitempty" yaml:"verification_attempts,omitempty"`
+	URL                  string        `json:"url" yaml:"url"`
+	Parameter            string        `json:"parameter" yaml:"parameter"`
+	Payload              string        `json:"payload" yaml:"payload"`
+	Evidence             string        `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Severity             string        `json:"severity" yaml:"severity"`
+	Type                 string        `json:"type" yaml:"type"` // "unix", "windows", "encoded"
+	Description          string        `json:"description" yaml:"description"`
+	Remediation          string        `json:"remediation" yaml:"remediation"`
+	Confidence           string        `json:"confidence" yaml:"confidence"`
+	Verified             bool          `json:"verified" yaml:"verified"`
+	VerificationAttempts int           `json:"verification_attempts,omitempty" yaml:"verification_attempts,omitempty"`
+	RelatedFindings      []interface{} `json:"related_findings,omitempty" yaml:"related_findings,omitempty"`
 }
 
 // PathTraversalSummary provides an overview of the Path Traversal scan results.
