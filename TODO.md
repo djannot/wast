@@ -61,11 +61,11 @@ Before scanning, you need to find MCP servers. Discovery methods:
 
 ### Phase 5: Tests and benchmarks
 
-- [ ] Unit tests for MCP client (mock stdio server)
-- [ ] Unit tests for each check
-- [ ] Create a deliberately vulnerable MCP server for integration testing (like DVWA but for MCP)
-- [ ] CI integration with `make test-mcpscan`
-- [ ] Hard assertions: each check must detect its target vulnerability on the test server
+- [x] Unit tests for MCP client (mock stdio server)
+- [x] Unit tests for each check
+- [x] Create a deliberately vulnerable MCP server for integration testing (`test/integration/mcpscan/vulnerable_server/main.go`)
+- [x] CI integration with `make test-mcpscan`
+- [x] Hard assertions: each check must detect its target vulnerability on the test server (`test/integration/mcpscan/mcpscan_test.go`)
 
 ### Package structure
 
