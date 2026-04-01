@@ -3326,10 +3326,10 @@ func TestResponseSignificantlyDiffers(t *testing.T) {
 // "unknown doc" page — a similar delta from the baseline — which is the pattern the secondary
 // mutual-difference check is designed to catch.
 type docParamMock struct {
-	requests      []*http.Request
-	originalBody  string // response for the baseline value (e.g. doc=PDF)
-	randomBody    string // response for random strings — close in size to originalBody
-	sqlErrorBody  string // response for SQL payloads (both true AND false get this same body)
+	requests     []*http.Request
+	originalBody string // response for the baseline value (e.g. doc=PDF)
+	randomBody   string // response for random strings — close in size to originalBody
+	sqlErrorBody string // response for SQL payloads (both true AND false get this same body)
 }
 
 func (m *docParamMock) Do(req *http.Request) (*http.Response, error) {
