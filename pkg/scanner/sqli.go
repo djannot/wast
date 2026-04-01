@@ -34,6 +34,13 @@ const (
 	smallResponseSizeThreshold = 1024 // Responses < 1KB use more sensitive thresholds
 	fewStructuralElementsLimit = 10   // Responses with < 10 structural elements use sensitive thresholds
 	minWordCountForPercentage  = 5    // If baseline has < 5 words, use absolute difference instead of percentage (lowered from 10 for DVWA detection)
+
+	// csrfNoiseWordThreshold is the maximum word-count delta that can be caused by CSRF token
+	// rotation or session-state drift between requests.  A content-hash change paired with a
+	// zero body-length difference and a word-count delta at or below this value is definitionally
+	// scanner noise, not application-level SQL injection signal.
+	// Derived from observed DVWA false-positive pattern: 4-word delta on byte-identical responses.
+	csrfNoiseWordThreshold = 4
 )
 
 // Pre-compiled regex patterns for structural element counting (performance optimization)
@@ -1554,7 +1561,7 @@ func (s *SQLiScanner) testBooleanBased(ctx context.Context, baseURL *url.URL, pa
 	// real false-positive pattern seen on DVWA's ?doc= parameter at the root URL.
 	trueFalseBodyDiff := abs(trueResp.BodyLength - falseResp.BodyLength)
 	trueFalseWordDiff := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseBodyDiff == 0 && trueFalseWordDiff <= 4 {
+	if trueFalseBodyDiff == 0 && trueFalseWordDiff <= csrfNoiseWordThreshold {
 		return nil
 	}
 
@@ -2016,7 +2023,7 @@ func (s *SQLiScanner) testBooleanBasedPOST(ctx context.Context, baseURL *url.URL
 	// noise), the parameter has no observable effect and cannot be injectable.
 	trueFalseBodyDiffPOST := abs(trueResp.BodyLength - falseResp.BodyLength)
 	trueFalseWordDiffPOST := abs(trueResp.WordCount - falseResp.WordCount)
-	if trueFalseBodyDiffPOST == 0 && trueFalseWordDiffPOST <= 4 {
+	if trueFalseBodyDiffPOST == 0 && trueFalseWordDiffPOST <= csrfNoiseWordThreshold {
 		return nil
 	}
 
