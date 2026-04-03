@@ -221,7 +221,7 @@ Examples:
 				}
 				unifiedResult, stats = scanner.ExecuteScanFromCrawlResult(ctx, scanCfg, &crawlResult, scanConcurrency, nil)
 			} else if discover {
-			// If discovery mode is enabled, use discovery scan
+				// If discovery mode is enabled, use discovery scan
 				discoveryCfg := scanner.DiscoveryScanConfig{
 					ScanConfig: scanner.ScanConfig{
 						Target:               target,
