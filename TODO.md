@@ -6,7 +6,7 @@
 
 - [x] **Permission checker false positives** — Switched from `strings.Contains` substring matching to pre-compiled `\b` whole-word regexp patterns, and added context-aware co-occurrence guard for ambiguous keywords like `"token"`. False positives from "refresh"/"push"/"publish" (sh), "relevant"/"evaluation" (eval), and blockchain token descriptions are eliminated.
 - [ ] **Aggregated summary for bulk scans** — Scanning 10 servers produced hundreds of lines. At 1,760 servers the output is unusable. Add a summary report: "X servers open, Y require auth, Z unreachable. Top findings: ..." with ability to drill down per server.
-- [ ] **Concurrency for bulk scanning** — Scanning 10 servers took ~2 minutes (sequential). 1,760 would take ~6 hours. Add `--concurrency N` flag to scan multiple servers in parallel.
+- [x] **Concurrency for bulk scanning** — Scanning 10 servers took ~2 minutes (sequential). 1,760 would take ~6 hours. Add `--concurrency N` flag to scan multiple servers in parallel.
 
 ### P1: New detection capabilities
 

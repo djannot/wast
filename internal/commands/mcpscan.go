@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 // NewMCPScanCmd creates and returns the mcpscan command with its subcommands.
@@ -252,6 +254,7 @@ pyproject.toml for outdated MCP server dependencies:
 	var scanDiscover bool
 	var scanNetwork string
 	var scanDeep bool
+	var concurrency int
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -343,48 +346,79 @@ Examples:
 				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to MCP servers.")
 			}
 
-			scanned := 0
+			// Clamp concurrency to at least 1.
+			if concurrency < 1 {
+				concurrency = 1
+			}
+
+			var (
+				mu      sync.Mutex
+				scanned int
+				skipped int
+			)
+
+			g, gctx := errgroup.WithContext(ctx)
+			g.SetLimit(concurrency)
+
 			for i, server := range servers {
-				// Skip stdio servers — they need local execution
-				if server.Transport == "stdio" {
+				i, server := i, server // capture loop vars
+				g.Go(func() error {
+					// Skip stdio servers — they need local execution
+					if server.Transport == "stdio" {
+						mu.Lock()
+						skipped++
+						if formatter.Format() == output.FormatText {
+							formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
+								i+1, len(servers), server.Name))
+						}
+						mu.Unlock()
+						return nil
+					}
+
+					transport := mcpscan.TransportHTTP
+					if server.Transport == "sse" {
+						transport = mcpscan.TransportSSE
+					}
+
+					mu.Lock()
 					if formatter.Format() == output.FormatText {
-						formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
-							i+1, len(servers), server.Name))
+						name := server.Target
+						if server.Name != "" {
+							name = server.Name + " (" + server.Target + ")"
+						}
+						formatter.Info(fmt.Sprintf("  [%d/%d] Scanning %s...", i+1, len(servers), name))
 					}
-					continue
-				}
+					mu.Unlock()
 
-				transport := mcpscan.TransportHTTP
-				if server.Transport == "sse" {
-					transport = mcpscan.TransportSSE
-				}
-
-				if formatter.Format() == output.FormatText {
-					name := server.Target
-					if server.Name != "" {
-						name = server.Name + " (" + server.Target + ")"
+					cfg := mcpscan.ScanConfig{
+						Transport:  transport,
+						Target:     server.Target,
+						Timeout:    time.Duration(timeout) * time.Second,
+						ActiveMode: activeMode,
 					}
-					formatter.Info(fmt.Sprintf("  [%d/%d] Scanning %s...", i+1, len(servers), name))
-				}
 
-				cfg := mcpscan.ScanConfig{
-					Transport:  transport,
-					Target:     server.Target,
-					Timeout:    time.Duration(timeout) * time.Second,
-					ActiveMode: activeMode,
-				}
-
-				if err := runMCPScan(ctx, cfg, formatter); err != nil {
-					if formatter.Format() == output.FormatText {
-						formatter.Info(fmt.Sprintf("    Error: %v", err))
+					if err := runMCPScanLocked(gctx, cfg, formatter, &mu); err != nil {
+						mu.Lock()
+						if formatter.Format() == output.FormatText {
+							formatter.Info(fmt.Sprintf("    Error: %v", err))
+						}
+						mu.Unlock()
 					}
-				}
-				scanned++
+
+					mu.Lock()
+					scanned++
+					mu.Unlock()
+					return nil
+				})
+			}
+
+			if err := g.Wait(); err != nil {
+				return err
 			}
 
 			if formatter.Format() == output.FormatText {
 				formatter.Info(fmt.Sprintf("\nScanned %d/%d servers (%d stdio servers skipped)",
-					scanned, len(servers), len(servers)-scanned))
+					scanned, len(servers), skipped))
 			}
 			return nil
 		},
@@ -398,10 +432,42 @@ Examples:
 		"Domain or URL to probe for MCP endpoints (used with --discover)")
 	scanCmd.Flags().BoolVar(&scanDeep, "deep", false,
 		"Enumerate subdomains before probing (used with --discover --network)")
+	scanCmd.Flags().IntVar(&concurrency, "concurrency", 5,
+		"Number of servers to scan in parallel (default 5, use 1 for sequential)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
 	return cmd
+}
+
+// runMCPScanLocked executes the MCP scan and outputs the result while holding mu for all formatter writes.
+func runMCPScanLocked(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.Formatter, mu *sync.Mutex) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	scanner := mcpscan.NewScanner(cfg)
+	result, err := scanner.Scan(ctx)
+	if err != nil {
+		mu.Lock()
+		formatter.Failure("mcpscan", "Scan failed", map[string]interface{}{
+			"error":     err.Error(),
+			"transport": string(cfg.Transport),
+			"target":    cfg.Target,
+		})
+		mu.Unlock()
+		return err
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if formatter.Format() == output.FormatText {
+		printMCPScanResultText(formatter, result)
+	}
+
+	formatter.Success("mcpscan", fmt.Sprintf("Scan complete: %d finding(s)", result.Summary.TotalFindings), result)
+	return nil
 }
 
 // runMCPScan executes the MCP scan and outputs the result.

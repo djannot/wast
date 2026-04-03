@@ -639,6 +639,51 @@ SARIF 2.1.0 compliant output for security tools:
 }
 ```
 
+---
+
+### wast mcpscan scan
+
+Scan MCP servers for security vulnerabilities. Servers can be supplied from a targets file (produced by `wast mcpscan discover`) or discovered inline.
+
+#### Usage
+
+```bash
+wast mcpscan scan [flags]
+```
+
+#### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--targets` | string | - | Path to JSON file from `wast mcpscan discover --output json` |
+| `--discover` | boolean | false | Discover MCP servers first, then scan them |
+| `--network` | string | - | Domain or URL to probe for MCP endpoints (used with --discover) |
+| `--deep` | boolean | false | Enumerate subdomains before probing (used with --discover --network) |
+| `--concurrency` | integer | 5 | Number of servers to scan in parallel (use 1 for sequential) |
+| `--timeout` | integer | 30 | Per-request timeout in seconds (inherited from mcpscan parent) |
+| `--active` | boolean | false | Enable active checks — sends potentially dangerous payloads (inherited from mcpscan parent) |
+
+#### Examples
+
+```bash
+# Scan servers from a targets file (5 in parallel by default)
+wast mcpscan scan --targets targets.json
+
+# Scan with higher concurrency for large target lists
+wast mcpscan scan --targets targets.json --concurrency 20
+
+# Sequential scan (equivalent to the old behaviour)
+wast mcpscan scan --targets targets.json --concurrency 1
+
+# Active scan with custom concurrency
+wast mcpscan scan --targets targets.json --active --concurrency 10
+
+# All-in-one: discover and scan
+wast mcpscan scan --discover --network example.com --deep --concurrency 10
+```
+
+---
+
 ## Quick Reference
 
 ### Common Workflows
