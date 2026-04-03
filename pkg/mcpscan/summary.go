@@ -29,6 +29,12 @@ func BuildBulkScanSummary(records []BulkScanRecord) BulkScanSummary {
 			continue
 		}
 
+		if rec.Filtered {
+			summary.Filtered++
+			// Filtered servers don't produce scan briefs.
+			continue
+		}
+
 		brief := ServerScanBrief{
 			Name:        rec.Name,
 			Target:      rec.Target,
