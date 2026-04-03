@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -256,6 +257,7 @@ pyproject.toml for outdated MCP server dependencies:
 	var scanDeep bool
 	var concurrency int
 	var summaryOnly bool
+	var openOnly bool
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -341,6 +343,31 @@ Examples:
 
 			if len(servers) == 0 {
 				formatter.Info("No MCP servers to scan.")
+				return nil
+			}
+
+			// Filter out auth-required servers when --open-only is set.
+			var filteredCount int
+			if openOnly {
+				var open []mcpscan.DiscoveredServer
+				for _, s := range servers {
+					if s.AuthRequired {
+						filteredCount++
+					} else {
+						open = append(open, s)
+					}
+				}
+				if filteredCount > 0 {
+					log.Printf("Filtered out %d auth-required servers", filteredCount)
+					if formatter.Format() == output.FormatText {
+						formatter.Info(fmt.Sprintf("Filtered out %d auth-required servers", filteredCount))
+					}
+				}
+				servers = open
+			}
+
+			if len(servers) == 0 {
+				formatter.Info("No MCP servers to scan after filtering.")
 				return nil
 			}
 
@@ -432,6 +459,7 @@ Examples:
 
 			// Build the aggregated summary from all collected records.
 			bulkSummary := mcpscan.BuildBulkScanSummary(records)
+			bulkSummary.Filtered = filteredCount
 
 			if formatter.Format() == output.FormatText {
 				if !summaryOnly {
@@ -476,6 +504,8 @@ Examples:
 		"Number of servers to scan in parallel (default 5, use 1 for sequential)")
 	scanCmd.Flags().BoolVar(&summaryOnly, "summary-only", false,
 		"Print only the aggregated summary; suppress per-server detail (useful for large fleets)")
+	scanCmd.Flags().BoolVar(&openOnly, "open-only", false,
+		"Skip servers that require authentication (filter out auth-required servers before scanning)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
@@ -553,6 +583,9 @@ func printBulkScanSummaryText(formatter *output.Formatter, summary mcpscan.BulkS
 		summary.TotalServers, summary.Scanned, summary.AuthRequired, summary.Unreachable, summary.Skipped)
 	if errored := summary.Errored - summary.Unreachable; errored > 0 {
 		serversLine += fmt.Sprintf(" | %d errored", errored)
+	}
+	if summary.Filtered > 0 {
+		serversLine += fmt.Sprintf(" | %d filtered (auth-required)", summary.Filtered)
 	}
 	formatter.Info(serversLine)
 

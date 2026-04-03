@@ -660,6 +660,7 @@ wast mcpscan scan [flags]
 | `--network` | string | - | Domain or URL to probe for MCP endpoints (used with --discover) |
 | `--deep` | boolean | false | Enumerate subdomains before probing (used with --discover --network) |
 | `--concurrency` | integer | 5 | Number of servers to scan in parallel (use 1 for sequential) |
+| `--open-only` | boolean | false | Skip servers that require authentication (filter out auth-required servers before scanning) |
 | `--timeout` | integer | 30 | Per-request timeout in seconds (inherited from mcpscan parent) |
 | `--active` | boolean | false | Enable active checks — sends potentially dangerous payloads (inherited from mcpscan parent) |
 
@@ -677,6 +678,12 @@ wast mcpscan scan --targets targets.json --concurrency 1
 
 # Active scan with custom concurrency
 wast mcpscan scan --targets targets.json --active --concurrency 10
+
+# Skip auth-required servers (useful for large fleets where credentials are unavailable)
+wast mcpscan scan --targets targets.json --open-only
+
+# All-in-one: discover and scan open servers only
+wast mcpscan scan --discover --network example.com --deep --open-only --concurrency 10
 
 # All-in-one: discover and scan
 wast mcpscan scan --discover --network example.com --deep --concurrency 10
