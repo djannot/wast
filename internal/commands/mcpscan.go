@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/djannot/wast/pkg/callback"
 	"github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
@@ -20,6 +22,7 @@ import (
 func NewMCPScanCmd(getFormatter func() *output.Formatter) *cobra.Command {
 	var timeout int
 	var activeMode bool
+	var ssrfCallbackHost string
 
 	cmd := &cobra.Command{
 		Use:   "mcpscan",
@@ -57,6 +60,10 @@ Examples:
 	cmd.PersistentFlags().BoolVar(&activeMode, "active", false,
 		"Enable active checks (injection, SSRF, data exposure, auth bypass). "+
 			"WARNING: sends potentially dangerous payloads to the target server.")
+	cmd.PersistentFlags().StringVar(&ssrfCallbackHost, "ssrf-callback-host", "",
+		"Base URL of a publicly reachable callback server for blind SSRF detection "+
+			"(e.g. http://your-server:8888). Requires --active. The port from this URL is "+
+			"used to start a local HTTP listener; the full URL is sent as the probe address.")
 
 	// stdio subcommand
 	stdioCmd := &cobra.Command{
@@ -88,6 +95,16 @@ Examples:
 				ActiveMode: activeMode,
 			}
 
+			if activeMode && ssrfCallbackHost != "" {
+				cbSrv, cbErr := startCallbackServer(cmd.Context(), ssrfCallbackHost)
+				if cbErr != nil {
+					return fmt.Errorf("failed to start SSRF callback server: %w", cbErr)
+				}
+				defer cbSrv.Stop(context.Background()) //nolint:errcheck
+				cfg.SSRFCallbackServer = cbSrv
+				fmt.Fprintf(os.Stderr, "[ssrf] OOB callback server listening, base URL: %s\n", ssrfCallbackHost)
+			}
+
 			return runMCPScan(cmd.Context(), cfg, formatter)
 		},
 	}
@@ -116,6 +133,16 @@ Examples:
 				ActiveMode: activeMode,
 			}
 
+			if activeMode && ssrfCallbackHost != "" {
+				cbSrv, cbErr := startCallbackServer(cmd.Context(), ssrfCallbackHost)
+				if cbErr != nil {
+					return fmt.Errorf("failed to start SSRF callback server: %w", cbErr)
+				}
+				defer cbSrv.Stop(context.Background()) //nolint:errcheck
+				cfg.SSRFCallbackServer = cbSrv
+				fmt.Fprintf(os.Stderr, "[ssrf] OOB callback server listening, base URL: %s\n", ssrfCallbackHost)
+			}
+
 			return runMCPScan(cmd.Context(), cfg, formatter)
 		},
 	}
@@ -142,6 +169,16 @@ Examples:
 				Target:     args[0],
 				Timeout:    time.Duration(timeout) * time.Second,
 				ActiveMode: activeMode,
+			}
+
+			if activeMode && ssrfCallbackHost != "" {
+				cbSrv, cbErr := startCallbackServer(cmd.Context(), ssrfCallbackHost)
+				if cbErr != nil {
+					return fmt.Errorf("failed to start SSRF callback server: %w", cbErr)
+				}
+				defer cbSrv.Stop(context.Background()) //nolint:errcheck
+				cfg.SSRFCallbackServer = cbSrv
+				fmt.Fprintf(os.Stderr, "[ssrf] OOB callback server listening, base URL: %s\n", ssrfCallbackHost)
 			}
 
 			return runMCPScan(cmd.Context(), cfg, formatter)
@@ -735,6 +772,30 @@ func runMCPScan(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.F
 
 	formatter.Success("mcpscan", fmt.Sprintf("Scan complete: %d finding(s)", result.Summary.TotalFindings), result)
 	return nil
+}
+
+// startCallbackServer creates and starts an HTTP callback server using the
+// port extracted from baseURL. baseURL is the externally-reachable address
+// that the target MCP server can reach (e.g. "http://203.0.113.5:8888").
+func startCallbackServer(ctx context.Context, baseURL string) (*callback.Server, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --ssrf-callback-host %q: %w", baseURL, err)
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+	}
+	httpAddr := ":" + port
+
+	srv := callback.NewServer(callback.Config{
+		HTTPAddr: httpAddr,
+		BaseURL:  baseURL,
+	})
+	if err := srv.Start(ctx); err != nil {
+		return nil, fmt.Errorf("callback server start: %w", err)
+	}
+	return srv, nil
 }
 
 // printMCPScanResultText prints a human-readable summary of scan results.

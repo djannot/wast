@@ -11,7 +11,7 @@
 ### P1: New detection capabilities
 
 - [x] **Tool invocation data exposure** — On open servers, call each tool with benign args and scan responses for leaked API keys, internal IPs, database connection strings, stack traces, environment variables. Servers like agentrapay (payments) and aarna.ai (crypto) are prime candidates. Added `benignArgStrategy` to `ExposureChecker` that generates up to 3 semantically-realistic argument sets per tool using param-name heuristics, enum extraction from descriptions, and wildcard variants for query/search params.
-- [ ] **SSRF through tool parameters** — For params named `url`, `endpoint`, `webhook`, `callback`, try `http://169.254.169.254/latest/meta-data/` and `file:///etc/passwd`. The check exists but hasn't triggered on real servers yet — verify it works.
+- [x] **SSRF through tool parameters** — Response-based probes (cloud metadata, file://) were already implemented. Added OOB (out-of-band) callback detection for blind SSRF via `pkg/callback` server integration. Use `--ssrf-callback-host <url>` with `--active` to enable. Integration test `TestBlindSSRFDetected` validates the full OOB path against the vulnerable server's `fetch_url_blind` tool.
 - [x] **Registry as a discovery source** — `wast mcpscan discover --registry` that pulls directly from the MCP registry API instead of needing the Python script + converter. Makes the workflow seamless.
 
 ### P2: Operational polish
