@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,24 @@ import (
 
 // maxBodyBytes limits HTTP/SSE response bodies to prevent memory exhaustion.
 const maxBodyBytes = 1 << 20 // 1 MiB
+
+// Retry / backoff defaults for HTTP 429 handling.
+const (
+	defaultMaxRetries   = 3
+	retryInitialBackoff = 1 * time.Second
+	retryMaxBackoff     = 60 * time.Second
+)
+
+// ErrMaxRetriesExceeded is returned by retryableDo when the server keeps
+// responding with HTTP 429 after all retry attempts are exhausted.
+type ErrMaxRetriesExceeded struct {
+	// Retries is the number of retry attempts made (not counting the first try).
+	Retries int
+}
+
+func (e *ErrMaxRetriesExceeded) Error() string {
+	return fmt.Sprintf("rate limited: max retries (%d) exceeded after HTTP 429", e.Retries)
+}
 
 // Transport specifies how to connect to an MCP server.
 type Transport string
@@ -91,6 +110,12 @@ type Client struct {
 
 	// http client (shared for SSE and HTTP transports)
 	httpClient *http.Client
+
+	// 429 retry configuration
+	maxRetries          int           // max number of retry attempts on HTTP 429
+	retryCount          int64         // total retries performed (accessed atomically)
+	retryInitialBackoff time.Duration // initial backoff duration for exponential backoff
+	retryMaxBackoff     time.Duration // cap for exponential backoff
 }
 
 // ClientOption is a functional option for configuring a Client.
@@ -111,6 +136,34 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) { c.httpClient = hc }
 }
 
+// WithMaxRetries sets the maximum number of retry attempts on HTTP 429 responses.
+// The default is 3. Set to 0 to disable retries.
+func WithMaxRetries(n int) ClientOption {
+	return func(c *Client) { c.maxRetries = n }
+}
+
+// withRetryBackoff sets custom backoff parameters. This is intentionally
+// unexported and intended for use in tests to avoid slow sleep durations.
+func withRetryBackoff(initial, max time.Duration) ClientOption {
+	return func(c *Client) {
+		c.retryInitialBackoff = initial
+		c.retryMaxBackoff = max
+	}
+}
+
+// RetryCount returns the total number of HTTP 429 retries performed by this client.
+func (c *Client) RetryCount() int {
+	return int(atomic.LoadInt64(&c.retryCount))
+}
+
+// newClientDefaults fills retry-related fields with their default values.
+// Call this before applying user options.
+func newClientDefaults(c *Client) {
+	c.maxRetries = defaultMaxRetries
+	c.retryInitialBackoff = retryInitialBackoff
+	c.retryMaxBackoff = retryMaxBackoff
+}
+
 // NewStdioClient creates a Client that communicates with a stdio-based MCP server.
 // command is the executable; args are its arguments.
 func NewStdioClient(command string, args []string, opts ...ClientOption) *Client {
@@ -121,6 +174,7 @@ func NewStdioClient(command string, args []string, opts ...ClientOption) *Client
 		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+	newClientDefaults(c)
 	for _, o := range opts {
 		o(c)
 	}
@@ -135,6 +189,7 @@ func NewSSEClient(url string, opts ...ClientOption) *Client {
 		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
+	newClientDefaults(c)
 	for _, o := range opts {
 		o(c)
 	}
@@ -149,6 +204,7 @@ func NewHTTPClient(url string, opts ...ClientOption) *Client {
 		timeout:    30 * time.Second,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+	newClientDefaults(c)
 	for _, o := range opts {
 		o(c)
 	}
@@ -416,7 +472,7 @@ func (c *Client) notify(ctx context.Context, method string, params interface{}) 
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.retryableDo(req, data)
 		if err != nil {
 			return err
 		}
@@ -498,6 +554,90 @@ func (c *Client) callStdio(ctx context.Context, req jsonrpcRequest) (json.RawMes
 	}
 }
 
+// parseRetryAfter parses the Retry-After response header per RFC 7231 §7.1.3.
+// It accepts both delta-seconds ("Retry-After: 5") and HTTP-date formats.
+// If the header is absent or cannot be parsed, fallback is returned.
+func parseRetryAfter(header string, fallback time.Duration) time.Duration {
+	if header == "" {
+		return fallback
+	}
+	header = strings.TrimSpace(header)
+	// Try delta-seconds first (most common).
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs < 0 {
+			return fallback
+		}
+		return time.Duration(secs) * time.Second
+	}
+	// Try HTTP-date format (e.g. "Fri, 03 Apr 2026 12:00:00 GMT").
+	if t, err := http.ParseTime(header); err == nil {
+		d := time.Until(t)
+		if d > 0 {
+			return d
+		}
+		return 0
+	}
+	return fallback
+}
+
+// retryableDo performs an HTTP request, retrying on HTTP 429 (Too Many Requests)
+// up to c.maxRetries times. On each 429 response it inspects the Retry-After
+// header (supporting both delta-seconds and HTTP-date formats per RFC 7231 §7.1.3).
+// If no Retry-After header is present, exponential backoff is used starting at
+// c.retryInitialBackoff, capped at c.retryMaxBackoff.
+//
+// The body parameter must be the raw request body bytes so the body can be
+// replayed on each retry attempt (http.Request.Body is consumed by the first Do).
+//
+// When all retries are exhausted an *ErrMaxRetriesExceeded is returned.
+func (c *Client) retryableDo(req *http.Request, body []byte) (*http.Response, error) {
+	ctx := req.Context()
+	backoff := c.retryInitialBackoff
+
+	for attempt := 0; ; attempt++ {
+		// (Re)set the request body for each attempt so the transport can read it.
+		if len(body) > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		// Not rate-limited — return immediately.
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+
+		// Drain and close the 429 response body before retrying.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+
+		// Check if retries are exhausted.
+		if attempt >= c.maxRetries {
+			return nil, &ErrMaxRetriesExceeded{Retries: attempt}
+		}
+
+		// Parse Retry-After header; fall back to current exponential backoff.
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"), backoff)
+
+		// Increment per-client retry counter.
+		atomic.AddInt64(&c.retryCount, 1)
+
+		// Advance exponential backoff for next potential fallback.
+		backoff = min(backoff*2, c.retryMaxBackoff)
+
+		// Honour context cancellation during the wait.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
 // callHTTP sends a request over HTTP and reads the JSON response.
 func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMessage, error) {
 	data, err := json.Marshal(req)
@@ -512,7 +652,7 @@ func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMess
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.retryableDo(httpReq, data)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request: %w", err)
 	}
@@ -595,7 +735,7 @@ func (c *Client) callSSE(ctx context.Context, req jsonrpcRequest) (json.RawMessa
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.retryableDo(httpReq, data)
 	if err != nil {
 		return nil, fmt.Errorf("SSE request: %w", err)
 	}

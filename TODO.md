@@ -16,7 +16,7 @@
 
 ### P2: Operational polish
 
-- [x] **Rate limiting for bulk scans** — Added `--rate-limit` flag for token-bucket throttling of bulk scans. Automatic backoff on 429 responses is deferred as a follow-up.
+- [x] **Rate limiting for bulk scans** — Added `--rate-limit` flag for token-bucket throttling of bulk scans. Automatic backoff on 429 responses implemented: `retryableDo` wrapper in `pkg/mcpscan/client.go` detects HTTP 429, honours `Retry-After` header (delta-seconds or HTTP-date per RFC 7231 §7.1.3), and falls back to exponential backoff (1 s → 60 s). Max retries default is 3, configurable via `WithMaxRetries`. `BulkScanSummary.RateLimited` and `BulkScanRecord.Retries` track 429 events; per-server log lines surface `retried N× after 429`.
 - [x] **Resume/checkpoint for long scans** — For bulk scans across 1,760 servers, save progress so you can resume after interruption instead of starting over. Added `--checkpoint <file>` flag to `wast mcpscan scan` that writes a JSONL checkpoint after each server and resumes from completed entries on re-run.
 - [x] **Filter by auth status** — `wast mcpscan scan --targets targets.json --open-only` to skip auth-required servers and focus on the ones you can actually test.
 - [x] **SARIF output for MCP findings** — Integrate mcpscan results into the existing SARIF format for CI/CD pipelines and GitHub Code Scanning integration.

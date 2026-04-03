@@ -112,7 +112,7 @@ func (l *TokenBucketLimiter) Allow() bool {
 }
 
 // DelayLimiter implements a simple delay-based rate limiter.
-// TODO: expose via a future --rate-limit-delay-ms CLI flag in mcpscan scan.
+// A --rate-limit-delay-ms CLI flag can be wired up in mcpscan scan if needed.
 type DelayLimiter struct {
 	delay     time.Duration
 	lastTime  time.Time
@@ -206,9 +206,9 @@ func (l *NoopLimiter) Allow() bool {
 }
 
 // Config holds rate limiting configuration.
-// TODO: wire this into mcpscan scan via a --rate-limit-config flag or YAML
-// config file when more complex rate-limiting scenarios (e.g. delay + RPS)
-// are needed.
+// Wire it into mcpscan scan via a --rate-limit-config flag or YAML config file
+// when more complex rate-limiting scenarios (e.g. delay + RPS) are needed.
+// Reactive HTTP 429 backoff is handled separately in pkg/mcpscan/client.go.
 type Config struct {
 	// RequestsPerSecond limits the number of requests per second.
 	// Set to 0 to disable rate limiting.

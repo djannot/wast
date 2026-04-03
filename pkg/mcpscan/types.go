@@ -109,6 +109,8 @@ type MCPScanSummary struct {
 	PassiveChecks int `json:"passive_checks" yaml:"passive_checks"`
 	// ActiveChecks indicates how many active checks were executed (0 if --active not set).
 	ActiveChecks int `json:"active_checks" yaml:"active_checks"`
+	// Retries is the total number of HTTP 429 retries made during this scan.
+	Retries int `json:"retries,omitempty" yaml:"retries,omitempty"`
 	// Errors lists any non-fatal errors encountered during the scan.
 	Errors []string `json:"errors,omitempty" yaml:"errors,omitempty"`
 }
@@ -199,6 +201,8 @@ type BulkScanSummary struct {
 	AuthRequired int `json:"auth_required" yaml:"auth_required"`
 	// Unreachable is the number of servers that could not be reached (network errors).
 	Unreachable int `json:"unreachable" yaml:"unreachable"`
+	// RateLimited is the number of servers that triggered HTTP 429 backoff during scanning.
+	RateLimited int `json:"rate_limited,omitempty" yaml:"rate_limited,omitempty"`
 	// TotalFindings is the total number of findings across all scanned servers.
 	TotalFindings int `json:"total_findings" yaml:"total_findings"`
 	// BySeverity maps severity strings to total finding counts.
@@ -225,6 +229,10 @@ type BulkScanRecord struct {
 	Errored bool `json:"errored,omitempty"`
 	// Unreachable is true if the error appears to be a connectivity failure.
 	Unreachable bool `json:"unreachable,omitempty"`
+	// Retries is the number of HTTP 429 retries performed when scanning this server.
+	Retries int `json:"retries,omitempty"`
+	// RateLimited is true if this server triggered at least one HTTP 429 backoff.
+	RateLimited bool `json:"rate_limited,omitempty"`
 }
 
 // BulkScanResult is the top-level result for a bulk scan, wrapping per-server

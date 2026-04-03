@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -555,12 +556,36 @@ Examples:
 						Target: server.Target,
 						Result: result,
 					}
+
+					// Populate retry metadata from the scan result (success path).
+					if result != nil && result.Summary.Retries > 0 {
+						rec.Retries = result.Summary.Retries
+						rec.RateLimited = true
+					}
+
 					if scanErr != nil {
 						rec.Errored = true
 						rec.Unreachable = isUnreachableError(scanErr)
+
+						// Detect rate-limit exhaustion on the error path.
+						var rateLimitErr *mcpscan.ErrMaxRetriesExceeded
+						if errors.As(scanErr, &rateLimitErr) {
+							rec.Retries = rateLimitErr.Retries
+							rec.RateLimited = true
+						}
+
 						mu.Lock()
 						if !summaryOnly && formatter.Format() == output.FormatText {
 							formatter.Info(fmt.Sprintf("    Error: %v", scanErr))
+						}
+						mu.Unlock()
+					}
+
+					// Surface 429-backoff events in the per-server log line.
+					if rec.Retries > 0 {
+						mu.Lock()
+						if !summaryOnly && formatter.Format() == output.FormatText {
+							formatter.Info(fmt.Sprintf("    retried %d× after 429", rec.Retries))
 						}
 						mu.Unlock()
 					}
@@ -716,6 +741,9 @@ func printBulkScanSummaryText(formatter *output.Formatter, summary mcpscan.BulkS
 	}
 	if summary.Filtered > 0 {
 		serversLine += fmt.Sprintf(" | %d filtered (auth-required)", summary.Filtered)
+	}
+	if summary.RateLimited > 0 {
+		serversLine += fmt.Sprintf(" | %d rate-limited (429)", summary.RateLimited)
 	}
 	formatter.Info(serversLine)
 
