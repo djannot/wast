@@ -793,6 +793,28 @@ wast --mcp --telemetry-endpoint localhost:4317
 
 All tool invocations will emit spans for major operations, enabling performance monitoring and debugging.
 
+## Bulk MCP Server Scanning
+
+For scanning large numbers of MCP servers (e.g., from a registry export), use the two-step workflow:
+
+```bash
+# 1. Discover servers and save to a file
+wast mcpscan discover --network example.com --deep --output json > targets.json
+
+# 2. Scan all discovered servers in parallel
+wast mcpscan scan --targets targets.json --concurrency 20
+```
+
+The `--concurrency` flag controls how many servers are scanned simultaneously:
+
+| Value | Behaviour |
+|-------|-----------|
+| `1` | Sequential scan — identical to the previous behaviour |
+| `5` | Default — safe for most networks |
+| `10–20` | Recommended for large target lists on fast networks |
+
+Progress lines are serialised by a mutex, so output remains readable even at high concurrency.
+
 ## Best Practices
 
 1. **Safe by Default**: All tools respect safe mode defaults. Use `active=true` only with explicit permission.
@@ -806,6 +828,8 @@ All tool invocations will emit spans for major operations, enabling performance 
 5. **Timeout Configuration**: Set appropriate timeout values based on your network conditions and target responsiveness.
 
 6. **Discovery Before Scanning**: Use `discover=true` in `wast_scan` to find all attack surfaces before testing.
+
+7. **Bulk Concurrency**: When scanning many MCP servers with `wast mcpscan scan`, use `--concurrency` to scan in parallel. Start with the default (5) and increase as your network allows.
 
 ## Troubleshooting
 
