@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/djannot/wast/pkg/callback"
 	"github.com/djannot/wast/pkg/mcpscan/checks"
 )
 
@@ -23,6 +24,17 @@ type ScanConfig struct {
 	Timeout time.Duration
 	// ActiveMode enables active checks (injection, exposure, SSRF, auth bypass).
 	ActiveMode bool
+	// SSRFCallbackServer is an optional callback server used for out-of-band
+	// blind SSRF detection. When set (and ActiveMode is true) the SSRFChecker
+	// will generate a unique callback URL per probe and report a finding if
+	// the target server makes an outbound request to that URL.
+	//
+	// The caller is responsible for starting the server before calling Scan
+	// and stopping it afterward.
+	SSRFCallbackServer *callback.Server
+	// SSRFCallbackTimeout overrides the default OOB callback wait timeout
+	// (default 5 s). Only meaningful when SSRFCallbackServer is set.
+	SSRFCallbackTimeout time.Duration
 }
 
 // Scanner orchestrates MCP server security scanning.
@@ -185,7 +197,11 @@ func (s *Scanner) runActiveChecks(ctx context.Context, tools []checks.ToolInfo, 
 	findings = append(findings, convertFindings(exposureChecker.Check(ctx, tools, client))...)
 	*n++
 
-	ssrfChecker := checks.NewSSRFChecker()
+	var ssrfOpts []checks.SSRFOption
+	if s.cfg.SSRFCallbackServer != nil {
+		ssrfOpts = append(ssrfOpts, checks.WithCallbackServer(s.cfg.SSRFCallbackServer, s.cfg.SSRFCallbackTimeout))
+	}
+	ssrfChecker := checks.NewSSRFChecker(ssrfOpts...)
 	findings = append(findings, convertFindings(ssrfChecker.Check(ctx, tools, client))...)
 	*n++
 

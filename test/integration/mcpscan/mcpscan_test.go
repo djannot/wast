@@ -12,10 +12,12 @@ package mcpscantest
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/djannot/wast/pkg/callback"
 	"github.com/djannot/wast/pkg/mcpscan"
 )
 
@@ -287,6 +289,82 @@ func TestSSRFDetected(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected an ssrf finding for tool %q; ssrf findings: %v", "fetch_url", findings)
+	}
+}
+
+// TestBlindSSRFDetected verifies that the OOB callback mechanism in
+// checks/ssrf.go detects blind SSRF via the fetch_url_blind tool, which
+// makes an outbound HTTP request but does NOT reflect the response content.
+func TestBlindSSRFDetected(t *testing.T) {
+	// Find a free local port for the callback server.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	addr := fmt.Sprintf(":%d", port)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	cbSrv := callback.NewServer(callback.Config{
+		HTTPAddr: addr,
+		BaseURL:  baseURL,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	if err := cbSrv.Start(ctx); err != nil {
+		t.Fatalf("failed to start callback server: %v", err)
+	}
+	defer cbSrv.Stop(context.Background()) //nolint:errcheck
+
+	// Give the HTTP listener a moment to be ready.
+	time.Sleep(50 * time.Millisecond)
+
+	cfg := mcpscan.ScanConfig{
+		Transport:           mcpscan.TransportStdio,
+		Target:              "go",
+		Args:                []string{"run", "./vulnerable_server/main.go"},
+		ActiveMode:          true,
+		Timeout:             30 * time.Second,
+		SSRFCallbackServer:  cbSrv,
+		SSRFCallbackTimeout: 10 * time.Second,
+	}
+
+	scanner := mcpscan.NewScanner(cfg)
+	result, err := scanner.Scan(ctx)
+	if err != nil {
+		t.Fatalf("blind SSRF scan failed: %v", err)
+	}
+
+	var blindFindings []mcpscan.MCPFinding
+	for _, f := range result.Findings {
+		if string(f.Category) == "ssrf" && strings.Contains(f.Title, "Blind SSRF") {
+			blindFindings = append(blindFindings, f)
+		}
+	}
+
+	if len(blindFindings) == 0 {
+		t.Error("expected at least one blind SSRF finding, got none")
+		t.Logf("all findings (%d):", len(result.Findings))
+		for i, f := range result.Findings {
+			t.Logf("  [%d] tool=%s category=%s title=%q", i, f.Tool, f.Category, f.Title)
+		}
+		return
+	}
+
+	var found bool
+	for _, f := range blindFindings {
+		if f.Tool == "fetch_url_blind" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a blind SSRF finding for tool %q; blind SSRF findings: %v",
+			"fetch_url_blind", blindFindings)
 	}
 }
 

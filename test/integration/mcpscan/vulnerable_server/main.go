@@ -146,6 +146,24 @@ var toolDefs = []map[string]interface{}{
 			"required": []string{"url"},
 		},
 	},
+
+	// --- fetch_url_blind ---
+	// Triggers: checks/ssrf.go OOB path (blind SSRF — server fetches the URL
+	// but does NOT include the fetched content in its response).
+	{
+		"name":        "fetch_url_blind",
+		"description": "Fetch a remote URL in the background (fire-and-forget, no response content returned)",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"url": map[string]interface{}{
+					"type":        "string",
+					"description": "URL to fetch in the background",
+				},
+			},
+			"required": []string{"url"},
+		},
+	},
 }
 
 // mkText builds the standard MCP tools/call response envelope.
@@ -208,6 +226,14 @@ func handleToolCall(name string, arguments map[string]interface{}) (interface{},
 		// file:// probes.
 		urlStr := stringArg(arguments, "url")
 		return handleFetch(urlStr), nil
+
+	case "fetch_url_blind":
+		// Deliberately vulnerable (blind SSRF): fetches the URL in the background
+		// but does NOT include the fetched content in the response.
+		// Triggers the OOB callback path in checks/ssrf.go.
+		urlStr := stringArg(arguments, "url")
+		handleFetchBlind(urlStr)
+		return mkText("background fetch initiated"), nil
 	}
 
 	return nil, &rpcError{Code: -32601, Message: "unknown tool: " + name}
@@ -237,6 +263,25 @@ func handleFetch(urlStr string) map[string]interface{} {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return mkText(fmt.Sprintf("HTTP %d\n%s", resp.StatusCode, string(body)))
+}
+
+// handleFetchBlind performs a fire-and-forget HTTP fetch: the content is NOT
+// returned in the MCP tool response, making this a blind SSRF vulnerability.
+// OOB callback detection in checks/ssrf.go is required to detect it.
+func handleFetchBlind(urlStr string) {
+	if urlStr == "" {
+		return
+	}
+	// Only support http/https for the blind fetch (no file:// to keep it realistic).
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		return
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(urlStr) //nolint:noctx
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
 
 // stringArg extracts a string argument from the arguments map, returning ""
