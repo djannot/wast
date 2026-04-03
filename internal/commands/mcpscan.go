@@ -282,6 +282,7 @@ Use --registry to pull servers directly from the public MCP registry:
 	var summaryOnly bool
 	var openOnly bool
 	var rateLimit float64
+	var checkpointFile string
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -410,12 +411,58 @@ Examples:
 				records []mcpscan.BulkScanRecord
 			)
 
+			// Load checkpoint if provided — pre-populate records and build skip set.
+			var (
+				completedTargets map[string]bool
+				ckptWriter       *mcpscan.CheckpointWriter
+			)
+			if checkpointFile != "" {
+				// Validate the checkpoint path early so the user gets a clear error
+				// before scanning starts (e.g., parent directory missing, no write permission).
+				testF, valErr := os.OpenFile(checkpointFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if valErr != nil {
+					return fmt.Errorf("cannot open checkpoint file %q: %w", checkpointFile, valErr)
+				}
+				testF.Close()
+
+				reader := mcpscan.NewCheckpointReader(checkpointFile)
+				loaded, prior, err := reader.Load()
+				if err != nil {
+					return fmt.Errorf("failed to load checkpoint file %q: %w", checkpointFile, err)
+				}
+				completedTargets = loaded
+				records = append(records, prior...)
+
+				if len(prior) > 0 {
+					// Count how many of the *current* servers are already done, so
+					// remaining is accurate even if the targets list changed between runs.
+					var alreadyDone int
+					for _, s := range servers {
+						if completedTargets[s.Target] {
+							alreadyDone++
+						}
+					}
+					remaining := len(servers) - alreadyDone
+					if formatter.Format() == output.FormatText {
+						formatter.Info(fmt.Sprintf("Resuming: %d/%d servers already scanned, %d remaining",
+							alreadyDone, len(servers), remaining))
+					}
+				}
+
+				ckptWriter = mcpscan.NewCheckpointWriter(checkpointFile)
+			}
+
 			g, gctx := errgroup.WithContext(ctx)
 			g.SetLimit(concurrency)
 
 			for i, server := range servers {
 				i, server := i, server // capture loop vars
 				g.Go(func() error {
+					// Skip servers already covered by checkpoint.
+					if completedTargets[server.Target] {
+						return nil
+					}
+
 					// Skip stdio servers — they need local execution
 					if server.Transport == "stdio" {
 						mu.Lock()
@@ -423,12 +470,18 @@ Examples:
 							formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
 								i+1, len(servers), server.Name))
 						}
-						records = append(records, mcpscan.BulkScanRecord{
+						rec := mcpscan.BulkScanRecord{
 							Name:    server.Name,
 							Target:  server.Target,
 							Skipped: true,
-						})
+						}
+						records = append(records, rec)
 						mu.Unlock()
+						if ckptWriter != nil {
+							if err := ckptWriter.Write(rec); err != nil {
+								fmt.Fprintf(os.Stderr, "warning: checkpoint write failed: %v\n", err)
+							}
+						}
 						return nil
 					}
 
@@ -478,6 +531,12 @@ Examples:
 					mu.Lock()
 					records = append(records, rec)
 					mu.Unlock()
+
+					if ckptWriter != nil {
+						if err := ckptWriter.Write(rec); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: checkpoint write failed: %v\n", err)
+						}
+					}
 					return nil
 				})
 			}
@@ -538,6 +597,8 @@ Examples:
 		"Skip servers that require authentication (filter out auth-required servers before scanning)")
 	scanCmd.Flags().Float64Var(&rateLimit, "rate-limit", 0,
 		"Maximum requests per second across all goroutines (0 = unlimited)")
+	scanCmd.Flags().StringVar(&checkpointFile, "checkpoint", "",
+		"Path to checkpoint file for saving/resuming progress across bulk scans (JSONL format)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 

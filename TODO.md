@@ -17,6 +17,6 @@
 ### P2: Operational polish
 
 - [x] **Rate limiting for bulk scans** — Added `--rate-limit` flag for token-bucket throttling of bulk scans. Automatic backoff on 429 responses is deferred as a follow-up.
-- [ ] **Resume/checkpoint for long scans** — For bulk scans across 1,760 servers, save progress so you can resume after interruption instead of starting over.
+- [x] **Resume/checkpoint for long scans** — For bulk scans across 1,760 servers, save progress so you can resume after interruption instead of starting over. Added `--checkpoint <file>` flag to `wast mcpscan scan` that writes a JSONL checkpoint after each server and resumes from completed entries on re-run.
 - [x] **Filter by auth status** — `wast mcpscan scan --targets targets.json --open-only` to skip auth-required servers and focus on the ones you can actually test.
 - [x] **SARIF output for MCP findings** — Integrate mcpscan results into the existing SARIF format for CI/CD pipelines and GitHub Code Scanning integration.
