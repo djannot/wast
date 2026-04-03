@@ -7,6 +7,192 @@ import (
 	"strings"
 )
 
+// queryLikeParamNames are parameter names that suggest a free-text search or filter value.
+var queryLikeParamNames = []string{"query", "search", "filter", "q", "keyword", "term", "text"}
+
+// actionParamNames are parameter names that suggest an operation type.
+var actionParamNames = []string{"action", "operation", "method", "cmd", "command", "op"}
+
+// listLikeToolKeywords are keywords in tool names/descriptions that suggest read-only list/fetch operations.
+var listLikeToolKeywords = []string{"list", "get", "search", "query", "status", "config", "info", "env", "health", "read", "fetch", "show", "describe", "check"}
+
+// enumValuePatterns match common descriptions of enumerated values.
+var enumValuePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)one\s+of[:\s]+([a-zA-Z0-9_-]+)`),
+	regexp.MustCompile(`(?i)(?:possible|valid|allowed|accepted)\s+values?[:\s]+([a-zA-Z0-9_-]+)`),
+	regexp.MustCompile(`\(([a-zA-Z0-9_-]+)\|`),
+	regexp.MustCompile(`(?i)(?:can\s+be|must\s+be)[:\s]+([a-zA-Z0-9_-]+)`),
+}
+
+// containsAnyWord returns true if s contains any of the given substrings.
+func containsAnyWord(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// isQueryLikeParam returns true if the parameter name suggests a search/filter value.
+func isQueryLikeParam(name string) bool {
+	return containsAnyWord(strings.ToLower(name), queryLikeParamNames)
+}
+
+// isActionParam returns true if the parameter name suggests an operation type.
+func isActionParam(name string) bool {
+	return containsAnyWord(strings.ToLower(name), actionParamNames)
+}
+
+// toolMatchesKeywords returns true if a tool's name or description contains any of the given keywords.
+func toolMatchesKeywords(tool ToolInfo, keywords []string) bool {
+	nameLower := strings.ToLower(tool.Name)
+	descLower := strings.ToLower(tool.Description)
+	return containsAnyWord(nameLower, keywords) || containsAnyWord(descLower, keywords)
+}
+
+// extractEnumValue tries to extract the first enumerated value from a parameter description.
+func extractEnumValue(desc string) string {
+	for _, re := range enumValuePatterns {
+		if m := re.FindStringSubmatch(desc); len(m) > 1 {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// semanticValueForParam returns a realistic benign value for a parameter based on its name and description.
+// It prefers semantically meaningful values over generic defaults to maximise the chance that the tool
+// accepts the call and returns a meaningful response.
+func semanticValueForParam(p ParamInfo) interface{} {
+	switch strings.ToLower(p.Type) {
+	case "boolean":
+		return true
+	case "number", "integer":
+		return 1
+	case "array":
+		return []interface{}{}
+	case "object":
+		return map[string]interface{}{}
+	}
+
+	// String: check description for enum hints first.
+	if enumVal := extractEnumValue(p.Description); enumVal != "" {
+		return enumVal
+	}
+
+	// Fall back to name-based heuristics.
+	nameLower := strings.ToLower(p.Name)
+	switch {
+	case isQueryLikeParam(nameLower):
+		return "test"
+	case isActionParam(nameLower):
+		return "list"
+	case containsAnyWord(nameLower, []string{"type", "kind", "category", "format", "mode"}):
+		return "default"
+	case containsAnyWord(nameLower, []string{"status", "state"}):
+		return "active"
+	case containsAnyWord(nameLower, []string{"id", "key", "uuid", "ref", "token"}):
+		return "test-id-1"
+	case containsAnyWord(nameLower, []string{"name", "label", "title", "tag"}):
+		return "test"
+	case containsAnyWord(nameLower, []string{"url", "endpoint", "host", "addr"}):
+		return "http://localhost"
+	case containsAnyWord(nameLower, []string{"path", "file", "dir", "folder"}):
+		return "/tmp/test"
+	default:
+		return "test"
+	}
+}
+
+// benignArgStrategy generates up to 3 sets of benign arguments for a tool based on
+// heuristics derived from the tool name, description, and parameter metadata.
+// The goal is to produce semantically valid inputs that are more likely to succeed
+// and return meaningful responses, which may reveal leaked secrets.
+func benignArgStrategy(tool ToolInfo) []map[string]interface{} {
+	const maxSets = 3
+
+	// Set 1: required params with semantic defaults.
+	set1 := map[string]interface{}{}
+	for _, p := range tool.Parameters {
+		if p.Required {
+			set1[p.Name] = semanticValueForParam(p)
+		}
+	}
+	argSets := []map[string]interface{}{set1}
+
+	// Set 2: for tools with query/search/filter params, try wildcard "*".
+	set2 := copyArgSet(set1)
+	modified2 := false
+	for _, p := range tool.Parameters {
+		if p.Required && strings.EqualFold(p.Type, "string") && isQueryLikeParam(p.Name) {
+			set2[p.Name] = "*"
+			modified2 = true
+		}
+	}
+	if modified2 {
+		argSets = append(argSets, set2)
+	}
+
+	if len(argSets) >= maxSets {
+		return argSets[:maxSets]
+	}
+
+	// Set 3: for tools with action/operation params, try "get" as an alternative.
+	set3 := copyArgSet(set1)
+	modified3 := false
+	for _, p := range tool.Parameters {
+		if p.Required && strings.EqualFold(p.Type, "string") && isActionParam(p.Name) {
+			set3[p.Name] = "get"
+			modified3 = true
+		}
+	}
+	if modified3 {
+		argSets = append(argSets, set3)
+	}
+
+	if len(argSets) >= maxSets {
+		return argSets[:maxSets]
+	}
+
+	// Set 3 (fallback): for list-like tools with no other variant, try an empty-string
+	// value for required string params (some tools accept empty to mean "all").
+	if toolMatchesKeywords(tool, listLikeToolKeywords) {
+		set4 := map[string]interface{}{}
+		hasVariant := false
+		for _, p := range tool.Parameters {
+			if p.Required {
+				if strings.EqualFold(p.Type, "string") {
+					existing, _ := set1[p.Name].(string)
+					set4[p.Name] = ""
+					if existing != "" {
+						hasVariant = true
+					}
+				} else {
+					set4[p.Name] = defaultValueForType(p.Type)
+				}
+			}
+		}
+		if hasVariant {
+			argSets = append(argSets, set4)
+		}
+	}
+
+	if len(argSets) > maxSets {
+		return argSets[:maxSets]
+	}
+	return argSets
+}
+
+// copyArgSet returns a shallow copy of an argument map.
+func copyArgSet(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // exposurePattern is a regex with metadata for detecting leaked sensitive data.
 type exposurePattern struct {
 	Name        string
@@ -126,18 +312,30 @@ func (c *ExposureChecker) Check(ctx context.Context, tools []ToolInfo, caller To
 }
 
 func (c *ExposureChecker) checkTool(ctx context.Context, tool ToolInfo, caller ToolCaller) []Finding {
-	args := map[string]interface{}{}
-	for _, p := range tool.Parameters {
-		if p.Required {
-			args[p.Name] = defaultValueForType(p.Type)
+	argSets := benignArgStrategy(tool)
+
+	// seen tracks (tool, finding title) pairs to avoid duplicate findings across calls.
+	seen := map[string]bool{}
+	var findings []Finding
+
+	for _, args := range argSets {
+		resp, err := caller.CallTool(ctx, tool.Name, args)
+		var candidates []Finding
+		if err != nil {
+			candidates = c.scanText(tool.Name, err.Error())
+		} else {
+			candidates = c.scanText(tool.Name, extractResponseText(resp))
+		}
+		for _, f := range candidates {
+			key := f.Tool + "|" + f.Title
+			if !seen[key] {
+				seen[key] = true
+				findings = append(findings, f)
+			}
 		}
 	}
 
-	resp, err := caller.CallTool(ctx, tool.Name, args)
-	if err != nil {
-		return c.scanText(tool.Name, err.Error())
-	}
-	return c.scanText(tool.Name, extractResponseText(resp))
+	return findings
 }
 
 // scanText runs all exposure patterns against a response string.
