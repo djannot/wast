@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/djannot/wast/pkg/dns"
 )
 
 // Discoverer finds MCP servers from local configuration files and network probes.
@@ -66,8 +69,31 @@ func (d *Discoverer) Discover(ctx context.Context) *DiscoveryResult {
 	return result
 }
 
+// normalizeNetworkTarget ensures the target has an https:// scheme.
+// Accepts "solo.io", "https://solo.io", or "https://solo.io/path".
+func normalizeNetworkTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if !strings.Contains(target, "://") {
+		target = "https://" + target
+	}
+	return target
+}
+
+// extractDomain returns just the hostname from a URL or bare domain.
+func extractDomain(target string) string {
+	target = normalizeNetworkTarget(target)
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return target
+	}
+	return parsed.Hostname()
+}
+
 // DiscoverNetwork probes a target host for MCP endpoints.
+// The target can be a bare domain ("solo.io") or a full URL ("https://solo.io").
 func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *DiscoveryResult {
+	baseURL = normalizeNetworkTarget(baseURL)
+
 	result := &DiscoveryResult{
 		Servers: []DiscoveredServer{},
 		Sources: []string{},
@@ -104,6 +130,57 @@ func (d *Discoverer) DiscoverNetwork(ctx context.Context, baseURL string) *Disco
 			Target:    sseURL,
 			Source:    "network_probe",
 		})
+	}
+
+	return result
+}
+
+// DiscoverNetworkDeep performs subdomain enumeration on the target domain, then
+// probes each discovered subdomain for MCP endpoints. This combines WAST's DNS
+// reconnaissance (CT logs, zone transfers) with MCP endpoint probing.
+func (d *Discoverer) DiscoverNetworkDeep(ctx context.Context, target string, progressFn func(msg string)) *DiscoveryResult {
+	domain := extractDomain(target)
+
+	result := &DiscoveryResult{
+		Servers: []DiscoveredServer{},
+		Sources: []string{},
+		Errors:  []string{},
+	}
+
+	// Step 1: Enumerate subdomains
+	if progressFn != nil {
+		progressFn(fmt.Sprintf("Enumerating subdomains for %s...", domain))
+	}
+
+	subDiscoverer := dns.NewSubdomainDiscoverer(dns.WithSubdomainTimeout(d.HTTPTimeout * 6))
+	subdomains, subErrors := subDiscoverer.Discover(ctx, domain)
+	result.Errors = append(result.Errors, subErrors...)
+
+	// Always include the base domain itself
+	hosts := []string{domain}
+	seen := map[string]bool{domain: true}
+	for _, sub := range subdomains {
+		sub = strings.TrimSuffix(strings.TrimSpace(sub), ".")
+		if sub != "" && !seen[sub] {
+			seen[sub] = true
+			hosts = append(hosts, sub)
+		}
+	}
+
+	if progressFn != nil {
+		progressFn(fmt.Sprintf("Found %d host(s) (1 base + %d subdomains). Probing for MCP endpoints...", len(hosts), len(hosts)-1))
+	}
+
+	// Step 2: Probe each host for MCP endpoints
+	for i, host := range hosts {
+		if progressFn != nil && len(hosts) > 5 && i%10 == 0 {
+			progressFn(fmt.Sprintf("Probing host %d/%d: %s", i+1, len(hosts), host))
+		}
+
+		hostResult := d.DiscoverNetwork(ctx, "https://"+host)
+		result.Servers = append(result.Servers, hostResult.Servers...)
+		result.Sources = append(result.Sources, hostResult.Sources...)
+		result.Errors = append(result.Errors, hostResult.Errors...)
 	}
 
 	return result

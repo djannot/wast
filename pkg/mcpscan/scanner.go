@@ -2,6 +2,7 @@ package mcpscan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -61,6 +62,29 @@ func (s *Scanner) Scan(ctx context.Context) (*MCPScanResult, error) {
 	// Connect and initialize.
 	serverInfo, err := client.Connect(ctx)
 	if err != nil {
+		// Check if authentication is required — produce a finding instead of failing.
+		var authErr *ErrAuthRequired
+		if errors.As(err, &authErr) {
+			result.Server = MCPServerInfo{
+				Transport: string(s.cfg.Transport),
+				Target:    s.cfg.Target,
+			}
+			result.Findings = append(result.Findings, MCPFinding{
+				Category:    "auth",
+				Severity:    "info",
+				Title:       "MCP server requires authentication",
+				Description: fmt.Sprintf("The MCP server at %q returned HTTP %d. Authentication credentials are required to connect and scan this server. Use --auth-bearer or --auth-header to provide credentials.", s.cfg.Target, authErr.StatusCode),
+				Evidence:    authErr.Body,
+				Remediation: "Provide valid authentication credentials to scan this server.",
+			})
+			result.ScanDuration = time.Since(start)
+			for _, f := range result.Findings {
+				result.Summary.TotalFindings++
+				result.Summary.BySeverity[string(f.Severity)]++
+				result.Summary.ByCategory[string(f.Category)]++
+			}
+			return result, nil
+		}
 		return nil, fmt.Errorf("connect to MCP server: %w", err)
 	}
 	result.Server = *serverInfo

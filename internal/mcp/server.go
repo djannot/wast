@@ -1575,6 +1575,7 @@ func (t *MCPScanTool) Execute(ctx context.Context, params json.RawMessage) (inte
 		Timeout    int      `json:"timeout"`
 		ProjectDir string   `json:"project_dir"`
 		Network    string   `json:"network"`
+		Deep       bool     `json:"deep"`
 	}
 
 	if err := json.Unmarshal(params, &args); err != nil {
@@ -1587,7 +1588,7 @@ func (t *MCPScanTool) Execute(ctx context.Context, params json.RawMessage) (inte
 
 	// discover mode: find MCP servers and/or audit dependencies.
 	if args.Mode == "discover" {
-		return executeMCPDiscover(ctx, args.ProjectDir, args.Network, args.Timeout), nil
+		return executeMCPDiscover(ctx, args.ProjectDir, args.Network, args.Deep, args.Timeout), nil
 	}
 
 	// scan mode (default).

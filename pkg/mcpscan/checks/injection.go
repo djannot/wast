@@ -14,23 +14,24 @@ type injectionPayload struct {
 	Evidence []string
 }
 
+// SQLi evidence: specific database error signatures, NOT generic "error".
 var sqlInjectionPayloads = []injectionPayload{
-	{Value: "' OR '1'='1", Type: "SQLi", Evidence: []string{"syntax error", "mysql", "sqlite", "postgresql", "ORA-", "SQLSTATE"}},
-	{Value: `1; DROP TABLE users--`, Type: "SQLi", Evidence: []string{"syntax error", "error", "exception"}},
-	{Value: `" OR "1"="1`, Type: "SQLi", Evidence: []string{"syntax error", "mysql", "sqlite", "error"}},
+	{Value: "' OR '1'='1", Type: "SQLi", Evidence: []string{"syntax error", "mysql", "sqlite", "postgresql", "ORA-", "SQLSTATE", "unterminated", "near \"'\""}},
+	{Value: `1; DROP TABLE users--`, Type: "SQLi", Evidence: []string{"syntax error", "mysql", "sqlite", "postgresql", "ORA-", "SQLSTATE"}},
+	{Value: `" OR "1"="1`, Type: "SQLi", Evidence: []string{"syntax error", "mysql", "sqlite", "postgresql", "ORA-", "SQLSTATE"}},
 }
 
 var cmdInjectionPayloads = []injectionPayload{
-	{Value: "; id", Type: "CMDi", Evidence: []string{"uid=", "gid=", "root", "user="}},
-	{Value: "| id", Type: "CMDi", Evidence: []string{"uid=", "gid=", "root", "user="}},
-	{Value: "`id`", Type: "CMDi", Evidence: []string{"uid=", "gid=", "root"}},
-	{Value: "$(id)", Type: "CMDi", Evidence: []string{"uid=", "gid=", "root"}},
+	{Value: "; id", Type: "CMDi", Evidence: []string{"uid=", "gid="}},
+	{Value: "| id", Type: "CMDi", Evidence: []string{"uid=", "gid="}},
+	{Value: "`id`", Type: "CMDi", Evidence: []string{"uid=", "gid="}},
+	{Value: "$(id)", Type: "CMDi", Evidence: []string{"uid=", "gid="}},
 }
 
 var pathTraversalPayloads = []injectionPayload{
-	{Value: "../../etc/passwd", Type: "PathTraversal", Evidence: []string{"root:", "nobody:", "daemon:", "/bin/bash"}},
-	{Value: "../../../etc/passwd", Type: "PathTraversal", Evidence: []string{"root:", "nobody:", "daemon:"}},
-	{Value: "..\\..\\windows\\system32\\drivers\\etc\\hosts", Type: "PathTraversal", Evidence: []string{"localhost", "127.0.0.1"}},
+	{Value: "../../etc/passwd", Type: "PathTraversal", Evidence: []string{"root:x:0:0:", "daemon:x:1:1:"}},
+	{Value: "../../../etc/passwd", Type: "PathTraversal", Evidence: []string{"root:x:0:0:", "daemon:x:1:1:"}},
+	{Value: "..\\..\\windows\\system32\\drivers\\etc\\hosts", Type: "PathTraversal", Evidence: []string{"127.0.0.1"}},
 }
 
 // InjectionChecker performs active injection testing against MCP tool parameters.
@@ -63,9 +64,29 @@ func (c *InjectionChecker) checkTool(ctx context.Context, tool ToolInfo, caller 
 }
 
 func (c *InjectionChecker) testParam(ctx context.Context, tool ToolInfo, param ParamInfo, caller ToolCaller) []Finding {
+	// Step 1: Get a baseline response with a normal value.
+	// This tells us what the tool returns for benign input.
+	baselineArgs := map[string]interface{}{param.Name: "test_baseline_value"}
+	for _, p := range tool.Parameters {
+		if p.Name == param.Name {
+			continue
+		}
+		if p.Required {
+			baselineArgs[p.Name] = defaultValueForType(p.Type)
+		}
+	}
+
+	baselineResp, baselineErr := caller.CallTool(ctx, tool.Name, baselineArgs)
+	baselineText := ""
+	baselineErrText := ""
+	if baselineErr != nil {
+		baselineErrText = strings.ToLower(baselineErr.Error())
+	} else {
+		baselineText = strings.ToLower(extractResponseText(baselineResp))
+	}
+
+	// Step 2: Test each payload and compare against baseline.
 	var findings []Finding
-	// Build allPayloads with an explicit allocation to avoid mutating the
-	// package-level slice variables if they ever gain spare capacity.
 	allPayloads := make([]injectionPayload, 0, len(sqlInjectionPayloads)+len(cmdInjectionPayloads)+len(pathTraversalPayloads))
 	allPayloads = append(allPayloads, sqlInjectionPayloads...)
 	allPayloads = append(allPayloads, cmdInjectionPayloads...)
@@ -86,18 +107,22 @@ func (c *InjectionChecker) testParam(ctx context.Context, tool ToolInfo, param P
 		if err != nil {
 			errStr := strings.ToLower(err.Error())
 			for _, evidence := range payload.Evidence {
-				if strings.Contains(errStr, strings.ToLower(evidence)) {
+				evidenceLower := strings.ToLower(evidence)
+				// Only flag if evidence appears in the error AND was NOT in the baseline error.
+				if strings.Contains(errStr, evidenceLower) && !strings.Contains(baselineErrText, evidenceLower) {
 					findings = append(findings, Finding{
 						Tool:      tool.Name,
 						Parameter: param.Name,
 						Category:  CategoryInjection,
 						Severity:  SeverityHigh,
-						Title:     fmt.Sprintf("%s injection detected (error response)", payload.Type),
+						Title:     fmt.Sprintf("%s injection detected via error response (%s.%s)", payload.Type, tool.Name, param.Name),
 						Description: fmt.Sprintf(
-							"Tool %q parameter %q returned an error containing %q when tested with payload %q.",
+							"Tool %q parameter %q returned an error containing %q when tested with payload %q. "+
+								"This pattern was NOT present in the baseline response with a normal value, "+
+								"suggesting the payload reached an underlying system (database, shell, file system).",
 							tool.Name, param.Name, evidence, payload.Value,
 						),
-						Evidence:    fmt.Sprintf("Error: %s", truncate(err.Error(), 300)),
+						Evidence:    fmt.Sprintf("Payload error: %s\nBaseline error: %s", truncate(err.Error(), 200), truncate(baselineErrText, 200)),
 						Remediation: "Use parameterized queries / command allowlists. Sanitize input. Never concatenate user input directly.",
 					})
 					break
@@ -108,19 +133,22 @@ func (c *InjectionChecker) testParam(ctx context.Context, tool ToolInfo, param P
 
 		respStr := strings.ToLower(extractResponseText(resp))
 		for _, evidence := range payload.Evidence {
-			if strings.Contains(respStr, strings.ToLower(evidence)) {
+			evidenceLower := strings.ToLower(evidence)
+			// Only flag if evidence appears in the payload response AND was NOT in the baseline response.
+			if strings.Contains(respStr, evidenceLower) && !strings.Contains(baselineText, evidenceLower) {
 				findings = append(findings, Finding{
 					Tool:      tool.Name,
 					Parameter: param.Name,
 					Category:  CategoryInjection,
 					Severity:  SeverityCritical,
-					Title:     fmt.Sprintf("%s injection detected", payload.Type),
+					Title:     fmt.Sprintf("%s injection detected (%s.%s)", payload.Type, tool.Name, param.Name),
 					Description: fmt.Sprintf(
 						"Tool %q parameter %q appears vulnerable to %s injection. "+
-							"The response contains %q when tested with payload %q.",
+							"The response contains %q when tested with payload %q, "+
+							"but this pattern was NOT present in the baseline response with a normal value.",
 						tool.Name, param.Name, payload.Type, evidence, payload.Value,
 					),
-					Evidence:    truncate(extractResponseText(resp), 300),
+					Evidence:    fmt.Sprintf("Payload response: %s\nBaseline response: %s", truncate(extractResponseText(resp), 200), truncate(extractResponseText(baselineResp), 200)),
 					Remediation: "Sanitize all input parameters. Use parameterized queries, avoid shell interpolation.",
 				})
 				break

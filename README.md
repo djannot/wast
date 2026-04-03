@@ -124,7 +124,7 @@ wast scan https://example.com --safe-mode=false
 Discovery mode crawls the target to find forms and endpoints, then scans all discovered attack surfaces with their actual field names:
 
 ```bash
-# Crawl and scan all discovered forms/endpoints
+# All-in-one: crawl and scan in one step
 wast scan https://example.com --active --discover
 
 # Control crawl depth (default: 2)
@@ -134,6 +134,20 @@ wast scan https://example.com --active --discover --depth 3
 wast scan https://example.com --active --discover \
   --cookie "session=abc123" --cookie "security=low"
 ```
+
+#### Two-Step Workflow with Targets File
+
+For more control, separate crawling from scanning. Review crawl results before scanning:
+
+```bash
+# Step 1: Crawl and save results
+wast crawl https://example.com --output json > targets.json
+
+# Step 2: Review targets.json, then scan
+wast scan --targets targets.json --active
+```
+
+The `--targets` flag accepts JSON output from `wast crawl`. This enables incremental workflows, manual curation of targets, and CI pipelines with approval gates between discovery and scanning.
 
 #### Open Redirect Canary Domain
 
@@ -156,20 +170,24 @@ WAST can discover and scan MCP (Model Context Protocol) servers for security vul
 
 #### Discovery
 
-Find MCP servers configured on your machine:
+Find MCP servers locally, on a specific host, or across an entire domain:
 
 ```bash
-# Discover all configured MCP servers
+# Discover all MCP servers configured on your machine
 wast mcpscan discover
 
 # Scan a project directory for MCP dependencies
 wast mcpscan discover --project-dir /path/to/project
 
-# Probe a network endpoint for MCP servers
-wast mcpscan discover --network https://example.com
+# Probe a specific host for MCP endpoints
+wast mcpscan discover --network example.com
+
+# Deep discovery: enumerate subdomains via CT logs and DNS,
+# then probe each discovered subdomain for MCP endpoints
+wast mcpscan discover --network example.com --deep
 ```
 
-Discovery checks:
+**Local discovery** checks:
 - Claude Desktop config (`claude_desktop_config.json`)
 - Claude Code config (`.claude.json`, `.mcp.json`)
 - Cursor config (`~/.cursor/mcp.json`)
@@ -177,9 +195,13 @@ Discovery checks:
 - Cline and Windsurf configs
 - NPM/PyPI dependencies for known MCP server packages
 
-#### Scanning
+**Network discovery** (`--network`) probes a host for MCP endpoints at common paths (`/.well-known/mcp`, `/mcp`, `/api/mcp`, `/v1/mcp`, `/sse`). Detects both open and auth-protected (401) endpoints. Accepts bare domains (`example.com`) or full URLs (`https://example.com`).
 
-Scan an MCP server for vulnerabilities:
+**Deep discovery** (`--network` + `--deep`) first enumerates subdomains using Certificate Transparency logs and DNS zone transfers, then probes every discovered subdomain for MCP endpoints. This can uncover MCP servers that aren't publicly documented.
+
+#### Scanning a Single Server
+
+Scan a specific MCP server for vulnerabilities:
 
 ```bash
 # Scan a stdio-based MCP server (passive checks only)
@@ -193,6 +215,23 @@ wast mcpscan http https://example.com/mcp
 
 # Enable active checks (sends payloads to tool parameters)
 wast mcpscan stdio --active -- node my-server.js
+```
+
+#### Scanning Multiple Servers
+
+Discover and scan all MCP servers in one step, or use a two-step workflow:
+
+```bash
+# All-in-one: discover locally configured servers, then scan them
+wast mcpscan scan --discover --active
+
+# All-in-one: discover across subdomains, then scan
+wast mcpscan scan --discover --network example.com --deep --active
+
+# Two-step: discover first, review, then scan
+wast mcpscan discover --network example.com --deep --output json > mcp-targets.json
+# ... review mcp-targets.json ...
+wast mcpscan scan --targets mcp-targets.json --active
 ```
 
 **Passive checks (safe mode):**
@@ -525,7 +564,7 @@ wast --mcp
 | `wast_intercept` | Intercept and analyze HTTP/HTTPS traffic | `port`, `duration`, `save_file` |
 | `wast_verify` | Verify individual findings to reduce false positives | `finding_type`, `finding_url`, `parameter`, `payload` |
 | `wast_websocket` | WebSocket security scanning | `target`, `active`, `timeout` |
-| `wast_mcpscan` | MCP server discovery and security scanning | `mode`, `transport`, `target`, `active` |
+| `wast_mcpscan` | MCP server discovery and security scanning | `mode`, `transport`, `target`, `active`, `network`, `deep` |
 
 **MCP Integration Example (Claude Desktop):**
 
@@ -553,6 +592,9 @@ Claude: [Uses wast_scan tool with active=true, discover=true, depth=3]
 
 User: "Discover all MCP servers on my machine"
 Claude: [Uses wast_mcpscan tool with mode="discover"]
+
+User: "Find all MCP servers across example.com subdomains"
+Claude: [Uses wast_mcpscan tool with mode="discover", network="example.com", deep=true]
 
 User: "Scan the filesystem MCP server for vulnerabilities"
 Claude: [Uses wast_mcpscan tool with transport="stdio", target="npx", args=["@modelcontextprotocol/server-filesystem", "/tmp"]]

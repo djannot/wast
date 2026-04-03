@@ -2,10 +2,13 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/crawler"
 	"github.com/djannot/wast/pkg/output"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
@@ -37,6 +40,7 @@ func NewScanCmd(getFormatter func() *output.Formatter, getAuthConfig func() *aut
 	var scanConcurrency int
 	var scanners []string
 	var redirectCanaryDomain string
+	var targetsFile string
 
 	cmd := &cobra.Command{
 		Use:   "scan [target]",
@@ -181,8 +185,43 @@ Examples:
 			var unifiedResult *scanner.UnifiedScanResult
 			var stats *scanner.ScanStats
 
+			// If a targets file is provided, load crawl results from it
+			if targetsFile != "" {
+				data, readErr := os.ReadFile(targetsFile)
+				if readErr != nil {
+					fmt.Fprintf(os.Stderr, "Error: failed to read targets file: %v\n", readErr)
+					os.Exit(1)
+				}
+				var crawlResult crawler.CrawlResult
+				if jsonErr := json.Unmarshal(data, &crawlResult); jsonErr != nil {
+					fmt.Fprintf(os.Stderr, "Error: failed to parse targets file (expected wast crawl JSON output): %v\n", jsonErr)
+					os.Exit(1)
+				}
+				// Handle wrapped output format: {success, command, message, data: {target, forms, ...}}
+				if crawlResult.Target == "" {
+					var wrapped struct {
+						Data crawler.CrawlResult `json:"data"`
+					}
+					if wrapErr := json.Unmarshal(data, &wrapped); wrapErr == nil && wrapped.Data.Target != "" {
+						crawlResult = wrapped.Data
+					}
+				}
+				if crawlResult.Target == "" {
+					crawlResult.Target = target
+				}
+				scanCfg := scanner.ScanConfig{
+					Target:               crawlResult.Target,
+					Timeout:              timeout,
+					SafeMode:             safeMode,
+					VerifyFindings:       verify,
+					Scanners:             scanners,
+					AuthConfig:           authConfig,
+					RateLimitConfig:      rateLimitConfig,
+					RedirectCanaryDomain: redirectCanaryDomain,
+				}
+				unifiedResult, stats = scanner.ExecuteScanFromCrawlResult(ctx, scanCfg, &crawlResult, scanConcurrency, nil)
+			} else if discover {
 			// If discovery mode is enabled, use discovery scan
-			if discover {
 				discoveryCfg := scanner.DiscoveryScanConfig{
 					ScanConfig: scanner.ScanConfig{
 						Target:               target,
@@ -259,6 +298,7 @@ Examples:
 	cmd.Flags().IntVar(&scanConcurrency, "scan-concurrency", 5, "Number of concurrent workers for scanning discovered targets (used with --discover)")
 	cmd.Flags().StringSliceVar(&scanners, "scanners", nil, fmt.Sprintf("Comma-separated list of scanners to run (e.g. xss,sqli,csrf). Valid: %s. Default: all", strings.Join(scanner.ValidScannerNames, ", ")))
 	cmd.Flags().StringVar(&redirectCanaryDomain, "redirect-canary-domain", "", "Canary domain used in open-redirect payloads (default: example.com). Use a domain you control to eliminate false positives.")
+	cmd.Flags().StringVar(&targetsFile, "targets", "", "Path to JSON file from 'wast crawl --output json' to use as scan targets (instead of --discover)")
 
 	return cmd
 }

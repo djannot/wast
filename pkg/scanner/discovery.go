@@ -109,14 +109,21 @@ func ExecuteDiscoveryScan(ctx context.Context, cfg DiscoveryScanConfig) (*Unifie
 	crawlResult := c.Crawl(crawlCtx, cfg.Target)
 
 	// Extract discovered targets from crawl results
-	targets := extractDiscoveredTargets(cfg.Target, crawlResult)
+	targets := ExtractDiscoveredTargets(cfg.Target, crawlResult)
 
 	// Scan all discovered targets
 	return scanDiscoveredTargets(ctx, cfg.ScanConfig, targets, cfg.ScanConcurrency, cfg.ProgressCallback, crawlResult)
 }
 
-// extractDiscoveredTargets extracts scannable targets from crawl results.
-func extractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []DiscoveredTarget {
+// ExecuteScanFromCrawlResult scans targets extracted from a previously saved crawl result.
+// This enables the two-step workflow: `wast crawl > targets.json` then `wast scan --targets targets.json`.
+func ExecuteScanFromCrawlResult(ctx context.Context, cfg ScanConfig, crawlResult *crawler.CrawlResult, scanConcurrency int, progressCallback ProgressCallback) (*UnifiedScanResult, *ScanStats) {
+	targets := ExtractDiscoveredTargets(cfg.Target, crawlResult)
+	return scanDiscoveredTargets(ctx, cfg, targets, scanConcurrency, progressCallback, crawlResult)
+}
+
+// ExtractDiscoveredTargets extracts scannable targets from crawl results.
+func ExtractDiscoveredTargets(baseTarget string, result *crawler.CrawlResult) []DiscoveredTarget {
 	targets := make([]DiscoveredTarget, 0)
 	seen := make(map[string]bool)
 

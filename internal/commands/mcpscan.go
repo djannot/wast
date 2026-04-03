@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -147,6 +148,7 @@ Examples:
 	// discover subcommand
 	var networkTarget string
 	var projectDir string
+	var deepMode bool
 
 	discoverCmd := &cobra.Command{
 		Use:   "discover",
@@ -161,8 +163,12 @@ Checks known MCP config file locations:
   - Windsurf: ~/.codeium/windsurf/mcp_config.json
   - Cline: ~/Library/Application Support/Code/User/...
 
-Use --network to also probe for MCP endpoints on an HTTP target:
-  wast mcpscan discover --network https://example.com
+Use --network to probe for MCP endpoints on an HTTP target:
+  wast mcpscan discover --network example.com
+
+Use --network with --deep to enumerate subdomains first (CT logs, zone
+transfers), then probe each discovered subdomain for MCP endpoints:
+  wast mcpscan discover --network example.com --deep
 
 Use --project-dir to scan a project's package.json / requirements.txt /
 pyproject.toml for outdated MCP server dependencies:
@@ -179,8 +185,17 @@ pyproject.toml for outdated MCP server dependencies:
 
 			var result *mcpscan.DiscoveryResult
 			if networkTarget != "" {
-				// Network-only discovery: probe the target for MCP endpoints
-				result = discoverer.DiscoverNetwork(ctx, networkTarget)
+				if deepMode {
+					// Deep network discovery: enumerate subdomains, then probe each
+					result = discoverer.DiscoverNetworkDeep(ctx, networkTarget, func(msg string) {
+						if formatter.Format() == output.FormatText {
+							formatter.Info(msg)
+						}
+					})
+				} else {
+					// Network-only discovery: probe the target for MCP endpoints
+					result = discoverer.DiscoverNetwork(ctx, networkTarget)
+				}
 			} else {
 				// Local discovery: scan config files and project dependencies
 				result = discoverer.Discover(ctx)
@@ -226,11 +241,165 @@ pyproject.toml for outdated MCP server dependencies:
 	}
 
 	discoverCmd.Flags().StringVar(&networkTarget, "network", "",
-		"Base URL to probe for network-accessible MCP endpoints")
+		"Domain or URL to probe for MCP endpoints (e.g., 'example.com' or 'https://example.com')")
+	discoverCmd.Flags().BoolVar(&deepMode, "deep", false,
+		"Enumerate subdomains via CT logs and DNS before probing (requires --network)")
 	discoverCmd.Flags().StringVar(&projectDir, "project-dir", "",
 		"Project directory to scan for MCP server dependencies in package.json, requirements.txt, or pyproject.toml")
 
-	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd)
+	// scan subcommand — scan servers from discovery (inline or from file)
+	var targetsFile string
+	var scanDiscover bool
+	var scanNetwork string
+	var scanDeep bool
+
+	scanCmd := &cobra.Command{
+		Use:   "scan",
+		Short: "Scan MCP servers from discovery or a targets file",
+		Long: `Scan MCP servers for security vulnerabilities.
+
+Two-step workflow (discover first, scan later):
+  1. wast mcpscan discover --network example.com --deep --output json > targets.json
+  2. wast mcpscan scan --targets targets.json --active
+
+All-in-one workflow (discover and scan in one step):
+  wast mcpscan scan --discover --active
+  wast mcpscan scan --discover --network example.com --deep --active
+
+Only HTTP and SSE servers are scanned automatically. Stdio servers require
+local execution and should be scanned individually via 'wast mcpscan stdio'.
+
+Examples:
+  wast mcpscan scan --targets targets.json
+  wast mcpscan scan --targets targets.json --active
+  wast mcpscan scan --discover --active
+  wast mcpscan scan --discover --network example.com --deep --active`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if targetsFile == "" && !scanDiscover {
+				return fmt.Errorf("either --targets or --discover is required")
+			}
+			if targetsFile != "" && scanDiscover {
+				return fmt.Errorf("--targets and --discover are mutually exclusive")
+			}
+
+			formatter := getFormatter()
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			var servers []mcpscan.DiscoveredServer
+
+			if targetsFile != "" {
+				// Load servers from file
+				data, err := os.ReadFile(targetsFile)
+				if err != nil {
+					return fmt.Errorf("failed to read targets file: %w", err)
+				}
+				var discovery mcpscan.DiscoveryResult
+				if err := json.Unmarshal(data, &discovery); err != nil {
+					return fmt.Errorf("failed to parse targets file: %w", err)
+				}
+				// Handle wrapped output format: {success, command, message, data: {servers: [...]}}
+				if len(discovery.Servers) == 0 {
+					var wrapped struct {
+						Data mcpscan.DiscoveryResult `json:"data"`
+					}
+					if err := json.Unmarshal(data, &wrapped); err == nil && len(wrapped.Data.Servers) > 0 {
+						discovery = wrapped.Data
+					}
+				}
+				servers = discovery.Servers
+			} else {
+				// Inline discovery
+				discoverer := mcpscan.NewDiscoverer()
+				var result *mcpscan.DiscoveryResult
+				if scanNetwork != "" {
+					if scanDeep {
+						result = discoverer.DiscoverNetworkDeep(ctx, scanNetwork, func(msg string) {
+							if formatter.Format() == output.FormatText {
+								formatter.Info(msg)
+							}
+						})
+					} else {
+						result = discoverer.DiscoverNetwork(ctx, scanNetwork)
+					}
+				} else {
+					result = discoverer.Discover(ctx)
+				}
+				servers = result.Servers
+
+				if formatter.Format() == output.FormatText {
+					formatter.Info(fmt.Sprintf("Discovered %d MCP server(s)", len(servers)))
+				}
+			}
+
+			if len(servers) == 0 {
+				formatter.Info("No MCP servers to scan.")
+				return nil
+			}
+
+			if activeMode {
+				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to MCP servers.")
+			}
+
+			scanned := 0
+			for i, server := range servers {
+				// Skip stdio servers — they need local execution
+				if server.Transport == "stdio" {
+					if formatter.Format() == output.FormatText {
+						formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
+							i+1, len(servers), server.Name))
+					}
+					continue
+				}
+
+				transport := mcpscan.TransportHTTP
+				if server.Transport == "sse" {
+					transport = mcpscan.TransportSSE
+				}
+
+				if formatter.Format() == output.FormatText {
+					name := server.Target
+					if server.Name != "" {
+						name = server.Name + " (" + server.Target + ")"
+					}
+					formatter.Info(fmt.Sprintf("  [%d/%d] Scanning %s...", i+1, len(servers), name))
+				}
+
+				cfg := mcpscan.ScanConfig{
+					Transport:  transport,
+					Target:     server.Target,
+					Timeout:    time.Duration(timeout) * time.Second,
+					ActiveMode: activeMode,
+				}
+
+				if err := runMCPScan(ctx, cfg, formatter); err != nil {
+					if formatter.Format() == output.FormatText {
+						formatter.Info(fmt.Sprintf("    Error: %v", err))
+					}
+				}
+				scanned++
+			}
+
+			if formatter.Format() == output.FormatText {
+				formatter.Info(fmt.Sprintf("\nScanned %d/%d servers (%d stdio servers skipped)",
+					scanned, len(servers), len(servers)-scanned))
+			}
+			return nil
+		},
+	}
+
+	scanCmd.Flags().StringVar(&targetsFile, "targets", "",
+		"Path to JSON file from 'wast mcpscan discover --output json'")
+	scanCmd.Flags().BoolVar(&scanDiscover, "discover", false,
+		"Discover MCP servers first, then scan them (like 'wast scan --discover' for web)")
+	scanCmd.Flags().StringVar(&scanNetwork, "network", "",
+		"Domain or URL to probe for MCP endpoints (used with --discover)")
+	scanCmd.Flags().BoolVar(&scanDeep, "deep", false,
+		"Enumerate subdomains before probing (used with --discover --network)")
+
+	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
 	return cmd
 }

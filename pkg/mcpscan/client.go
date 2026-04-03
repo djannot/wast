@@ -53,6 +53,16 @@ func (e *jsonrpcError) Error() string {
 	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
 }
 
+// ErrAuthRequired is returned when an MCP server responds with 401 or 403.
+type ErrAuthRequired struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *ErrAuthRequired) Error() string {
+	return fmt.Sprintf("authentication required (HTTP %d)", e.StatusCode)
+}
+
 // stdioLine is a single line read from the subprocess stdout, or an error.
 type stdioLine struct {
 	line string
@@ -500,7 +510,7 @@ func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMess
 		return nil, fmt.Errorf("build HTTP request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -513,8 +523,33 @@ func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMess
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
+	// Check for HTTP-level auth errors before parsing JSON-RPC.
+	if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusForbidden {
+		return nil, &ErrAuthRequired{
+			StatusCode: httpResp.StatusCode,
+			Body:       string(body),
+		}
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	// Streamable HTTP: server may respond with application/json or text/event-stream.
+	contentType := httpResp.Header.Get("Content-Type")
+	var jsonBody []byte
+	if strings.Contains(contentType, "text/event-stream") {
+		// Parse SSE: extract JSON from "data:" lines.
+		jsonBody = extractJSONFromSSE(body)
+		if jsonBody == nil {
+			return nil, fmt.Errorf("no JSON-RPC message found in SSE response")
+		}
+	} else {
+		jsonBody = body
+	}
+
 	var resp jsonrpcResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := json.Unmarshal(jsonBody, &resp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
@@ -523,6 +558,22 @@ func (c *Client) callHTTP(ctx context.Context, req jsonrpcRequest) (json.RawMess
 	}
 
 	return resp.Result, nil
+}
+
+// extractJSONFromSSE extracts the last JSON-RPC message from an SSE stream.
+// SSE format: lines prefixed with "data: " containing JSON payloads.
+func extractJSONFromSSE(body []byte) []byte {
+	var lastData []byte
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data != "" {
+				lastData = []byte(data)
+			}
+		}
+	}
+	return lastData
 }
 
 // callSSE sends a request to an SSE endpoint.

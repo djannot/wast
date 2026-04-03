@@ -78,7 +78,7 @@ func TestExtractDiscoveredTargets(t *testing.T) {
 	// Test with mock crawler results
 	crawlResult := mockCrawlResult()
 
-	targets := extractDiscoveredTargets("https://example.com", crawlResult)
+	targets := ExtractDiscoveredTargets("https://example.com", crawlResult)
 
 	if len(targets) == 0 {
 		t.Error("Expected to extract some targets from mock crawl result")
@@ -558,7 +558,7 @@ func TestExtractDiscoveredTargets_POSTForms(t *testing.T) {
 		},
 	}
 
-	targets := extractDiscoveredTargets("https://example.com", crawlResult)
+	targets := ExtractDiscoveredTargets("https://example.com", crawlResult)
 
 	// Should extract 2 forms (password and hidden fields are filtered)
 	if len(targets) != 2 {
@@ -683,7 +683,7 @@ func TestExtractDiscoveredTargets_SubmitButtonsExcluded(t *testing.T) {
 		Statistics:    crawler.CrawlStats{},
 	}
 
-	targets := extractDiscoveredTargets("http://example.com", crawlResult)
+	targets := ExtractDiscoveredTargets("http://example.com", crawlResult)
 
 	// CSRF-only form (password + submit) should be excluded (no testable params remain).
 	for _, tgt := range targets {
