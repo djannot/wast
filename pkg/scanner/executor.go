@@ -612,18 +612,42 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 			}
 
 			// Capture pre-verification finding counts for stats reporting.
-			// NoSQLi also records its TotalTests from the summary (scanner-specific stat).
-			stats.TotalXSSFindings = entryByName["XSS"].totalFindings()
-			stats.TotalSQLiFindings = entryByName["SQLi"].totalFindings()
-			stats.TotalNoSQLiFindings = entryByName["NoSQLi"].totalFindings()
-			stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
-			stats.TotalCSRFFindings = entryByName["CSRF"].totalFindings()
-			stats.TotalSSRFFindings = entryByName["SSRF"].totalFindings()
-			stats.TotalRedirectFindings = entryByName["Redirect"].totalFindings()
-			stats.TotalCMDiFindings = entryByName["CMDi"].totalFindings()
-			stats.TotalPathTraversalFindings = entryByName["PathTraversal"].totalFindings()
-			stats.TotalSSTIFindings = entryByName["SSTI"].totalFindings()
-			stats.TotalXXEFindings = entryByName["XXE"].totalFindings()
+			// Guard each lookup: when --scanners filters entries, only selected
+			// scanners are present in entryByName; missing keys return nil and
+			// calling totalFindings() on nil panics.
+			if e, ok := entryByName["XSS"]; ok {
+				stats.TotalXSSFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["SQLi"]; ok {
+				stats.TotalSQLiFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["NoSQLi"]; ok {
+				stats.TotalNoSQLiFindings = e.totalFindings()
+				if nosqliResult != nil {
+					stats.TotalNoSQLiTests = nosqliResult.Summary.TotalTests
+				}
+			}
+			if e, ok := entryByName["CSRF"]; ok {
+				stats.TotalCSRFFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["SSRF"]; ok {
+				stats.TotalSSRFFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["Redirect"]; ok {
+				stats.TotalRedirectFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["CMDi"]; ok {
+				stats.TotalCMDiFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["PathTraversal"]; ok {
+				stats.TotalPathTraversalFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["SSTI"]; ok {
+				stats.TotalSSTIFindings = e.totalFindings()
+			}
+			if e, ok := entryByName["XXE"]; ok {
+				stats.TotalXXEFindings = e.totalFindings()
+			}
 
 			// Verify and filter all scanners uniformly.
 			for _, e := range entries {

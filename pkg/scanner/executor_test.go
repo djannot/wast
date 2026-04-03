@@ -553,6 +553,71 @@ func TestExecuteScan_ScannersFilterIncludesHeaders(t *testing.T) {
 	}
 }
 
+// TestExecuteScan_WithScannersFilterAndVerify ensures that combining --scanners
+// with --verify does not panic when non-selected scanners are absent from
+// entryByName. Stats fields for non-selected scanners must remain zero.
+func TestExecuteScan_WithScannersFilterAndVerify(t *testing.T) {
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         30,
+		SafeMode:        false,
+		VerifyFindings:  true,
+		Scanners:        []string{"xss", "sqli"},
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+	}
+
+	ctx := context.Background()
+	// Must not panic.
+	result, _ := ExecuteScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// Selected scanners should be present.
+	if result.XSS == nil {
+		t.Error("Expected XSS result when xss scanner is selected")
+	}
+	if result.SQLi == nil {
+		t.Error("Expected SQLi result when sqli scanner is selected")
+	}
+
+	// Non-selected scanners should not be present.
+	if result.CSRF != nil {
+		t.Error("Expected CSRF to be nil when not in scanners list")
+	}
+	if result.NoSQLi != nil {
+		t.Error("Expected NoSQLi to be nil when not in scanners list")
+	}
+}
+
+// TestExecuteScan_HeadersWithVerify ensures that a passive-only subset
+// (headers) combined with --verify does not panic.
+func TestExecuteScan_HeadersWithVerify(t *testing.T) {
+	cfg := ScanConfig{
+		Target:          "https://example.com",
+		Timeout:         30,
+		SafeMode:        true,
+		VerifyFindings:  true,
+		Scanners:        []string{"headers"},
+		AuthConfig:      &auth.AuthConfig{},
+		RateLimitConfig: ratelimit.Config{},
+	}
+
+	ctx := context.Background()
+	// Must not panic.
+	result, _ := ExecuteScan(ctx, cfg)
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	if result.Headers == nil {
+		t.Error("Expected Headers result when headers scanner is selected")
+	}
+}
+
 func TestExecuteScan_EmptyScannersRunsAll(t *testing.T) {
 	cfg := ScanConfig{
 		Target:          "https://example.com",
