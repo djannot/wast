@@ -191,6 +191,8 @@ type BulkScanSummary struct {
 	Scanned int `json:"scanned" yaml:"scanned"`
 	// Skipped is the number of servers skipped (e.g., stdio servers).
 	Skipped int `json:"skipped" yaml:"skipped"`
+	// Filtered is the number of servers filtered out (e.g., --open-only).
+	Filtered int `json:"filtered" yaml:"filtered"`
 	// Errored is the number of servers where the scan returned an error.
 	Errored int `json:"errored" yaml:"errored"`
 	// AuthRequired is the number of servers that require authentication.
@@ -219,6 +221,8 @@ type BulkScanRecord struct {
 	Result *MCPScanResult
 	// Skipped is true if this server was skipped (e.g., stdio transport).
 	Skipped bool
+	// Filtered is true if this server was filtered out (e.g., --open-only).
+	Filtered bool
 	// Errored is true if the scan returned a non-nil error.
 	Errored bool
 	// Unreachable is true if the error appears to be a connectivity failure.

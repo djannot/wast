@@ -256,6 +256,7 @@ pyproject.toml for outdated MCP server dependencies:
 	var scanDeep bool
 	var concurrency int
 	var summaryOnly bool
+	var openOnly bool
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -344,19 +345,47 @@ Examples:
 				return nil
 			}
 
-			if activeMode {
-				fmt.Fprintln(os.Stderr, "⚠️  ACTIVE TESTING ENABLED: sending potentially dangerous payloads to MCP servers.")
-			}
-
-			// Clamp concurrency to at least 1.
-			if concurrency < 1 {
-				concurrency = 1
-			}
-
 			var (
 				mu      sync.Mutex
 				records []mcpscan.BulkScanRecord
 			)
+
+			// Handle --open-only filtering.
+			if openOnly {
+				var filtered []mcpscan.DiscoveredServer
+				filteredCount := 0
+				for _, s := range servers {
+					if !s.AuthRequired {
+						filtered = append(filtered, s)
+					} else {
+						filteredCount++
+						records = append(records, mcpscan.BulkScanRecord{
+							Name:     s.Name,
+							Target:   s.Target,
+							Filtered: true,
+						})
+					}
+				}
+				if formatter.Format() == output.FormatText {
+					formatter.Info(fmt.Sprintf("Filtered out %d auth-required servers", filteredCount))
+				}
+				servers = filtered
+			}
+
+			if len(servers) == 0 {
+				// All servers filtered out; build and print summary from records.
+				bulkSummary := mcpscan.BuildBulkScanSummary(records)
+				if formatter.Format() == output.FormatText {
+					printBulkScanSummaryText(formatter, bulkSummary)
+				}
+				bulkResult := mcpscan.BulkScanResult{
+					BulkSummary: bulkSummary,
+				}
+				formatter.Success("mcpscan scan", "Bulk scan complete (all servers filtered)", bulkResult)
+				return nil
+			}
+
+			if activeMode {
 
 			g, gctx := errgroup.WithContext(ctx)
 			g.SetLimit(concurrency)
@@ -476,6 +505,8 @@ Examples:
 		"Number of servers to scan in parallel (default 5, use 1 for sequential)")
 	scanCmd.Flags().BoolVar(&summaryOnly, "summary-only", false,
 		"Print only the aggregated summary; suppress per-server detail (useful for large fleets)")
+	scanCmd.Flags().BoolVar(&openOnly, "open-only", false,
+		"Skip servers that require authentication")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
@@ -549,8 +580,8 @@ func printBulkScanSummaryText(formatter *output.Formatter, summary mcpscan.BulkS
 	formatter.Info("\n══ Bulk Scan Summary ══")
 
 	// Servers line.
-	serversLine := fmt.Sprintf("Servers: %d total | %d scanned | %d auth-required | %d unreachable | %d stdio-skipped",
-		summary.TotalServers, summary.Scanned, summary.AuthRequired, summary.Unreachable, summary.Skipped)
+	serversLine := fmt.Sprintf("Servers: %d total | %d scanned | %d auth-required | %d unreachable | %d filtered | %d stdio-skipped",
+		summary.TotalServers, summary.Scanned, summary.AuthRequired, summary.Unreachable, summary.Filtered, summary.Skipped)
 	if errored := summary.Errored - summary.Unreachable; errored > 0 {
 		serversLine += fmt.Sprintf(" | %d errored", errored)
 	}
