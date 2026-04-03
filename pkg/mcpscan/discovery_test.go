@@ -656,7 +656,7 @@ func TestDiscoverFromRegistry_NetworkError(t *testing.T) {
 	d := NewDiscoverer().WithHTTPTimeout(200 * time.Millisecond)
 	// Override the registry URL via a custom round-tripper that always errors.
 	d.httpClient = &http.Client{
-		Timeout: 200 * time.Millisecond,
+		Timeout:   200 * time.Millisecond,
 		Transport: &errorRoundTripper{},
 	}
 

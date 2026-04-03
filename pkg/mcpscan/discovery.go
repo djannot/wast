@@ -201,11 +201,11 @@ type registryListResponse struct {
 
 // registryServer represents a single server entry in the MCP registry.
 type registryServer struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Connections []registryConn      `json:"connections"`
-	Packages    []registryPackage   `json:"packages"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Connections []registryConn    `json:"connections"`
+	Packages    []registryPackage `json:"packages"`
 }
 
 // registryConn describes one transport connection option for a registry server.
