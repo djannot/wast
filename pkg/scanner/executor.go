@@ -281,291 +281,138 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 		var xxeResult *XXEScanResult
 
 		// ── activeScanEntry registry ───────────────────────────────────────
-		// Each entry encapsulates all operations for one scanner.  The unified
-		// pipeline below iterates this slice for parallel scanning, verification,
-		// filtering, and error aggregation — no per-type code duplication needed.
+		// newActiveScanEntry (generic.go) builds each entry; only the finding
+		// type, result pointer, and summary field vary per scanner.
+		// CSRF: no Confidence field; summary uses VulnerableForms.
+		// SSTI: Confidence but no VerificationAttempts field.
 		entries := []activeScanEntry{
-			{
-				name: "XSS",
-				scan: func(ctx context.Context, target string) {
-					xssResult = xssScanner.Scan(ctx, target)
+			newActiveScanEntry("XSS",
+				func(ctx context.Context, target string) { xssResult = xssScanner.Scan(ctx, target) },
+				func() []XSSFinding { return xssResult.Findings },
+				func(f []XSSFinding) { xssResult.Findings = f },
+				xssScanner.VerifyFinding,
+				func(f *XSSFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range xssResult.Findings {
-						vr, err := xssScanner.VerifyFinding(ctx, &xssResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							xssResult.Findings[i].Verified = vr.Verified
-							xssResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&xssResult.Findings[i].Confidence, vr)
-						}
-					}
+				func(f XSSFinding) bool { return f.Verified },
+				func(n int) { xssResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return xssResult.Errors },
+			),
+			newActiveScanEntry("SQLi",
+				func(ctx context.Context, target string) { sqliResult = sqliScanner.Scan(ctx, target) },
+				func() []SQLiFinding { return sqliResult.Findings },
+				func(f []SQLiFinding) { sqliResult.Findings = f },
+				sqliScanner.VerifyFinding,
+				func(f *SQLiFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				filterVerified: func() {
-					verified := make([]XSSFinding, 0, len(xssResult.Findings))
-					for _, f := range xssResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					xssResult.Findings = verified
-					xssResult.Summary.VulnerabilitiesFound = len(verified)
+				func(f SQLiFinding) bool { return f.Verified },
+				func(n int) { sqliResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return sqliResult.Errors },
+			),
+			newActiveScanEntry("NoSQLi",
+				func(ctx context.Context, target string) { nosqliResult = nosqliScanner.Scan(ctx, target) },
+				func() []NoSQLiFinding { return nosqliResult.Findings },
+				func(f []NoSQLiFinding) { nosqliResult.Findings = f },
+				nosqliScanner.VerifyFinding,
+				func(f *NoSQLiFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				getErrors:     func() []string { return xssResult.Errors },
-				totalFindings: func() int { return len(xssResult.Findings) },
-			},
-			{
-				name: "SQLi",
-				scan: func(ctx context.Context, target string) {
-					sqliResult = sqliScanner.Scan(ctx, target)
+				func(f NoSQLiFinding) bool { return f.Verified },
+				func(n int) { nosqliResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return nosqliResult.Errors },
+			),
+			newActiveScanEntry("CSRF",
+				func(ctx context.Context, target string) { csrfResult = csrfScanner.Scan(ctx, target) },
+				func() []CSRFFinding { return csrfResult.Findings },
+				func(f []CSRFFinding) { csrfResult.Findings = f },
+				csrfScanner.VerifyFinding,
+				func(f *CSRFFinding, vr *VerificationResult) { f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts },
+				func(f CSRFFinding) bool { return f.Verified },
+				func(n int) { csrfResult.Summary.VulnerableForms = n },
+				func() []string { return csrfResult.Errors },
+			),
+			newActiveScanEntry("SSRF",
+				func(ctx context.Context, target string) { ssrfResult = ssrfScanner.Scan(ctx, target) },
+				func() []SSRFFinding { return ssrfResult.Findings },
+				func(f []SSRFFinding) { ssrfResult.Findings = f },
+				ssrfScanner.VerifyFinding,
+				func(f *SSRFFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range sqliResult.Findings {
-						vr, err := sqliScanner.VerifyFinding(ctx, &sqliResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							sqliResult.Findings[i].Verified = vr.Verified
-							sqliResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&sqliResult.Findings[i].Confidence, vr)
-						}
-					}
+				func(f SSRFFinding) bool { return f.Verified },
+				func(n int) { ssrfResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return ssrfResult.Errors },
+			),
+			newActiveScanEntry("Redirect",
+				func(ctx context.Context, target string) { redirectResult = redirectScanner.Scan(ctx, target) },
+				func() []RedirectFinding { return redirectResult.Findings },
+				func(f []RedirectFinding) { redirectResult.Findings = f },
+				redirectScanner.VerifyFinding,
+				func(f *RedirectFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				filterVerified: func() {
-					verified := make([]SQLiFinding, 0, len(sqliResult.Findings))
-					for _, f := range sqliResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					sqliResult.Findings = verified
-					sqliResult.Summary.VulnerabilitiesFound = len(verified)
+				func(f RedirectFinding) bool { return f.Verified },
+				func(n int) { redirectResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return redirectResult.Errors },
+			),
+			newActiveScanEntry("CMDi",
+				func(ctx context.Context, target string) { cmdiResult = cmdiScanner.Scan(ctx, target) },
+				func() []CMDiFinding { return cmdiResult.Findings },
+				func(f []CMDiFinding) { cmdiResult.Findings = f },
+				cmdiScanner.VerifyFinding,
+				func(f *CMDiFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				getErrors:     func() []string { return sqliResult.Errors },
-				totalFindings: func() int { return len(sqliResult.Findings) },
-			},
-			{
-				name: "NoSQLi",
-				scan: func(ctx context.Context, target string) {
-					nosqliResult = nosqliScanner.Scan(ctx, target)
+				func(f CMDiFinding) bool { return f.Verified },
+				func(n int) { cmdiResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return cmdiResult.Errors },
+			),
+			newActiveScanEntry("PathTraversal",
+				func(ctx context.Context, target string) { pathtraversalResult = pathtraversalScanner.Scan(ctx, target) },
+				func() []PathTraversalFinding { return pathtraversalResult.Findings },
+				func(f []PathTraversalFinding) { pathtraversalResult.Findings = f },
+				pathtraversalScanner.VerifyFinding,
+				func(f *PathTraversalFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range nosqliResult.Findings {
-						vr, err := nosqliScanner.VerifyFinding(ctx, &nosqliResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							nosqliResult.Findings[i].Verified = vr.Verified
-							nosqliResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&nosqliResult.Findings[i].Confidence, vr)
-						}
-					}
+				func(f PathTraversalFinding) bool { return f.Verified },
+				func(n int) { pathtraversalResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return pathtraversalResult.Errors },
+			),
+			newActiveScanEntry("SSTI",
+				func(ctx context.Context, target string) { sstiResult = sstiScanner.Scan(ctx, target) },
+				func() []SSTIFinding { return sstiResult.Findings },
+				func(f []SSTIFinding) { sstiResult.Findings = f },
+				sstiScanner.VerifyFinding,
+				func(f *SSTIFinding, vr *VerificationResult) {
+					f.Verified = vr.Verified // SSTIFinding has no VerificationAttempts field
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				filterVerified: func() {
-					verified := make([]NoSQLiFinding, 0, len(nosqliResult.Findings))
-					for _, f := range nosqliResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					nosqliResult.Findings = verified
-					nosqliResult.Summary.VulnerabilitiesFound = len(verified)
+				func(f SSTIFinding) bool { return f.Verified },
+				func(n int) { sstiResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return sstiResult.Errors },
+			),
+			newActiveScanEntry("XXE",
+				func(ctx context.Context, target string) { xxeResult = xxeScanner.Scan(ctx, target) },
+				func() []XXEFinding { return xxeResult.Findings },
+				func(f []XXEFinding) { xxeResult.Findings = f },
+				xxeScanner.VerifyFinding,
+				func(f *XXEFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+					applyConfidenceFromResult(&f.Confidence, vr)
 				},
-				getErrors:     func() []string { return nosqliResult.Errors },
-				totalFindings: func() int { return len(nosqliResult.Findings) },
-			},
-			{
-				// CSRF findings do not have a Confidence field; only Verified and
-				// VerificationAttempts are updated. Summary uses VulnerableForms.
-				name: "CSRF",
-				scan: func(ctx context.Context, target string) {
-					csrfResult = csrfScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range csrfResult.Findings {
-						vr, err := csrfScanner.VerifyFinding(ctx, &csrfResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							csrfResult.Findings[i].Verified = vr.Verified
-							csrfResult.Findings[i].VerificationAttempts = vr.Attempts
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]CSRFFinding, 0, len(csrfResult.Findings))
-					for _, f := range csrfResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					csrfResult.Findings = verified
-					csrfResult.Summary.VulnerableForms = len(verified)
-				},
-				getErrors:     func() []string { return csrfResult.Errors },
-				totalFindings: func() int { return len(csrfResult.Findings) },
-			},
-			{
-				name: "SSRF",
-				scan: func(ctx context.Context, target string) {
-					ssrfResult = ssrfScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range ssrfResult.Findings {
-						vr, err := ssrfScanner.VerifyFinding(ctx, &ssrfResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							ssrfResult.Findings[i].Verified = vr.Verified
-							ssrfResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&ssrfResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]SSRFFinding, 0, len(ssrfResult.Findings))
-					for _, f := range ssrfResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					ssrfResult.Findings = verified
-					ssrfResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return ssrfResult.Errors },
-				totalFindings: func() int { return len(ssrfResult.Findings) },
-			},
-			{
-				name: "Redirect",
-				scan: func(ctx context.Context, target string) {
-					redirectResult = redirectScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range redirectResult.Findings {
-						vr, err := redirectScanner.VerifyFinding(ctx, &redirectResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							redirectResult.Findings[i].Verified = vr.Verified
-							redirectResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&redirectResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]RedirectFinding, 0, len(redirectResult.Findings))
-					for _, f := range redirectResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					redirectResult.Findings = verified
-					redirectResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return redirectResult.Errors },
-				totalFindings: func() int { return len(redirectResult.Findings) },
-			},
-			{
-				name: "CMDi",
-				scan: func(ctx context.Context, target string) {
-					cmdiResult = cmdiScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range cmdiResult.Findings {
-						vr, err := cmdiScanner.VerifyFinding(ctx, &cmdiResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							cmdiResult.Findings[i].Verified = vr.Verified
-							cmdiResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&cmdiResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]CMDiFinding, 0, len(cmdiResult.Findings))
-					for _, f := range cmdiResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					cmdiResult.Findings = verified
-					cmdiResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return cmdiResult.Errors },
-				totalFindings: func() int { return len(cmdiResult.Findings) },
-			},
-			{
-				name: "PathTraversal",
-				scan: func(ctx context.Context, target string) {
-					pathtraversalResult = pathtraversalScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range pathtraversalResult.Findings {
-						vr, err := pathtraversalScanner.VerifyFinding(ctx, &pathtraversalResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							pathtraversalResult.Findings[i].Verified = vr.Verified
-							pathtraversalResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&pathtraversalResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]PathTraversalFinding, 0, len(pathtraversalResult.Findings))
-					for _, f := range pathtraversalResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					pathtraversalResult.Findings = verified
-					pathtraversalResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return pathtraversalResult.Errors },
-				totalFindings: func() int { return len(pathtraversalResult.Findings) },
-			},
-			{
-				// SSTI findings have Confidence but no VerificationAttempts field.
-				name: "SSTI",
-				scan: func(ctx context.Context, target string) {
-					sstiResult = sstiScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range sstiResult.Findings {
-						vr, err := sstiScanner.VerifyFinding(ctx, &sstiResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							sstiResult.Findings[i].Verified = vr.Verified
-							applyConfidenceFromResult(&sstiResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]SSTIFinding, 0, len(sstiResult.Findings))
-					for _, f := range sstiResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					sstiResult.Findings = verified
-					sstiResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return sstiResult.Errors },
-				totalFindings: func() int { return len(sstiResult.Findings) },
-			},
-			{
-				name: "XXE",
-				scan: func(ctx context.Context, target string) {
-					xxeResult = xxeScanner.Scan(ctx, target)
-				},
-				verifyAll: func(ctx context.Context, cfg VerificationConfig) {
-					for i := range xxeResult.Findings {
-						vr, err := xxeScanner.VerifyFinding(ctx, &xxeResult.Findings[i], cfg)
-						if err == nil && vr != nil {
-							xxeResult.Findings[i].Verified = vr.Verified
-							xxeResult.Findings[i].VerificationAttempts = vr.Attempts
-							applyConfidenceFromResult(&xxeResult.Findings[i].Confidence, vr)
-						}
-					}
-				},
-				filterVerified: func() {
-					verified := make([]XXEFinding, 0, len(xxeResult.Findings))
-					for _, f := range xxeResult.Findings {
-						if f.Verified {
-							verified = append(verified, f)
-						}
-					}
-					xxeResult.Findings = verified
-					xxeResult.Summary.VulnerabilitiesFound = len(verified)
-				},
-				getErrors:     func() []string { return xxeResult.Errors },
-				totalFindings: func() int { return len(xxeResult.Findings) },
-			},
+				func(f XXEFinding) bool { return f.Verified },
+				func(n int) { xxeResult.Summary.VulnerabilitiesFound = n },
+				func() []string { return xxeResult.Errors },
+			),
 		}
 
 		// ── scanner filtering ─────────────────────────────────────────────
