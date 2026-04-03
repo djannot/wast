@@ -282,6 +282,7 @@ Use --registry to pull servers directly from the public MCP registry:
 	var summaryOnly bool
 	var openOnly bool
 	var rateLimit float64
+	var checkpointFile string
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -410,12 +411,40 @@ Examples:
 				records []mcpscan.BulkScanRecord
 			)
 
+			// Load checkpoint if provided — pre-populate records and build skip set.
+			var (
+				completedTargets map[string]bool
+				ckptWriter       *mcpscan.CheckpointWriter
+			)
+			if checkpointFile != "" {
+				reader := mcpscan.NewCheckpointReader(checkpointFile)
+				loaded, prior, err := reader.Load()
+				if err != nil {
+					return fmt.Errorf("failed to load checkpoint file %q: %w", checkpointFile, err)
+				}
+				completedTargets = loaded
+				records = append(records, prior...)
+
+				remaining := len(servers) - len(prior)
+				if len(prior) > 0 {
+					fmt.Fprintf(os.Stderr, "Resuming: %d/%d servers already scanned, %d remaining\n",
+						len(prior), len(servers), remaining)
+				}
+
+				ckptWriter = mcpscan.NewCheckpointWriter(checkpointFile)
+			}
+
 			g, gctx := errgroup.WithContext(ctx)
 			g.SetLimit(concurrency)
 
 			for i, server := range servers {
 				i, server := i, server // capture loop vars
 				g.Go(func() error {
+					// Skip servers already covered by checkpoint.
+					if completedTargets[server.Target] {
+						return nil
+					}
+
 					// Skip stdio servers — they need local execution
 					if server.Transport == "stdio" {
 						mu.Lock()
@@ -423,12 +452,16 @@ Examples:
 							formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
 								i+1, len(servers), server.Name))
 						}
-						records = append(records, mcpscan.BulkScanRecord{
+						rec := mcpscan.BulkScanRecord{
 							Name:    server.Name,
 							Target:  server.Target,
 							Skipped: true,
-						})
+						}
+						records = append(records, rec)
 						mu.Unlock()
+						if ckptWriter != nil {
+							_ = ckptWriter.Write(rec)
+						}
 						return nil
 					}
 
@@ -478,6 +511,10 @@ Examples:
 					mu.Lock()
 					records = append(records, rec)
 					mu.Unlock()
+
+					if ckptWriter != nil {
+						_ = ckptWriter.Write(rec)
+					}
 					return nil
 				})
 			}
@@ -538,6 +575,8 @@ Examples:
 		"Skip servers that require authentication (filter out auth-required servers before scanning)")
 	scanCmd.Flags().Float64Var(&rateLimit, "rate-limit", 0,
 		"Maximum requests per second across all goroutines (0 = unlimited)")
+	scanCmd.Flags().StringVar(&checkpointFile, "checkpoint", "",
+		"Path to checkpoint file for saving/resuming progress across bulk scans (JSONL format)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
