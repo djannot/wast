@@ -224,6 +224,11 @@ type registryPackage struct {
 	Args         []string `json:"args"`
 }
 
+// maxRegistryPages is a safety cap on the number of pages fetched from the
+// registry in a single DiscoverFromRegistry call, preventing infinite loops
+// if a buggy or adversarial registry always returns a non-empty next_cursor.
+const maxRegistryPages = 500
+
 // DiscoverFromRegistry fetches MCP server entries from the public MCP registry API
 // and returns them as DiscoveredServer entries. If transportFilter is non-empty
 // (e.g. "sse", "http", "stdio"), only servers with a matching connection type are
@@ -238,11 +243,18 @@ func (d *Discoverer) DiscoverFromRegistry(ctx context.Context, transportFilter s
 	}
 
 	cursor := ""
-	for {
-		apiURL := registryURL + "/v0/servers"
-		if cursor != "" {
-			apiURL += "?cursor=" + cursor
+	for page := 0; page < maxRegistryPages; page++ {
+		u, err := url.Parse(registryURL + "/v0/servers")
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("build registry URL: %v", err))
+			return result
 		}
+		if cursor != "" {
+			q := u.Query()
+			q.Set("cursor", cursor)
+			u.RawQuery = q.Encode()
+		}
+		apiURL := u.String()
 
 		servers, nextCursor, err := d.fetchRegistryPage(ctx, apiURL)
 		if err != nil {
@@ -264,6 +276,10 @@ func (d *Discoverer) DiscoverFromRegistry(ctx context.Context, transportFilter s
 	return result
 }
 
+// maxRegistryPageSize is the maximum number of bytes read from a single
+// registry page response. 4 MiB is generous for a JSON page of server entries.
+const maxRegistryPageSize = 4 << 20 // 4 MiB
+
 // fetchRegistryPage retrieves one page of servers from the registry API.
 func (d *Discoverer) fetchRegistryPage(ctx context.Context, apiURL string) ([]registryServer, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
@@ -282,9 +298,12 @@ func (d *Discoverer) fetchRegistryPage(ctx context.Context, apiURL string) ([]re
 		return nil, "", fmt.Errorf("unexpected status %d from registry", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRegistryPageSize))
 	if err != nil {
 		return nil, "", fmt.Errorf("read response body: %w", err)
+	}
+	if len(body) == maxRegistryPageSize {
+		return nil, "", fmt.Errorf("registry response exceeded size limit (%d bytes)", maxRegistryPageSize)
 	}
 
 	var page registryListResponse
