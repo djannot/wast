@@ -569,10 +569,11 @@ func TestMCPScanCmd_RateLimit_ZeroPreservesCurrentBehavior(t *testing.T) {
 	}
 }
 
-// TestMCPScanCmd_RateLimit_ThrottlesRequests verifies that a positive
-// --rate-limit value doesn't prevent servers from being scanned and still
-// produces a bulk summary.
-func TestMCPScanCmd_RateLimit_ThrottlesRequests(t *testing.T) {
+// TestMCPScanCmd_RateLimit_PositiveRateCompletesSuccessfully verifies that a
+// positive --rate-limit value doesn't prevent servers from being scanned and
+// still produces a bulk summary. Throttling timing is covered by unit tests in
+// pkg/ratelimit.
+func TestMCPScanCmd_RateLimit_PositiveRateCompletesSuccessfully(t *testing.T) {
 	const numServers = 2
 	urls := make([]string, numServers)
 	for i := range urls {
