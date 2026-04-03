@@ -70,6 +70,42 @@ var exposurePatterns = []*exposurePattern{
 		Severity:    SeverityLow,
 		Description: "Private IP address found in response",
 	},
+	{
+		Name:        "PostgreSQL connection string",
+		Pattern:     regexp.MustCompile(`(?i)postgres(ql)?://[^\s"']+`),
+		Severity:    SeverityCritical,
+		Description: "PostgreSQL connection URI found in response",
+	},
+	{
+		Name:        "MySQL connection string",
+		Pattern:     regexp.MustCompile(`(?i)mysql://[^\s"']+`),
+		Severity:    SeverityCritical,
+		Description: "MySQL connection URI found in response",
+	},
+	{
+		Name:        "MongoDB connection string",
+		Pattern:     regexp.MustCompile(`(?i)mongodb(\+srv)?://[^\s"']+`),
+		Severity:    SeverityCritical,
+		Description: "MongoDB connection URI found in response",
+	},
+	{
+		Name:        "Redis connection string",
+		Pattern:     regexp.MustCompile(`(?i)rediss?://[^\s"']+`),
+		Severity:    SeverityCritical,
+		Description: "Redis connection URI found in response",
+	},
+	{
+		Name:        "JDBC connection string",
+		Pattern:     regexp.MustCompile(`(?i)jdbc:[a-z]+://[^\s"']+`),
+		Severity:    SeverityCritical,
+		Description: "JDBC database connection string found in response",
+	},
+	{
+		Name:        "DATABASE_URL assignment",
+		Pattern:     regexp.MustCompile(`(?i)DATABASE_URL\s*[:=]\s*["']?\S{10,}`),
+		Severity:    SeverityCritical,
+		Description: "DATABASE_URL environment variable found in response",
+	},
 }
 
 // ExposureChecker invokes tools with benign arguments and scans responses for sensitive data.

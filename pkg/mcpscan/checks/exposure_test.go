@@ -90,6 +90,148 @@ func TestExposureChecker_ErrorResponse(t *testing.T) {
 	}
 }
 
+func TestExposureChecker_PostgreSQLConnectionString(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_config", Description: "returns config"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"db url: postgres://admin:s3cr3t@db.internal:5432/mydb"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for PostgreSQL connection string")
+	}
+}
+
+func TestExposureChecker_PostgreSQLConnectionString_NoMatch(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_config", Description: "returns config"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"connected to database successfully"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+	for _, f := range findings {
+		if f.Title == "Sensitive data exposure: PostgreSQL connection string" {
+			t.Error("unexpected PostgreSQL finding for benign response")
+		}
+	}
+}
+
+func TestExposureChecker_MySQLConnectionString(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_dsn", Description: "returns DSN"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"mysql://user:pass@localhost:3306/shop"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for MySQL connection string")
+	}
+}
+
+func TestExposureChecker_MongoDBConnectionString(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_mongo", Description: "returns mongo URI"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"uri=mongodb+srv://admin:secret@cluster0.example.mongodb.net/prod"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for MongoDB connection string")
+	}
+}
+
+func TestExposureChecker_RedisConnectionString(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_cache", Description: "returns cache config"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"cache: rediss://:password@redis.internal:6380/0"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for Redis connection string")
+	}
+}
+
+func TestExposureChecker_JDBCConnectionString(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_jdbc", Description: "returns JDBC string"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"jdbc:postgresql://db.corp.internal:5432/production?user=svc&password=topsecret"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for JDBC connection string")
+	}
+}
+
+func TestExposureChecker_DatabaseURLAssignment(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_env", Description: "returns env"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"DATABASE_URL=postgres://user:pass@host/db"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+
+	found := false
+	for _, f := range findings {
+		if f.Category == CategoryExposure && f.Severity == SeverityCritical {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected critical finding for DATABASE_URL assignment")
+	}
+}
+
+func TestExposureChecker_DatabaseURLAssignment_NoMatch(t *testing.T) {
+	tools := []ToolInfo{{Name: "get_env", Description: "returns env"}}
+	caller := newMockCaller()
+	caller.defaultResp = []byte(`{"content":[{"type":"text","text":"DATABASE_URL=short"}]}`)
+
+	checker := NewExposureChecker()
+	findings := checker.Check(context.Background(), tools, caller)
+	for _, f := range findings {
+		if f.Title == "Sensitive data exposure: DATABASE_URL assignment" {
+			t.Error("unexpected DATABASE_URL finding for short value")
+		}
+	}
+}
+
 // errorCaller always returns an error with the given message.
 type errorCaller struct{ msg string }
 
