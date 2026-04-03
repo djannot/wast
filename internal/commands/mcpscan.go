@@ -417,6 +417,14 @@ Examples:
 				ckptWriter       *mcpscan.CheckpointWriter
 			)
 			if checkpointFile != "" {
+				// Validate the checkpoint path early so the user gets a clear error
+				// before scanning starts (e.g., parent directory missing, no write permission).
+				testF, valErr := os.OpenFile(checkpointFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if valErr != nil {
+					return fmt.Errorf("cannot open checkpoint file %q: %w", checkpointFile, valErr)
+				}
+				testF.Close()
+
 				reader := mcpscan.NewCheckpointReader(checkpointFile)
 				loaded, prior, err := reader.Load()
 				if err != nil {
@@ -425,10 +433,20 @@ Examples:
 				completedTargets = loaded
 				records = append(records, prior...)
 
-				remaining := len(servers) - len(prior)
 				if len(prior) > 0 {
-					fmt.Fprintf(os.Stderr, "Resuming: %d/%d servers already scanned, %d remaining\n",
-						len(prior), len(servers), remaining)
+					// Count how many of the *current* servers are already done, so
+					// remaining is accurate even if the targets list changed between runs.
+					var alreadyDone int
+					for _, s := range servers {
+						if completedTargets[s.Target] {
+							alreadyDone++
+						}
+					}
+					remaining := len(servers) - alreadyDone
+					if formatter.Format() == output.FormatText {
+						formatter.Info(fmt.Sprintf("Resuming: %d/%d servers already scanned, %d remaining",
+							alreadyDone, len(servers), remaining))
+					}
 				}
 
 				ckptWriter = mcpscan.NewCheckpointWriter(checkpointFile)
@@ -460,7 +478,9 @@ Examples:
 						records = append(records, rec)
 						mu.Unlock()
 						if ckptWriter != nil {
-							_ = ckptWriter.Write(rec)
+							if err := ckptWriter.Write(rec); err != nil {
+								fmt.Fprintf(os.Stderr, "warning: checkpoint write failed: %v\n", err)
+							}
 						}
 						return nil
 					}
@@ -513,7 +533,9 @@ Examples:
 					mu.Unlock()
 
 					if ckptWriter != nil {
-						_ = ckptWriter.Write(rec)
+						if err := ckptWriter.Write(rec); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: checkpoint write failed: %v\n", err)
+						}
 					}
 					return nil
 				})

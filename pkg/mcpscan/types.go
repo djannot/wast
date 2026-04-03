@@ -214,17 +214,17 @@ type BulkScanSummary struct {
 // BulkScanRecord is a single server entry used to build a BulkScanSummary.
 type BulkScanRecord struct {
 	// Name is the human-readable server name.
-	Name string
+	Name string `json:"name,omitempty"`
 	// Target is the connection target.
-	Target string
+	Target string `json:"target"`
 	// Result is the scan result (nil if the scan failed before producing a result).
-	Result *MCPScanResult
+	Result *MCPScanResult `json:"result,omitempty"`
 	// Skipped is true if this server was skipped (e.g., stdio transport).
-	Skipped bool
+	Skipped bool `json:"skipped,omitempty"`
 	// Errored is true if the scan returned a non-nil error.
-	Errored bool
+	Errored bool `json:"errored,omitempty"`
 	// Unreachable is true if the error appears to be a connectivity failure.
-	Unreachable bool
+	Unreachable bool `json:"unreachable,omitempty"`
 }
 
 // BulkScanResult is the top-level result for a bulk scan, wrapping per-server

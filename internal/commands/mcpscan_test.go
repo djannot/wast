@@ -695,8 +695,9 @@ func TestMCPScanCmd_Checkpoint_ResumesFromCheckpoint(t *testing.T) {
 
 	// Reset hit counters after setup writes (the mock servers weren't hit yet,
 	// but we want a clean baseline for the resumed scan).
-	_ = hits1
-	_ = hits2
+	// Store the hit counts before the scan so we can detect any new hits.
+	before1 := atomic.LoadInt64(hits1)
+	before2 := atomic.LoadInt64(hits2)
 
 	var buf bytes.Buffer
 	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
@@ -714,9 +715,20 @@ func TestMCPScanCmd_Checkpoint_ResumesFromCheckpoint(t *testing.T) {
 		t.Error("expected server u3 (not in checkpoint) to be scanned, but it received no hits")
 	}
 
-	// Resume message should appear on stderr (we capture via the buf but the
-	// resume line goes to os.Stderr, so just verify the bulk summary is printed).
+	// The primary correctness guarantee: pre-checkpointed servers must NOT be
+	// contacted again during the resumed scan.
+	if newHits1 := atomic.LoadInt64(hits1) - before1; newHits1 != 0 {
+		t.Errorf("expected server u1 (pre-checkpointed) to receive 0 hits, got %d", newHits1)
+	}
+	if newHits2 := atomic.LoadInt64(hits2) - before2; newHits2 != 0 {
+		t.Errorf("expected server u2 (pre-checkpointed) to receive 0 hits, got %d", newHits2)
+	}
+
+	// The resume progress message and bulk summary should be captured via formatter.
 	got := buf.String()
+	if !strings.Contains(got, "Resuming:") {
+		t.Errorf("expected resume message in output, got:\n%s", got)
+	}
 	if !strings.Contains(got, "Bulk Scan Summary") {
 		t.Errorf("expected Bulk Scan Summary after resumed scan, got:\n%s", got)
 	}
