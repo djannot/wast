@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -358,7 +357,6 @@ Examples:
 					}
 				}
 				if filteredCount > 0 {
-					log.Printf("Filtered out %d auth-required servers", filteredCount)
 					if formatter.Format() == output.FormatText {
 						formatter.Info(fmt.Sprintf("Filtered out %d auth-required servers", filteredCount))
 					}
@@ -460,6 +458,7 @@ Examples:
 			// Build the aggregated summary from all collected records.
 			bulkSummary := mcpscan.BuildBulkScanSummary(records)
 			bulkSummary.Filtered = filteredCount
+			bulkSummary.TotalServers += filteredCount // restore pre-filter universe count
 
 			if formatter.Format() == output.FormatText {
 				if !summaryOnly {

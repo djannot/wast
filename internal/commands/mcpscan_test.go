@@ -473,6 +473,43 @@ func TestMCPScanCmd_OpenOnly_NoAuthServers(t *testing.T) {
 	}
 }
 
+// TestMCPScanCmd_OpenOnly_AllServersFiltered verifies the early-exit path when
+// every server in the targets file is auth-required and --open-only is set.
+func TestMCPScanCmd_OpenOnly_AllServersFiltered(t *testing.T) {
+	// Two auth-required servers — both should be filtered, leaving nothing to scan.
+	authURL1 := "http://127.0.0.1:1"
+	authURL2 := "http://127.0.0.1:2"
+
+	targetsFile := buildTargetsFileWithAuth(t, nil, []string{authURL1, authURL2})
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--open-only",
+		"--timeout", "5",
+	})
+	err := cmd.Execute()
+
+	// Command should not return an error — it exits cleanly with an info message.
+	if err != nil {
+		t.Errorf("Expected nil error when all servers filtered, got: %v", err)
+	}
+
+	got := buf.String()
+
+	// Should surface how many servers were filtered.
+	if !strings.Contains(got, "Filtered out 2 auth-required") {
+		t.Errorf("Expected 'Filtered out 2 auth-required' in output, got:\n%s", got)
+	}
+
+	// Should print the no-servers-remaining message.
+	if !strings.Contains(got, "No MCP servers to scan after filtering") {
+		t.Errorf("Expected 'No MCP servers to scan after filtering' in output, got:\n%s", got)
+	}
+}
+
 // TestIsUnreachableError verifies heuristic error classification.
 func TestIsUnreachableError(t *testing.T) {
 	tests := []struct {
