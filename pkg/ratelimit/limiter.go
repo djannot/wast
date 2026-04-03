@@ -112,6 +112,7 @@ func (l *TokenBucketLimiter) Allow() bool {
 }
 
 // DelayLimiter implements a simple delay-based rate limiter.
+// TODO: expose via a future --rate-limit-delay-ms CLI flag in mcpscan scan.
 type DelayLimiter struct {
 	delay     time.Duration
 	lastTime  time.Time
@@ -132,21 +133,29 @@ func NewDelayLimiter(delayMs int) Limiter {
 }
 
 // Wait blocks until the delay has passed since the last request.
+// The mutex is released before any sleep so that context cancellation is
+// observable by other goroutines that are concurrently calling Wait.
 func (l *DelayLimiter) Wait(ctx context.Context) error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
-	// First call doesn't wait
+	// First call doesn't wait.
 	if l.firstCall {
 		l.firstCall = false
 		l.lastTime = time.Now()
+		l.mu.Unlock()
 		return nil
 	}
 
-	// Calculate how long to wait
+	// Calculate how long to wait, then release the lock before sleeping so
+	// that other goroutines blocked on l.mu.Lock() can observe ctx.Done().
 	elapsed := time.Since(l.lastTime)
+	var waitTime time.Duration
 	if elapsed < l.delay {
-		waitTime := l.delay - elapsed
+		waitTime = l.delay - elapsed
+	}
+	l.mu.Unlock()
+
+	if waitTime > 0 {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -154,7 +163,9 @@ func (l *DelayLimiter) Wait(ctx context.Context) error {
 		}
 	}
 
+	l.mu.Lock()
 	l.lastTime = time.Now()
+	l.mu.Unlock()
 	return nil
 }
 
@@ -180,8 +191,12 @@ func (l *DelayLimiter) Allow() bool {
 // NoopLimiter is a rate limiter that does nothing (allows all requests).
 type NoopLimiter struct{}
 
-// Wait always returns immediately.
+// Wait returns immediately, but respects context cancellation so callers can
+// use it as a reliable early-out point even when rate limiting is disabled.
 func (l *NoopLimiter) Wait(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -191,6 +206,9 @@ func (l *NoopLimiter) Allow() bool {
 }
 
 // Config holds rate limiting configuration.
+// TODO: wire this into mcpscan scan via a --rate-limit-config flag or YAML
+// config file when more complex rate-limiting scenarios (e.g. delay + RPS)
+// are needed.
 type Config struct {
 	// RequestsPerSecond limits the number of requests per second.
 	// Set to 0 to disable rate limiting.
