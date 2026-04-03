@@ -11,6 +11,7 @@ import (
 
 	"github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/output"
+	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -257,6 +258,7 @@ pyproject.toml for outdated MCP server dependencies:
 	var concurrency int
 	var summaryOnly bool
 	var openOnly bool
+	var rateLimit float64
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -378,6 +380,8 @@ Examples:
 				concurrency = 1
 			}
 
+			limiter := ratelimit.NewLimiter(rateLimit)
+
 			var (
 				mu      sync.Mutex
 				records []mcpscan.BulkScanRecord
@@ -419,6 +423,10 @@ Examples:
 						formatter.Info(fmt.Sprintf("  [%d/%d] Scanning %s...", i+1, len(servers), name))
 					}
 					mu.Unlock()
+
+					if err := limiter.Wait(gctx); err != nil {
+						return err
+					}
 
 					cfg := mcpscan.ScanConfig{
 						Transport:  transport,
@@ -505,6 +513,8 @@ Examples:
 		"Print only the aggregated summary; suppress per-server detail (useful for large fleets)")
 	scanCmd.Flags().BoolVar(&openOnly, "open-only", false,
 		"Skip servers that require authentication (filter out auth-required servers before scanning)")
+	scanCmd.Flags().Float64Var(&rateLimit, "rate-limit", 0,
+		"Maximum requests per second across all goroutines (0 = unlimited)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 

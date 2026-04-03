@@ -510,6 +510,102 @@ func TestMCPScanCmd_OpenOnly_AllServersFiltered(t *testing.T) {
 	}
 }
 
+// TestMCPScanCmd_RateLimitFlagRegistered verifies the --rate-limit flag is
+// present on the scan subcommand with the correct default and documentation.
+func TestMCPScanCmd_RateLimitFlagRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+
+	var scanSubcmd *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "scan" {
+			scanSubcmd = sub
+			break
+		}
+	}
+	if scanSubcmd == nil {
+		t.Fatal("scan subcommand not found")
+	}
+
+	flag := scanSubcmd.Flag("rate-limit")
+	if flag == nil {
+		t.Fatal("Expected 'rate-limit' flag to be registered on 'scan' subcommand")
+	}
+	if flag.DefValue != "0" {
+		t.Errorf("Expected default rate-limit=0, got %q", flag.DefValue)
+	}
+	if !strings.Contains(strings.ToLower(flag.Usage), "unlimited") {
+		t.Errorf("Expected rate-limit flag usage to mention 'unlimited', got: %s", flag.Usage)
+	}
+}
+
+// TestMCPScanCmd_RateLimit_ZeroPreservesCurrentBehavior verifies that
+// --rate-limit 0 (default) completes successfully without throttling.
+func TestMCPScanCmd_RateLimit_ZeroPreservesCurrentBehavior(t *testing.T) {
+	const numServers = 3
+	urls := make([]string, numServers)
+	for i := range urls {
+		u, _ := startMockMCPServer(t, 0)
+		urls[i] = u
+	}
+	targetsFile := buildTargetsFile(t, urls)
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--rate-limit", "0",
+		"--timeout", "5",
+	})
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("Expected nil error with --rate-limit 0, got: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Bulk Scan Summary") {
+		t.Errorf("Expected 'Bulk Scan Summary' in output, got:\n%s", got)
+	}
+}
+
+// TestMCPScanCmd_RateLimit_ThrottlesRequests verifies that a positive
+// --rate-limit value doesn't prevent servers from being scanned and still
+// produces a bulk summary.
+func TestMCPScanCmd_RateLimit_ThrottlesRequests(t *testing.T) {
+	const numServers = 2
+	urls := make([]string, numServers)
+	for i := range urls {
+		u, _ := startMockMCPServer(t, 0)
+		urls[i] = u
+	}
+	targetsFile := buildTargetsFile(t, urls)
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--rate-limit", "100", // 100 rps — fast enough not to slow the test
+		"--timeout", "5",
+	})
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("Expected nil error with --rate-limit 100, got: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Bulk Scan Summary") {
+		t.Errorf("Expected 'Bulk Scan Summary' in output with rate limiting enabled, got:\n%s", got)
+	}
+	// Both servers should still be scanned.
+	for _, u := range urls {
+		if !strings.Contains(got, u) {
+			t.Errorf("Expected server %s to appear in output, got:\n%s", u, got)
+		}
+	}
+}
+
 // TestIsUnreachableError verifies heuristic error classification.
 func TestIsUnreachableError(t *testing.T) {
 	tests := []struct {
