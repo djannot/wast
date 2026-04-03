@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/scanner"
 )
 
@@ -936,5 +937,389 @@ func TestEmptyScanResults(t *testing.T) {
 
 	if len(sarif.Runs[0].Results) != 0 {
 		t.Errorf("Expected 0 results, got %d", len(sarif.Runs[0].Results))
+	}
+}
+
+// ── MCP scan SARIF tests ────────────────────────────────────────────────────
+
+func TestMCPSARIF_SingleResult(t *testing.T) {
+	result := &mcpscan.MCPScanResult{
+		Server: mcpscan.MCPServerInfo{
+			Transport: "sse",
+			Target:    "https://mcp.example.com/sse",
+			Name:      "example-mcp",
+		},
+		Findings: []mcpscan.MCPFinding{
+			{
+				Tool:        "read_file",
+				Parameter:   "path",
+				Category:    mcpscan.CategoryInjection,
+				Severity:    mcpscan.SeverityHigh,
+				Title:       "Path traversal via parameter",
+				Description: "The 'path' parameter is passed unsanitized to the file system.",
+				Evidence:    "../../../../etc/passwd returned 200",
+				Remediation: "Validate and restrict path inputs to an allowlist.",
+			},
+			{
+				Tool:        "execute",
+				Category:    mcpscan.CategoryPermissions,
+				Severity:    mcpscan.SeverityCritical,
+				Title:       "Dangerous shell execution capability",
+				Description: "The tool exposes unrestricted OS command execution.",
+				Remediation: "Restrict commands to an allowlist.",
+			},
+		},
+		Summary: mcpscan.MCPScanSummary{
+			TotalFindings: 2,
+			BySeverity:    map[string]int{"critical": 1, "high": 1},
+		},
+	}
+
+	var buf bytes.Buffer
+	formatter := NewFormatter("sarif", false, false)
+	formatter.SetWriter(&buf)
+
+	if err := formatter.Output(CommandResult{Success: true, Command: "mcpscan", Data: result}); err != nil {
+		t.Fatalf("outputSARIF error: %v", err)
+	}
+
+	var sarif SARIFReport
+	if err := json.Unmarshal(buf.Bytes(), &sarif); err != nil {
+		t.Fatalf("Failed to parse SARIF output: %v", err)
+	}
+
+	if sarif.Version != "2.1.0" {
+		t.Errorf("Expected SARIF version 2.1.0, got %s", sarif.Version)
+	}
+	if len(sarif.Runs) != 1 {
+		t.Fatalf("Expected 1 run, got %d", len(sarif.Runs))
+	}
+
+	run := sarif.Runs[0]
+	if run.Tool.Driver.Name != "WAST" {
+		t.Errorf("Expected tool name WAST, got %s", run.Tool.Driver.Name)
+	}
+	if len(run.Results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(run.Results))
+	}
+
+	// Check injection finding
+	var injResult, permResult *SARIFResult
+	for i := range run.Results {
+		switch run.Results[i].RuleID {
+		case RuleIDMCPInjection:
+			injResult = &run.Results[i]
+		case RuleIDMCPPermissions:
+			permResult = &run.Results[i]
+		}
+	}
+
+	if injResult == nil {
+		t.Fatal("Expected injection finding not found")
+	}
+	if injResult.Level != "error" {
+		t.Errorf("Expected level 'error' for high severity, got %s", injResult.Level)
+	}
+	if !strings.Contains(injResult.Message.Text, "read_file") {
+		t.Errorf("Expected message to contain tool name 'read_file', got: %s", injResult.Message.Text)
+	}
+	if len(injResult.Locations) != 1 {
+		t.Fatalf("Expected 1 location, got %d", len(injResult.Locations))
+	}
+	if injResult.Locations[0].PhysicalLocation.ArtifactLocation.URI != "https://mcp.example.com/sse" {
+		t.Errorf("Expected server target URI, got %s", injResult.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+	}
+	if injResult.Properties["tool"] != "read_file" {
+		t.Errorf("Expected tool property 'read_file', got %v", injResult.Properties["tool"])
+	}
+	if injResult.Properties["parameter"] != "path" {
+		t.Errorf("Expected parameter property 'path', got %v", injResult.Properties["parameter"])
+	}
+
+	if permResult == nil {
+		t.Fatal("Expected permissions finding not found")
+	}
+	if permResult.Level != "error" {
+		t.Errorf("Expected level 'error' for critical severity, got %s", permResult.Level)
+	}
+}
+
+func TestMCPSARIF_AllSeverityLevels(t *testing.T) {
+	tests := []struct {
+		severity      mcpscan.Severity
+		expectedLevel string
+	}{
+		{mcpscan.SeverityCritical, "error"},
+		{mcpscan.SeverityHigh, "error"},
+		{mcpscan.SeverityMedium, "warning"},
+		{mcpscan.SeverityLow, "note"},
+		{mcpscan.SeverityInfo, "note"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.severity), func(t *testing.T) {
+			got := mapMCPSeverityToLevel(tt.severity)
+			if got != tt.expectedLevel {
+				t.Errorf("mapMCPSeverityToLevel(%s) = %s, want %s", tt.severity, got, tt.expectedLevel)
+			}
+		})
+	}
+}
+
+func TestMCPSARIF_CategoryToRuleID(t *testing.T) {
+	tests := []struct {
+		category       mcpscan.CheckCategory
+		expectedRuleID string
+	}{
+		{mcpscan.CategorySchema, RuleIDMCPSchema},
+		{mcpscan.CategoryPrompt, RuleIDMCPPrompt},
+		{mcpscan.CategoryPermissions, RuleIDMCPPermissions},
+		{mcpscan.CategoryShadowing, RuleIDMCPShadowing},
+		{mcpscan.CategoryInjection, RuleIDMCPInjection},
+		{mcpscan.CategoryExposure, RuleIDMCPExposure},
+		{mcpscan.CategorySSRF, RuleIDMCPSSRF},
+		{mcpscan.CategoryAuth, RuleIDMCPAuth},
+		{mcpscan.CategoryDependency, RuleIDMCPDependency},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.category), func(t *testing.T) {
+			got := getMCPRuleIDForCategory(tt.category)
+			if got != tt.expectedRuleID {
+				t.Errorf("getMCPRuleIDForCategory(%s) = %s, want %s", tt.category, got, tt.expectedRuleID)
+			}
+		})
+	}
+}
+
+func TestMCPSARIF_BulkScanResult(t *testing.T) {
+	bulk := mcpscan.BulkScanResult{
+		BulkSummary: mcpscan.BulkScanSummary{
+			TotalServers:  2,
+			Scanned:       2,
+			TotalFindings: 2,
+		},
+		Results: []*mcpscan.MCPScanResult{
+			{
+				Server: mcpscan.MCPServerInfo{
+					Transport: "sse",
+					Target:    "https://server1.example.com/sse",
+					Name:      "server1",
+				},
+				Findings: []mcpscan.MCPFinding{
+					{
+						Category:    mcpscan.CategoryPrompt,
+						Severity:    mcpscan.SeverityHigh,
+						Title:       "Prompt injection in tool description",
+						Description: "Hidden AI instructions detected.",
+						Evidence:    "Ignore previous instructions",
+					},
+				},
+				Summary: mcpscan.MCPScanSummary{TotalFindings: 1},
+			},
+			{
+				Server: mcpscan.MCPServerInfo{
+					Transport: "sse",
+					Target:    "https://server2.example.com/sse",
+					Name:      "server2",
+				},
+				Findings: []mcpscan.MCPFinding{
+					{
+						Category:    mcpscan.CategorySSRF,
+						Severity:    mcpscan.SeverityMedium,
+						Title:       "SSRF via url parameter",
+						Description: "URL parameter accepts internal targets.",
+					},
+				},
+				Summary: mcpscan.MCPScanSummary{TotalFindings: 1},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	formatter := NewFormatter("sarif", false, false)
+	formatter.SetWriter(&buf)
+
+	if err := formatter.Output(CommandResult{Success: true, Command: "mcpscan scan", Data: bulk}); err != nil {
+		t.Fatalf("outputSARIF error: %v", err)
+	}
+
+	var sarif SARIFReport
+	if err := json.Unmarshal(buf.Bytes(), &sarif); err != nil {
+		t.Fatalf("Failed to parse SARIF output: %v", err)
+	}
+
+	// Each server should produce its own run.
+	if len(sarif.Runs) != 2 {
+		t.Fatalf("Expected 2 runs (one per server), got %d", len(sarif.Runs))
+	}
+
+	// Run 0: server1 — prompt injection
+	run0 := sarif.Runs[0]
+	if len(run0.Results) != 1 {
+		t.Fatalf("Expected 1 result in run 0, got %d", len(run0.Results))
+	}
+	if run0.Results[0].RuleID != RuleIDMCPPrompt {
+		t.Errorf("Expected rule %s in run 0, got %s", RuleIDMCPPrompt, run0.Results[0].RuleID)
+	}
+	if run0.Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI != "https://server1.example.com/sse" {
+		t.Errorf("Wrong server URI in run 0")
+	}
+
+	// Run 1: server2 — SSRF
+	run1 := sarif.Runs[1]
+	if len(run1.Results) != 1 {
+		t.Fatalf("Expected 1 result in run 1, got %d", len(run1.Results))
+	}
+	if run1.Results[0].RuleID != RuleIDMCPSSRF {
+		t.Errorf("Expected rule %s in run 1, got %s", RuleIDMCPSSRF, run1.Results[0].RuleID)
+	}
+	if run1.Results[0].Level != "warning" {
+		t.Errorf("Expected warning level for medium severity, got %s", run1.Results[0].Level)
+	}
+}
+
+func TestMCPSARIF_EmptyBulkResult(t *testing.T) {
+	bulk := mcpscan.BulkScanResult{
+		BulkSummary: mcpscan.BulkScanSummary{TotalServers: 0},
+		Results:     nil,
+	}
+
+	var buf bytes.Buffer
+	formatter := NewFormatter("sarif", false, false)
+	formatter.SetWriter(&buf)
+
+	if err := formatter.Output(CommandResult{Success: true, Command: "mcpscan scan", Data: bulk}); err != nil {
+		t.Fatalf("outputSARIF error: %v", err)
+	}
+
+	var sarif SARIFReport
+	if err := json.Unmarshal(buf.Bytes(), &sarif); err != nil {
+		t.Fatalf("Failed to parse SARIF output: %v", err)
+	}
+
+	if len(sarif.Runs) != 1 {
+		t.Errorf("Expected 1 run even for empty bulk result, got %d", len(sarif.Runs))
+	}
+	if len(sarif.Runs[0].Results) != 0 {
+		t.Errorf("Expected 0 results, got %d", len(sarif.Runs[0].Results))
+	}
+}
+
+func TestMCPSARIF_NoFindingsResult(t *testing.T) {
+	result := &mcpscan.MCPScanResult{
+		Server: mcpscan.MCPServerInfo{
+			Transport: "http",
+			Target:    "https://clean.example.com/mcp",
+			Name:      "clean-server",
+		},
+		Findings: []mcpscan.MCPFinding{},
+		Summary:  mcpscan.MCPScanSummary{TotalFindings: 0},
+	}
+
+	var buf bytes.Buffer
+	formatter := NewFormatter("sarif", false, false)
+	formatter.SetWriter(&buf)
+
+	if err := formatter.Output(CommandResult{Success: true, Command: "mcpscan", Data: result}); err != nil {
+		t.Fatalf("outputSARIF error: %v", err)
+	}
+
+	var sarif SARIFReport
+	if err := json.Unmarshal(buf.Bytes(), &sarif); err != nil {
+		t.Fatalf("Failed to parse SARIF output: %v", err)
+	}
+
+	if len(sarif.Runs) != 1 {
+		t.Errorf("Expected 1 run, got %d", len(sarif.Runs))
+	}
+	if len(sarif.Runs[0].Results) != 0 {
+		t.Errorf("Expected 0 results for clean scan, got %d", len(sarif.Runs[0].Results))
+	}
+}
+
+func TestMCPSARIF_RulesDefinition(t *testing.T) {
+	rules := buildMCPRules()
+
+	if len(rules) != 9 {
+		t.Errorf("Expected 9 MCP rules, got %d", len(rules))
+	}
+
+	expectedIDs := []string{
+		RuleIDMCPSchema,
+		RuleIDMCPPrompt,
+		RuleIDMCPPermissions,
+		RuleIDMCPShadowing,
+		RuleIDMCPInjection,
+		RuleIDMCPExposure,
+		RuleIDMCPSSRF,
+		RuleIDMCPAuth,
+		RuleIDMCPDependency,
+	}
+
+	ruleIDsFound := make(map[string]bool)
+	for _, rule := range rules {
+		ruleIDsFound[rule.ID] = true
+
+		if rule.ID == "" {
+			t.Error("MCP rule missing ID")
+		}
+		if rule.ShortDescription.Text == "" {
+			t.Errorf("MCP rule %s missing short description", rule.ID)
+		}
+		if rule.FullDescription.Text == "" {
+			t.Errorf("MCP rule %s missing full description", rule.ID)
+		}
+		if rule.Help.Text == "" {
+			t.Errorf("MCP rule %s missing help text", rule.ID)
+		}
+	}
+
+	for _, id := range expectedIDs {
+		if !ruleIDsFound[id] {
+			t.Errorf("Expected MCP rule ID %s not found", id)
+		}
+	}
+}
+
+func TestMCPSARIF_DirectStructWithoutCommandResult(t *testing.T) {
+	// Test that MCPScanResult passed directly (not wrapped in CommandResult) works.
+	result := &mcpscan.MCPScanResult{
+		Server: mcpscan.MCPServerInfo{
+			Transport: "stdio",
+			Target:    "npx my-mcp-server",
+		},
+		Findings: []mcpscan.MCPFinding{
+			{
+				Category:    mcpscan.CategoryAuth,
+				Severity:    mcpscan.SeverityHigh,
+				Title:       "Unauthenticated access allowed",
+				Description: "Server accepts connections without authentication.",
+			},
+		},
+		Summary: mcpscan.MCPScanSummary{TotalFindings: 1},
+	}
+
+	var buf bytes.Buffer
+	formatter := NewFormatter("sarif", false, false)
+	formatter.SetWriter(&buf)
+
+	if err := formatter.Output(result); err != nil {
+		t.Fatalf("outputSARIF error: %v", err)
+	}
+
+	var sarif SARIFReport
+	if err := json.Unmarshal(buf.Bytes(), &sarif); err != nil {
+		t.Fatalf("Failed to parse SARIF output: %v", err)
+	}
+
+	if len(sarif.Runs) != 1 {
+		t.Fatalf("Expected 1 run, got %d", len(sarif.Runs))
+	}
+	if len(sarif.Runs[0].Results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(sarif.Runs[0].Results))
+	}
+	if sarif.Runs[0].Results[0].RuleID != RuleIDMCPAuth {
+		t.Errorf("Expected rule %s, got %s", RuleIDMCPAuth, sarif.Runs[0].Results[0].RuleID)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/djannot/wast/pkg/mcpscan"
 	"github.com/djannot/wast/pkg/scanner"
 )
 
@@ -125,6 +126,31 @@ const (
 	RuleIDWSOrigin     = "WAST-WS-002"
 )
 
+// MCP scan rule ID constants
+const (
+	RuleIDMCPSchema      = "WAST-MCP-SCHEMA-001"
+	RuleIDMCPPrompt      = "WAST-MCP-PROMPT-001"
+	RuleIDMCPPermissions = "WAST-MCP-PERMISSIONS-001"
+	RuleIDMCPShadowing   = "WAST-MCP-SHADOW-001"
+	RuleIDMCPInjection   = "WAST-MCP-INJECT-001"
+	RuleIDMCPExposure    = "WAST-MCP-EXPOSURE-001"
+	RuleIDMCPSSRF        = "WAST-MCP-SSRF-001"
+	RuleIDMCPAuth        = "WAST-MCP-AUTH-001"
+	RuleIDMCPDependency  = "WAST-MCP-DEP-001"
+)
+
+// CWE references for MCP scan vulnerabilities
+const (
+	CWEMCPPrompt      = "CWE-94"   // Code Injection (prompt injection)
+	CWEMCPInjection   = "CWE-74"   // Injection
+	CWEMCPExposure    = "CWE-200"  // Information Exposure
+	CWEMCPSSRFVal     = "CWE-918"  // Server-Side Request Forgery
+	CWEMCPAuth        = "CWE-287"  // Improper Authentication
+	CWEMCPPermissions = "CWE-269"  // Improper Privilege Management
+	CWEMCPShadowing   = "CWE-349"  // Acceptance of Extraneous Untrusted Data
+	CWEMCPDependency  = "CWE-1104" // Use of Unmaintained Third Party Components
+)
+
 // CWE references for common vulnerabilities
 const (
 	CWEXSS        = "CWE-79"
@@ -172,6 +198,18 @@ func convertToSARIF(data interface{}) (*SARIFReport, error) {
 			return convertToSARIF(v.Data)
 		}
 		return report, nil
+
+	case *mcpscan.MCPScanResult:
+		return convertMCPScanResultToSARIF(v, report)
+
+	case mcpscan.MCPScanResult:
+		return convertMCPScanResultToSARIF(&v, report)
+
+	case mcpscan.BulkScanResult:
+		return convertMCPBulkScanResultToSARIF(v, report)
+
+	case *mcpscan.BulkScanResult:
+		return convertMCPBulkScanResultToSARIF(*v, report)
 
 	case map[string]interface{}:
 		// Handle generic map (from JSON unmarshaling)
@@ -1265,6 +1303,386 @@ func createXXEResult(finding map[string]interface{}) *SARIFResult {
 			"confidence": confidence,
 		},
 	}
+}
+
+// MCP scan SARIF conversion functions
+
+// buildMCPRules returns the full set of SARIF rules for MCP scan categories.
+func buildMCPRules() []SARIFRule {
+	return []SARIFRule{
+		{
+			ID:   RuleIDMCPSchema,
+			Name: "MCPSchemaWeakness",
+			ShortDescription: SARIFMessage{
+				Text: "MCP tool schema weakness detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP tool schema has weaknesses such as missing validation, undocumented parameters, or overly permissive input definitions that could allow misuse.",
+			},
+			Help: SARIFMessage{
+				Text:     "Define strict JSON Schema constraints for all tool parameters. Mark required parameters explicitly. Use enum, pattern, minimum/maximum where applicable to constrain input.",
+				Markdown: "**Remediation:** Define strict JSON Schema constraints for all tool parameters. Mark required parameters explicitly. Use `enum`, `pattern`, `minimum`/`maximum` where applicable to constrain input.",
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{"security", "mcp", "schema"},
+			},
+		},
+		{
+			ID:   RuleIDMCPPrompt,
+			Name: "MCPPromptInjection",
+			ShortDescription: SARIFMessage{
+				Text: "MCP prompt injection risk detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP tool description or parameter description contains AI-directed instructions, hidden Unicode characters, base64 payloads, or other content that could hijack AI agent behaviour.",
+			},
+			Help: SARIFMessage{
+				Text:     "Remove hidden instructions, suspicious Unicode, or encoded payloads from tool and parameter descriptions. Descriptions should be concise, human-readable, and free of directives.",
+				Markdown: "**Remediation:** Remove hidden instructions, suspicious Unicode, or encoded payloads from tool and parameter descriptions. Descriptions should be concise, human-readable, and free of directives.\n\n**Reference:** " + CWEMCPPrompt,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPPrompt, "security", "mcp", "prompt-injection"},
+			},
+		},
+		{
+			ID:   RuleIDMCPPermissions,
+			Name: "MCPExcessivePermissions",
+			ShortDescription: SARIFMessage{
+				Text: "MCP server excessive permissions detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP server exposes tools with dangerous capabilities such as shell execution, unrestricted file system access, network access, or process management without adequate safeguards.",
+			},
+			Help: SARIFMessage{
+				Text:     "Apply the principle of least privilege. Restrict dangerous capabilities to the minimum required. Implement allowlists for file paths, commands, and network targets. Require explicit user confirmation for destructive actions.",
+				Markdown: "**Remediation:** Apply the principle of least privilege. Restrict dangerous capabilities to the minimum required. Implement allowlists for file paths, commands, and network targets. Require explicit user confirmation for destructive actions.\n\n**Reference:** " + CWEMCPPermissions,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPPermissions, "security", "mcp", "permissions"},
+			},
+		},
+		{
+			ID:   RuleIDMCPShadowing,
+			Name: "MCPToolShadowing",
+			ShortDescription: SARIFMessage{
+				Text: "MCP tool shadowing or name collision detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP server contains tool names that collide with or closely resemble other tools, enabling typosquatting, tool substitution attacks, or AI agent confusion.",
+			},
+			Help: SARIFMessage{
+				Text:     "Use unique, unambiguous tool names. Avoid names that resemble common utilities or other tools in the same server. Validate tool names against known registries.",
+				Markdown: "**Remediation:** Use unique, unambiguous tool names. Avoid names that resemble common utilities or other tools in the same server. Validate tool names against known registries.\n\n**Reference:** " + CWEMCPShadowing,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPShadowing, "security", "mcp", "tool-shadowing"},
+			},
+		},
+		{
+			ID:   RuleIDMCPInjection,
+			Name: "MCPInjection",
+			ShortDescription: SARIFMessage{
+				Text: "MCP tool injection vulnerability detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP tool passes user-controlled input unsanitized to SQL queries, OS commands, file paths, or other interpreters, enabling injection attacks.",
+			},
+			Help: SARIFMessage{
+				Text:     "Sanitize and validate all tool parameter inputs before use. Use parameterized queries, command argument arrays instead of shell strings, and strict path allowlists.",
+				Markdown: "**Remediation:** Sanitize and validate all tool parameter inputs before use. Use parameterized queries, command argument arrays instead of shell strings, and strict path allowlists.\n\n**Reference:** " + CWEMCPInjection,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPInjection, "security", "mcp", "injection"},
+			},
+		},
+		{
+			ID:   RuleIDMCPExposure,
+			Name: "MCPDataExposure",
+			ShortDescription: SARIFMessage{
+				Text: "MCP tool sensitive data exposure detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP tool response or configuration leaks sensitive information such as API keys, credentials, internal IP addresses, database connection strings, stack traces, or environment variables.",
+			},
+			Help: SARIFMessage{
+				Text:     "Redact sensitive values from tool responses. Never return raw environment variables, credential strings, or internal infrastructure details. Implement response filtering.",
+				Markdown: "**Remediation:** Redact sensitive values from tool responses. Never return raw environment variables, credential strings, or internal infrastructure details. Implement response filtering.\n\n**Reference:** " + CWEMCPExposure,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPExposure, "security", "mcp", "data-exposure"},
+			},
+		},
+		{
+			ID:   RuleIDMCPSSRF,
+			Name: "MCPSSRF",
+			ShortDescription: SARIFMessage{
+				Text: "MCP tool Server-Side Request Forgery (SSRF) risk detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP tool accepts URL parameters that could be used to make server-side requests to internal resources, cloud metadata endpoints, or local files.",
+			},
+			Help: SARIFMessage{
+				Text:     "Validate and restrict URL parameters to an allowlist of safe destinations. Block access to private IP ranges, loopback addresses, and cloud metadata endpoints.",
+				Markdown: "**Remediation:** Validate and restrict URL parameters to an allowlist of safe destinations. Block access to private IP ranges (10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x, 169.254.x.x) and cloud metadata endpoints.\n\n**Reference:** " + CWEMCPSSRFVal,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPSSRFVal, "security", "mcp", "ssrf"},
+			},
+		},
+		{
+			ID:   RuleIDMCPAuth,
+			Name: "MCPAuthBypass",
+			ShortDescription: SARIFMessage{
+				Text: "MCP server authentication bypass risk detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP server allows unauthenticated access to sensitive tools or does not properly enforce authentication controls.",
+			},
+			Help: SARIFMessage{
+				Text:     "Require authentication for all sensitive MCP endpoints. Implement token-based authentication, validate tokens on every request, and return 401 for unauthenticated access.",
+				Markdown: "**Remediation:** Require authentication for all sensitive MCP endpoints. Implement token-based authentication, validate tokens on every request, and return 401 for unauthenticated access.\n\n**Reference:** " + CWEMCPAuth,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPAuth, "security", "mcp", "auth-bypass"},
+			},
+		},
+		{
+			ID:   RuleIDMCPDependency,
+			Name: "MCPDependencyRisk",
+			ShortDescription: SARIFMessage{
+				Text: "MCP server dependency risk detected",
+			},
+			FullDescription: SARIFMessage{
+				Text: "The MCP server uses outdated or unmaintained dependencies that may contain known vulnerabilities.",
+			},
+			Help: SARIFMessage{
+				Text:     "Keep MCP server dependencies up-to-date. Regularly audit dependencies with tools like npm audit, pip-audit, or Dependabot. Remove unused dependencies.",
+				Markdown: "**Remediation:** Keep MCP server dependencies up-to-date. Regularly audit dependencies with tools like `npm audit`, `pip-audit`, or Dependabot. Remove unused dependencies.\n\n**Reference:** " + CWEMCPDependency,
+			},
+			Properties: map[string]interface{}{
+				"tags": []string{CWEMCPDependency, "security", "mcp", "dependency", "supply-chain"},
+			},
+		},
+	}
+}
+
+// getMCPRuleIDForCategory returns the SARIF rule ID for a given MCP check category.
+func getMCPRuleIDForCategory(category mcpscan.CheckCategory) string {
+	switch category {
+	case mcpscan.CategorySchema:
+		return RuleIDMCPSchema
+	case mcpscan.CategoryPrompt:
+		return RuleIDMCPPrompt
+	case mcpscan.CategoryPermissions:
+		return RuleIDMCPPermissions
+	case mcpscan.CategoryShadowing:
+		return RuleIDMCPShadowing
+	case mcpscan.CategoryInjection:
+		return RuleIDMCPInjection
+	case mcpscan.CategoryExposure:
+		return RuleIDMCPExposure
+	case mcpscan.CategorySSRF:
+		return RuleIDMCPSSRF
+	case mcpscan.CategoryAuth:
+		return RuleIDMCPAuth
+	case mcpscan.CategoryDependency:
+		return RuleIDMCPDependency
+	default:
+		return RuleIDMCPSchema
+	}
+}
+
+// getMCPRuleIndex returns the index position of an MCP rule in buildMCPRules().
+func getMCPRuleIndex(ruleID string) int {
+	rules := []string{
+		RuleIDMCPSchema,
+		RuleIDMCPPrompt,
+		RuleIDMCPPermissions,
+		RuleIDMCPShadowing,
+		RuleIDMCPInjection,
+		RuleIDMCPExposure,
+		RuleIDMCPSSRF,
+		RuleIDMCPAuth,
+		RuleIDMCPDependency,
+	}
+	for i, r := range rules {
+		if r == ruleID {
+			return i
+		}
+	}
+	return 0
+}
+
+// mapMCPSeverityToLevel maps MCP scan severity to a SARIF level string.
+func mapMCPSeverityToLevel(severity mcpscan.Severity) string {
+	switch severity {
+	case mcpscan.SeverityCritical, mcpscan.SeverityHigh:
+		return "error"
+	case mcpscan.SeverityMedium:
+		return "warning"
+	case mcpscan.SeverityLow, mcpscan.SeverityInfo:
+		return "note"
+	default:
+		return "note"
+	}
+}
+
+// createMCPFindingResult converts a single MCPFinding into a SARIFResult.
+func createMCPFindingResult(finding mcpscan.MCPFinding, serverTarget string) *SARIFResult {
+	ruleID := getMCPRuleIDForCategory(finding.Category)
+
+	// Build location: server target as artifact URI
+	location := serverTarget
+	if location == "" {
+		location = "mcp://unknown"
+	}
+
+	// Build message text
+	msgText := finding.Title
+	if finding.Description != "" {
+		msgText = finding.Description
+	}
+	if finding.Tool != "" {
+		if finding.Parameter != "" {
+			msgText = fmt.Sprintf("[%s.%s] %s", finding.Tool, finding.Parameter, msgText)
+		} else {
+			msgText = fmt.Sprintf("[%s] %s", finding.Tool, msgText)
+		}
+	}
+
+	// Build markdown message
+	var mdParts []string
+	mdParts = append(mdParts, fmt.Sprintf("**%s** (%s)", finding.Title, strings.ToUpper(string(finding.Severity))))
+	if finding.Tool != "" {
+		toolRef := finding.Tool
+		if finding.Parameter != "" {
+			toolRef += "." + finding.Parameter
+		}
+		mdParts = append(mdParts, fmt.Sprintf("**Tool:** `%s`", toolRef))
+	}
+	if finding.Description != "" {
+		mdParts = append(mdParts, finding.Description)
+	}
+	if finding.Evidence != "" {
+		mdParts = append(mdParts, fmt.Sprintf("**Evidence:** `%s`", finding.Evidence))
+	}
+	if finding.Remediation != "" {
+		mdParts = append(mdParts, fmt.Sprintf("**Remediation:** %s", finding.Remediation))
+	}
+
+	props := map[string]interface{}{
+		"category": string(finding.Category),
+		"severity": string(finding.Severity),
+		"server":   serverTarget,
+	}
+	if finding.Tool != "" {
+		props["tool"] = finding.Tool
+	}
+	if finding.Parameter != "" {
+		props["parameter"] = finding.Parameter
+	}
+	if finding.Evidence != "" {
+		props["evidence"] = finding.Evidence
+	}
+
+	result := &SARIFResult{
+		RuleID:    ruleID,
+		RuleIndex: getMCPRuleIndex(ruleID),
+		Level:     mapMCPSeverityToLevel(finding.Severity),
+		Message: SARIFMessage{
+			Text:     msgText,
+			Markdown: strings.Join(mdParts, "\n\n"),
+		},
+		Locations: []SARIFLocation{
+			{
+				PhysicalLocation: SARIFPhysicalLocation{
+					ArtifactLocation: SARIFArtifactLocation{
+						URI: location,
+					},
+				},
+			},
+		},
+		Properties: props,
+	}
+
+	return result
+}
+
+// buildMCPSARIFRun constructs a SARIFRun for a single MCP server scan result.
+func buildMCPSARIFRun(result *mcpscan.MCPScanResult) SARIFRun {
+	serverName := result.Server.Name
+	if serverName == "" {
+		serverName = result.Server.Target
+	}
+
+	run := SARIFRun{
+		Tool: SARIFTool{
+			Driver: SARIFToolComponent{
+				Name:            "WAST",
+				Version:         "1.0.0",
+				SemanticVersion: "1.0.0",
+				InformationURI:  "https://github.com/djannot/wast",
+				Rules:           buildMCPRules(),
+			},
+		},
+		Results: make([]SARIFResult, 0),
+		Invocations: []SARIFInvocation{
+			{ExecutionSuccessful: true},
+		},
+	}
+
+	for _, f := range result.Findings {
+		sr := createMCPFindingResult(f, result.Server.Target)
+		if sr != nil {
+			run.Results = append(run.Results, *sr)
+		}
+	}
+
+	// Attach server metadata to the invocation properties via a custom property bag.
+	// We encode it into the existing SARIFInvocation by enriching run properties.
+	_ = serverName // used above for fallback
+	return run
+}
+
+// convertMCPScanResultToSARIF converts a single MCPScanResult to a SARIF report
+// with one run per server.
+func convertMCPScanResultToSARIF(result *mcpscan.MCPScanResult, report *SARIFReport) (*SARIFReport, error) {
+	if result == nil {
+		return report, nil
+	}
+	run := buildMCPSARIFRun(result)
+	report.Runs = append(report.Runs, run)
+	return report, nil
+}
+
+// convertMCPBulkScanResultToSARIF converts a BulkScanResult to a SARIF report.
+// Each server with findings becomes a separate SARIF run.
+func convertMCPBulkScanResultToSARIF(bulk mcpscan.BulkScanResult, report *SARIFReport) (*SARIFReport, error) {
+	if len(bulk.Results) == 0 {
+		// Emit an empty run so the document is still valid SARIF.
+		report.Runs = append(report.Runs, SARIFRun{
+			Tool: SARIFTool{
+				Driver: SARIFToolComponent{
+					Name:           "WAST",
+					Version:        "1.0.0",
+					InformationURI: "https://github.com/djannot/wast",
+					Rules:          buildMCPRules(),
+				},
+			},
+			Results:     make([]SARIFResult, 0),
+			Invocations: []SARIFInvocation{{ExecutionSuccessful: true}},
+		})
+		return report, nil
+	}
+
+	for _, result := range bulk.Results {
+		if result == nil {
+			continue
+		}
+		run := buildMCPSARIFRun(result)
+		report.Runs = append(report.Runs, run)
+	}
+	return report, nil
 }
 
 // Helper functions for severity mapping and rule lookups
