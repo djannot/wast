@@ -5,7 +5,7 @@
 ### P0: Fix noise and usability
 
 - [x] **Permission checker false positives** — Switched from `strings.Contains` substring matching to pre-compiled `\b` whole-word regexp patterns, and added context-aware co-occurrence guard for ambiguous keywords like `"token"`. False positives from "refresh"/"push"/"publish" (sh), "relevant"/"evaluation" (eval), and blockchain token descriptions are eliminated.
-- [ ] **Aggregated summary for bulk scans** — Scanning 10 servers produced hundreds of lines. At 1,760 servers the output is unusable. Add a summary report: "X servers open, Y require auth, Z unreachable. Top findings: ..." with ability to drill down per server.
+- [x] **Aggregated summary for bulk scans** — Added `BulkScanSummary` type and `BuildBulkScanSummary` aggregation logic. The `scan` subcommand now prints a concise summary block after per-server results and supports `--summary-only` to suppress per-server detail. JSON output wraps all results in a `BulkScanResult` with a `bulk_summary` field.
 - [x] **Concurrency for bulk scanning** — Scanning 10 servers took ~2 minutes (sequential). 1,760 would take ~6 hours. Add `--concurrency N` flag to scan multiple servers in parallel.
 
 ### P1: New detection capabilities
