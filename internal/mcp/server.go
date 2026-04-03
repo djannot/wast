@@ -156,8 +156,16 @@ func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) {
 		s.handleToolsList(req)
 	case "tools/call":
 		s.handleToolsCall(ctx, req)
+	case "ping":
+		s.sendResponse(req.ID, map[string]interface{}{})
+	case "notifications/initialized":
+		// Notifications require no response; silently accept.
 	default:
-		s.sendError(req.ID, -32601, "Method not found", fmt.Sprintf("Unknown method: %s", req.Method))
+		// Per the MCP spec, messages without an id are notifications and must
+		// never receive an error response.
+		if req.ID != nil {
+			s.sendError(req.ID, -32601, "Method not found", fmt.Sprintf("Unknown method: %s", req.Method))
+		}
 	}
 }
 
