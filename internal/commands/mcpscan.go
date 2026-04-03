@@ -152,6 +152,8 @@ Examples:
 	var networkTarget string
 	var projectDir string
 	var deepMode bool
+	var registryMode bool
+	var registryTransport string
 
 	discoverCmd := &cobra.Command{
 		Use:   "discover",
@@ -175,7 +177,11 @@ transfers), then probe each discovered subdomain for MCP endpoints:
 
 Use --project-dir to scan a project's package.json / requirements.txt /
 pyproject.toml for outdated MCP server dependencies:
-  wast mcpscan discover --project-dir /path/to/project`,
+  wast mcpscan discover --project-dir /path/to/project
+
+Use --registry to pull servers directly from the public MCP registry:
+  wast mcpscan discover --registry
+  wast mcpscan discover --registry --registry-transport sse`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			formatter := getFormatter()
 			ctx := cmd.Context()
@@ -187,7 +193,20 @@ pyproject.toml for outdated MCP server dependencies:
 			discoverer.ProjectDir = projectDir
 
 			var result *mcpscan.DiscoveryResult
-			if networkTarget != "" {
+			if registryMode {
+				// Registry discovery: pull servers from the public MCP registry.
+				// --deep and --project-dir are not used in this mode; warn the user.
+				if formatter.Format() == output.FormatText {
+					if deepMode {
+						formatter.Info("Note: --deep is ignored when --registry is set")
+					}
+					if projectDir != "" {
+						formatter.Info("Note: --project-dir is ignored when --registry is set")
+					}
+					formatter.Info("Fetching MCP servers from public registry...")
+				}
+				result = discoverer.DiscoverFromRegistry(ctx, registryTransport)
+			} else if networkTarget != "" {
 				if deepMode {
 					// Deep network discovery: enumerate subdomains, then probe each
 					result = discoverer.DiscoverNetworkDeep(ctx, networkTarget, func(msg string) {
@@ -249,6 +268,10 @@ pyproject.toml for outdated MCP server dependencies:
 		"Enumerate subdomains via CT logs and DNS before probing (requires --network)")
 	discoverCmd.Flags().StringVar(&projectDir, "project-dir", "",
 		"Project directory to scan for MCP server dependencies in package.json, requirements.txt, or pyproject.toml")
+	discoverCmd.Flags().BoolVar(&registryMode, "registry", false,
+		"Fetch MCP servers from the public MCP registry (https://registry.modelcontextprotocol.io)")
+	discoverCmd.Flags().StringVar(&registryTransport, "registry-transport", "",
+		"Filter registry results by transport type: sse, http, or stdio (empty = all)")
 
 	// scan subcommand — scan servers from discovery (inline or from file)
 	var targetsFile string
