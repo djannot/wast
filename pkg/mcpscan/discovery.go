@@ -186,6 +186,177 @@ func (d *Discoverer) DiscoverNetworkDeep(ctx context.Context, target string, pro
 	return result
 }
 
+// --------------------------------------------------------------------------
+// MCP Registry discovery
+// --------------------------------------------------------------------------
+
+// DefaultRegistryURL is the public MCP registry API base URL.
+const DefaultRegistryURL = "https://registry.modelcontextprotocol.io"
+
+// registryListResponse is the top-level response from the MCP registry list endpoint.
+type registryListResponse struct {
+	Servers    []registryServer `json:"servers"`
+	NextCursor string           `json:"next_cursor"`
+}
+
+// registryServer represents a single server entry in the MCP registry.
+type registryServer struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Connections []registryConn      `json:"connections"`
+	Packages    []registryPackage   `json:"packages"`
+}
+
+// registryConn describes one transport connection option for a registry server.
+type registryConn struct {
+	Type    string   `json:"type"`    // "stdio", "sse", "http"
+	URL     string   `json:"url"`     // for sse/http connections
+	Command string   `json:"command"` // for stdio connections
+	Args    []string `json:"args"`    // for stdio connections
+}
+
+// registryPackage describes an installable package entry (used to build stdio targets).
+type registryPackage struct {
+	RegistryName string   `json:"registry_name"` // "npm", "pypi"
+	Name         string   `json:"name"`
+	Command      string   `json:"command"`
+	Args         []string `json:"args"`
+}
+
+// DiscoverFromRegistry fetches MCP server entries from the public MCP registry API
+// and returns them as DiscoveredServer entries. If transportFilter is non-empty
+// (e.g. "sse", "http", "stdio"), only servers with a matching connection type are
+// returned. Pagination is handled automatically.
+func (d *Discoverer) DiscoverFromRegistry(ctx context.Context, transportFilter string) *DiscoveryResult {
+	registryURL := DefaultRegistryURL
+
+	result := &DiscoveryResult{
+		Servers: []DiscoveredServer{},
+		Sources: []string{registryURL},
+		Errors:  []string{},
+	}
+
+	cursor := ""
+	for {
+		apiURL := registryURL + "/v0/servers"
+		if cursor != "" {
+			apiURL += "?cursor=" + cursor
+		}
+
+		servers, nextCursor, err := d.fetchRegistryPage(ctx, apiURL)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("registry fetch %s: %v", apiURL, err))
+			return result
+		}
+
+		for _, srv := range servers {
+			discovered := d.registryServerToDiscovered(srv, transportFilter)
+			result.Servers = append(result.Servers, discovered...)
+		}
+
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	return result
+}
+
+// fetchRegistryPage retrieves one page of servers from the registry API.
+func (d *Discoverer) fetchRegistryPage(ctx context.Context, apiURL string) ([]registryServer, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("HTTP GET: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("unexpected status %d from registry", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read response body: %w", err)
+	}
+
+	var page registryListResponse
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, "", fmt.Errorf("parse registry response: %w", err)
+	}
+
+	return page.Servers, page.NextCursor, nil
+}
+
+// registryServerToDiscovered maps a registry server entry to DiscoveredServer
+// entries (one per connection type). If transportFilter is non-empty, only
+// connections with a matching type are included.
+func (d *Discoverer) registryServerToDiscovered(srv registryServer, transportFilter string) []DiscoveredServer {
+	var results []DiscoveredServer
+
+	for _, conn := range srv.Connections {
+		transport := strings.ToLower(conn.Type)
+		if transportFilter != "" && transport != strings.ToLower(transportFilter) {
+			continue
+		}
+
+		ds := DiscoveredServer{
+			Name:      srv.Name,
+			Transport: transport,
+			Source:    "mcp-registry",
+		}
+
+		switch transport {
+		case "stdio":
+			ds.Target = conn.Command
+			ds.Args = conn.Args
+		case "sse", "http":
+			ds.Target = conn.URL
+		default:
+			ds.Target = conn.URL
+			if ds.Target == "" {
+				ds.Target = conn.Command
+			}
+		}
+
+		// Skip entries with no usable target.
+		if ds.Target == "" {
+			continue
+		}
+
+		results = append(results, ds)
+	}
+
+	// If no connections but there are packages, synthesise a stdio entry.
+	if len(srv.Connections) == 0 && len(srv.Packages) > 0 {
+		if transportFilter == "" || strings.ToLower(transportFilter) == "stdio" {
+			pkg := srv.Packages[0]
+			cmd := pkg.Command
+			if cmd == "" {
+				cmd = pkg.Name
+			}
+			if cmd != "" {
+				results = append(results, DiscoveredServer{
+					Name:      srv.Name,
+					Transport: "stdio",
+					Target:    cmd,
+					Args:      pkg.Args,
+					Source:    "mcp-registry",
+				})
+			}
+		}
+	}
+
+	return results
+}
+
 // probeResult holds the result of an HTTP MCP endpoint probe.
 type probeResult struct {
 	found        bool

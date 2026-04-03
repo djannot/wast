@@ -152,6 +152,8 @@ Examples:
 	var networkTarget string
 	var projectDir string
 	var deepMode bool
+	var registryMode bool
+	var registryTransport string
 
 	discoverCmd := &cobra.Command{
 		Use:   "discover",
@@ -187,7 +189,13 @@ pyproject.toml for outdated MCP server dependencies:
 			discoverer.ProjectDir = projectDir
 
 			var result *mcpscan.DiscoveryResult
-			if networkTarget != "" {
+			if registryMode {
+				// Registry discovery: pull servers from the public MCP registry
+				if formatter.Format() == output.FormatText {
+					formatter.Info("Fetching MCP servers from public registry...")
+				}
+				result = discoverer.DiscoverFromRegistry(ctx, registryTransport)
+			} else if networkTarget != "" {
 				if deepMode {
 					// Deep network discovery: enumerate subdomains, then probe each
 					result = discoverer.DiscoverNetworkDeep(ctx, networkTarget, func(msg string) {
@@ -249,6 +257,10 @@ pyproject.toml for outdated MCP server dependencies:
 		"Enumerate subdomains via CT logs and DNS before probing (requires --network)")
 	discoverCmd.Flags().StringVar(&projectDir, "project-dir", "",
 		"Project directory to scan for MCP server dependencies in package.json, requirements.txt, or pyproject.toml")
+	discoverCmd.Flags().BoolVar(&registryMode, "registry", false,
+		"Fetch MCP servers from the public MCP registry (https://registry.modelcontextprotocol.io)")
+	discoverCmd.Flags().StringVar(&registryTransport, "registry-transport", "",
+		"Filter registry results by transport type: sse, http, or stdio (empty = all)")
 
 	// scan subcommand — scan servers from discovery (inline or from file)
 	var targetsFile string

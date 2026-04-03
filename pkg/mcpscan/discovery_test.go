@@ -3,6 +3,7 @@ package mcpscan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -502,6 +503,342 @@ func TestPypiMCPPackage(t *testing.T) {
 			t.Errorf("pypiMCPPackage(%q) = %v, want %v", tc.name, got, tc.expected)
 		}
 	}
+}
+
+// --------------------------------------------------------------------------
+// MCP registry discovery tests
+// --------------------------------------------------------------------------
+
+// sampleRegistryPage returns a JSON-encoded registry page with the given servers
+// and an optional next_cursor.
+func sampleRegistryPage(servers []registryServer, nextCursor string) []byte {
+	page := registryListResponse{
+		Servers:    servers,
+		NextCursor: nextCursor,
+	}
+	data, _ := json.Marshal(page)
+	return data
+}
+
+// TestDiscoverFromRegistry_HappyPath verifies that a valid registry response
+// produces the expected DiscoveredServer entries.
+func TestDiscoverFromRegistry_HappyPath(t *testing.T) {
+	servers := []registryServer{
+		{
+			ID:   "1",
+			Name: "http-server",
+			Connections: []registryConn{
+				{Type: "http", URL: "https://example.com/mcp"},
+			},
+		},
+		{
+			ID:   "2",
+			Name: "sse-server",
+			Connections: []registryConn{
+				{Type: "sse", URL: "https://sse.example.com/sse"},
+			},
+		},
+		{
+			ID:   "3",
+			Name: "stdio-server",
+			Connections: []registryConn{
+				{Type: "stdio", Command: "npx", Args: []string{"-y", "@my/mcp-server"}},
+			},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(sampleRegistryPage(servers, ""))
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Servers) != 3 {
+		t.Fatalf("expected 3 servers, got %d: %+v", len(result.Servers), result.Servers)
+	}
+
+	// Check sources recorded
+	if len(result.Sources) == 0 {
+		t.Error("expected at least one source")
+	}
+
+	// Verify individual entries
+	byName := make(map[string]DiscoveredServer)
+	for _, s := range result.Servers {
+		byName[s.Name] = s
+	}
+
+	httpSrv, ok := byName["http-server"]
+	if !ok {
+		t.Fatal("expected http-server in results")
+	}
+	if httpSrv.Transport != "http" {
+		t.Errorf("expected transport 'http', got %q", httpSrv.Transport)
+	}
+	if httpSrv.Target != "https://example.com/mcp" {
+		t.Errorf("expected target URL, got %q", httpSrv.Target)
+	}
+	if httpSrv.Source != "mcp-registry" {
+		t.Errorf("expected source 'mcp-registry', got %q", httpSrv.Source)
+	}
+
+	sseSrv, ok := byName["sse-server"]
+	if !ok {
+		t.Fatal("expected sse-server in results")
+	}
+	if sseSrv.Transport != "sse" {
+		t.Errorf("expected transport 'sse', got %q", sseSrv.Transport)
+	}
+
+	stdioSrv, ok := byName["stdio-server"]
+	if !ok {
+		t.Fatal("expected stdio-server in results")
+	}
+	if stdioSrv.Transport != "stdio" {
+		t.Errorf("expected transport 'stdio', got %q", stdioSrv.Transport)
+	}
+	if stdioSrv.Target != "npx" {
+		t.Errorf("expected target 'npx', got %q", stdioSrv.Target)
+	}
+	if len(stdioSrv.Args) != 2 {
+		t.Errorf("expected 2 args, got %d", len(stdioSrv.Args))
+	}
+}
+
+// TestDiscoverFromRegistry_Pagination verifies that multi-page registry responses
+// are fetched and merged correctly.
+func TestDiscoverFromRegistry_Pagination(t *testing.T) {
+	page1Servers := []registryServer{
+		{ID: "1", Name: "server-a", Connections: []registryConn{{Type: "http", URL: "https://a.example.com/mcp"}}},
+	}
+	page2Servers := []registryServer{
+		{ID: "2", Name: "server-b", Connections: []registryConn{{Type: "http", URL: "https://b.example.com/mcp"}}},
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if r.URL.Query().Get("cursor") == "page2" {
+			_, _ = w.Write(sampleRegistryPage(page2Servers, ""))
+		} else {
+			_, _ = w.Write(sampleRegistryPage(page1Servers, "page2"))
+		}
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Servers) != 2 {
+		t.Fatalf("expected 2 servers (one per page), got %d", len(result.Servers))
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 HTTP calls for pagination, got %d", callCount)
+	}
+}
+
+// TestDiscoverFromRegistry_NetworkError verifies that a network failure is
+// reported as an error without panicking.
+func TestDiscoverFromRegistry_NetworkError(t *testing.T) {
+	// Point at a port that isn't listening.
+	d := NewDiscoverer().WithHTTPTimeout(200 * time.Millisecond)
+	// Override the registry URL via a custom round-tripper that always errors.
+	d.httpClient = &http.Client{
+		Timeout: 200 * time.Millisecond,
+		Transport: &errorRoundTripper{},
+	}
+
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) == 0 {
+		t.Error("expected at least one error for network failure")
+	}
+	if len(result.Servers) != 0 {
+		t.Errorf("expected 0 servers on network failure, got %d", len(result.Servers))
+	}
+}
+
+// errorRoundTripper always returns an error.
+type errorRoundTripper struct{}
+
+func (e *errorRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("simulated network failure")
+}
+
+// TestDiscoverFromRegistry_MalformedJSON verifies that malformed JSON from the
+// registry is reported as an error without panicking.
+func TestDiscoverFromRegistry_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{ this is not valid json`))
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) == 0 {
+		t.Error("expected error for malformed JSON response")
+	}
+}
+
+// TestDiscoverFromRegistry_EmptyResponse verifies that an empty servers list
+// returns a valid (but empty) DiscoveryResult.
+func TestDiscoverFromRegistry_EmptyResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"servers":[],"next_cursor":""}`))
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) != 0 {
+		t.Errorf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Servers) != 0 {
+		t.Errorf("expected 0 servers for empty response, got %d", len(result.Servers))
+	}
+}
+
+// TestDiscoverFromRegistry_TransportFilter verifies that --registry-transport
+// correctly filters servers by transport type.
+func TestDiscoverFromRegistry_TransportFilter(t *testing.T) {
+	servers := []registryServer{
+		{
+			ID:   "1",
+			Name: "http-only",
+			Connections: []registryConn{
+				{Type: "http", URL: "https://http.example.com/mcp"},
+			},
+		},
+		{
+			ID:   "2",
+			Name: "sse-only",
+			Connections: []registryConn{
+				{Type: "sse", URL: "https://sse.example.com/sse"},
+			},
+		},
+		{
+			ID:   "3",
+			Name: "multi-transport",
+			Connections: []registryConn{
+				{Type: "http", URL: "https://multi.example.com/mcp"},
+				{Type: "sse", URL: "https://multi.example.com/sse"},
+			},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(sampleRegistryPage(servers, ""))
+	}))
+	defer srv.Close()
+
+	// Filter for SSE only
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "sse")
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	// Expect sse-only (1) + multi-transport sse connection (1) = 2
+	if len(result.Servers) != 2 {
+		t.Fatalf("expected 2 SSE servers after filter, got %d: %+v", len(result.Servers), result.Servers)
+	}
+	for _, s := range result.Servers {
+		if s.Transport != "sse" {
+			t.Errorf("expected transport 'sse' after filter, got %q for %s", s.Transport, s.Name)
+		}
+	}
+}
+
+// TestDiscoverFromRegistry_ServerError verifies that a non-200 HTTP response
+// is reported as an error.
+func TestDiscoverFromRegistry_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) == 0 {
+		t.Error("expected error for 500 response from registry")
+	}
+}
+
+// TestDiscoverFromRegistry_FallbackToPackages verifies that registry entries
+// with no connections but with packages produce a stdio DiscoveredServer.
+func TestDiscoverFromRegistry_FallbackToPackages(t *testing.T) {
+	servers := []registryServer{
+		{
+			ID:   "1",
+			Name: "pkg-server",
+			Packages: []registryPackage{
+				{RegistryName: "npm", Name: "@my/mcp-server", Command: "npx", Args: []string{"-y", "@my/mcp-server"}},
+			},
+		},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(sampleRegistryPage(servers, ""))
+	}))
+	defer srv.Close()
+
+	d := newDiscovererWithMockRegistryURL(srv)
+	result := d.DiscoverFromRegistry(context.Background(), "")
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Servers) != 1 {
+		t.Fatalf("expected 1 server from package fallback, got %d", len(result.Servers))
+	}
+	s := result.Servers[0]
+	if s.Transport != "stdio" {
+		t.Errorf("expected stdio transport for package fallback, got %q", s.Transport)
+	}
+	if s.Target != "npx" {
+		t.Errorf("expected target 'npx', got %q", s.Target)
+	}
+	if s.Source != "mcp-registry" {
+		t.Errorf("expected source 'mcp-registry', got %q", s.Source)
+	}
+}
+
+// newDiscovererWithMockRegistryURL returns a Discoverer that routes all HTTP
+// requests to the mock test server, preserving path and query parameters.
+// Unlike newDiscovererWithMockRegistry, this helper is for registry tests where
+// we want to intercept calls to DefaultRegistryURL.
+func newDiscovererWithMockRegistryURL(srv *httptest.Server) *Discoverer {
+	d := NewDiscoverer()
+	d.httpClient = &http.Client{
+		Transport: &prefixRoundTripper{
+			base:   srv.Client().Transport,
+			prefix: srv.URL,
+		},
+	}
+	return d
 }
 
 func TestIsOutdated(t *testing.T) {
