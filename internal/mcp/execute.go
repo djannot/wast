@@ -524,6 +524,34 @@ func executeVerify(ctx context.Context, findingType string, findingURL string, p
 		}
 		return sstiScanner.VerifyFinding(ctx, finding, verifyConfig)
 
+	case "nosqli":
+		nosqliScanner := scanner.NewNoSQLiScanner(
+			scanner.WithNoSQLiTimeout(timeout),
+			scanner.WithNoSQLiAuth(authConfig),
+			scanner.WithNoSQLiRateLimiter(rateLimiter),
+			scanner.WithNoSQLiTracer(tracer),
+		)
+		finding := &scanner.NoSQLiFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return nosqliScanner.VerifyFinding(ctx, finding, verifyConfig)
+
+	case "xxe":
+		xxeScanner := scanner.NewXXEScanner(
+			scanner.WithXXETimeout(timeout),
+			scanner.WithXXEAuth(authConfig),
+			scanner.WithXXERateLimiter(rateLimiter),
+			scanner.WithXXETracer(tracer),
+		)
+		finding := &scanner.XXEFinding{
+			URL:       findingURL,
+			Parameter: parameter,
+			Payload:   payload,
+		}
+		return xxeScanner.VerifyFinding(ctx, finding, verifyConfig)
+
 	default:
 		return nil, fmt.Errorf("unsupported finding type: %s", findingType)
 	}

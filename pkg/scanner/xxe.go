@@ -620,11 +620,13 @@ func (s *XXEScanner) VerifyFinding(ctx context.Context, finding *XXEFinding, con
 		if matched {
 			result.Verified = true
 			result.Confidence = 0.9 // High confidence for verified XXE
+			result.Explanation = "XXE vulnerability confirmed: response contains XXE signatures indicating successful XML external entity injection"
 			return result, nil
 		}
 	}
 
 	// If verification failed after all retries
 	result.Confidence = 0.3
+	result.Explanation = "XXE verification inconclusive: no XXE signatures detected in responses after all attempts"
 	return result, nil
 }
