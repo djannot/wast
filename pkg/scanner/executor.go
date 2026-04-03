@@ -330,7 +330,9 @@ func ExecuteScan(ctx context.Context, cfg ScanConfig) (*UnifiedScanResult, *Scan
 				func() []CSRFFinding { return csrfResult.Findings },
 				func(f []CSRFFinding) { csrfResult.Findings = f },
 				csrfScanner.VerifyFinding,
-				func(f *CSRFFinding, vr *VerificationResult) { f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts },
+				func(f *CSRFFinding, vr *VerificationResult) {
+					f.Verified, f.VerificationAttempts = vr.Verified, vr.Attempts
+				},
 				func(f CSRFFinding) bool { return f.Verified },
 				func(n int) { csrfResult.Summary.VulnerableForms = n },
 				func() []string { return csrfResult.Errors },
