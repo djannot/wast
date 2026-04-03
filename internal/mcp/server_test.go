@@ -175,6 +175,103 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
+func TestNotificationsInitialized(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      nil,
+		Method:  "notifications/initialized",
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	// Notifications must produce no response at all.
+	if output.Len() != 0 {
+		t.Errorf("Expected no output for notifications/initialized, got: %s", output.String())
+	}
+}
+
+func TestPingMethod(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	var id interface{} = float64(1)
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  "ping",
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	var response JSONRPCResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse ping response: %v", err)
+	}
+
+	if response.Error != nil {
+		t.Errorf("Expected no error for ping, got: %v", response.Error)
+	}
+
+	if response.Result == nil {
+		t.Error("Expected non-nil result for ping")
+	}
+}
+
+func TestUnknownNotificationNilID(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      nil,
+		Method:  "notifications/unknown",
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	// Notifications with nil ID must produce no response.
+	if output.Len() != 0 {
+		t.Errorf("Expected no output for unknown notification, got: %s", output.String())
+	}
+}
+
+func TestUnknownMethodWithID(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	var id interface{} = float64(42)
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  "unknown/rpc",
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	var response JSONRPCResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if response.Error == nil {
+		t.Error("Expected error for unknown method with ID")
+	}
+	if response.Error.Code != -32601 {
+		t.Errorf("Expected error code -32601, got %d", response.Error.Code)
+	}
+}
+
 func TestReconToolSchema(t *testing.T) {
 	server := NewServer()
 	tool := &ReconTool{server: server}
