@@ -2337,7 +2337,7 @@ func TestVerifyToolSchema(t *testing.T) {
 		t.Fatal("finding_type should have enum constraint")
 	}
 
-	expectedTypes := []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti"}
+	expectedTypes := []string{"sqli", "xss", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti", "nosqli", "xxe"}
 	if len(enum) != len(expectedTypes) {
 		t.Errorf("Expected %d finding types in enum, got %d", len(expectedTypes), len(enum))
 	}
@@ -2796,7 +2796,7 @@ func TestVerifyToolExecuteInvalidURL(t *testing.T) {
 
 // TestVerifyToolExecuteAllFindingTypes tests all supported finding types through Execute
 func TestVerifyToolExecuteAllFindingTypes(t *testing.T) {
-	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf"}
+	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti", "nosqli", "xxe"}
 
 	server := NewServer()
 	tool := &VerifyTool{server: server}

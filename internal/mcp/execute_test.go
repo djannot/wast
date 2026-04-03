@@ -800,6 +800,26 @@ func TestExecuteVerify(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "nosqli verification",
+			findingType: "nosqli",
+			findingURL:  "https://example.com/api",
+			parameter:   "username",
+			payload:     `{"$gt": ""}`,
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
+			name:        "xxe verification",
+			findingType: "xxe",
+			findingURL:  "https://example.com/xml",
+			parameter:   "body",
+			payload:     `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>`,
+			maxRetries:  3,
+			delay:       100 * time.Millisecond,
+			expectError: false,
+		},
+		{
 			name:        "invalid finding type",
 			findingType: "invalid",
 			findingURL:  "https://example.com/test",
@@ -954,7 +974,7 @@ func TestExecuteVerifyContextCancellation(t *testing.T) {
 
 // TestExecuteVerifyAllFindingTypes tests all supported finding types
 func TestExecuteVerifyAllFindingTypes(t *testing.T) {
-	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti"}
+	findingTypes := []string{"xss", "sqli", "ssrf", "cmdi", "pathtraversal", "redirect", "csrf", "ssti", "nosqli", "xxe"}
 
 	for _, findingType := range findingTypes {
 		t.Run(findingType, func(t *testing.T) {
