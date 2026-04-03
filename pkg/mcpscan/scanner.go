@@ -138,6 +138,9 @@ func (s *Scanner) Scan(ctx context.Context) (*MCPScanResult, error) {
 
 	result.ScanDuration = time.Since(start)
 
+	// Capture how many HTTP 429 retries the client performed across this scan.
+	result.Summary.Retries = client.RetryCount()
+
 	return result, nil
 }
 

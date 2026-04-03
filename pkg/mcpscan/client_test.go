@@ -2,11 +2,13 @@ package mcpscan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -737,4 +739,274 @@ func TestClientOptions(t *testing.T) {
 			t.Errorf("unexpected target %q", c.target)
 		}
 	})
+
+	t.Run("WithMaxRetries sets maxRetries field", func(t *testing.T) {
+		c := NewHTTPClient("http://localhost", WithMaxRetries(5))
+		if c.maxRetries != 5 {
+			t.Errorf("expected maxRetries=5, got %d", c.maxRetries)
+		}
+	})
+
+	t.Run("default maxRetries is defaultMaxRetries", func(t *testing.T) {
+		c := NewHTTPClient("http://localhost")
+		if c.maxRetries != defaultMaxRetries {
+			t.Errorf("expected maxRetries=%d, got %d", defaultMaxRetries, c.maxRetries)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// parseRetryAfter tests
+// ---------------------------------------------------------------------------
+
+func TestParseRetryAfter(t *testing.T) {
+	fallback := 5 * time.Second
+
+	tests := []struct {
+		name     string
+		header   string
+		fallback time.Duration
+		wantMin  time.Duration
+		wantMax  time.Duration
+	}{
+		{
+			name:     "empty header returns fallback",
+			header:   "",
+			fallback: fallback,
+			wantMin:  fallback,
+			wantMax:  fallback,
+		},
+		{
+			name:     "delta-seconds 0",
+			header:   "0",
+			fallback: fallback,
+			wantMin:  0,
+			wantMax:  0,
+		},
+		{
+			name:     "delta-seconds 3",
+			header:   "3",
+			fallback: fallback,
+			wantMin:  3 * time.Second,
+			wantMax:  3 * time.Second,
+		},
+		{
+			name:     "negative delta-seconds returns fallback",
+			header:   "-1",
+			fallback: fallback,
+			wantMin:  fallback,
+			wantMax:  fallback,
+		},
+		{
+			name:     "whitespace-padded delta-seconds",
+			header:   "  10  ",
+			fallback: fallback,
+			wantMin:  10 * time.Second,
+			wantMax:  10 * time.Second,
+		},
+		{
+			name:     "invalid header returns fallback",
+			header:   "not-a-number",
+			fallback: fallback,
+			wantMin:  fallback,
+			wantMax:  fallback,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseRetryAfter(tc.header, tc.fallback)
+			if got < tc.wantMin || got > tc.wantMax {
+				t.Errorf("parseRetryAfter(%q, %v) = %v; want [%v, %v]",
+					tc.header, tc.fallback, got, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+
+	t.Run("HTTP-date in the future", func(t *testing.T) {
+		// Use a date well in the past to generate a zero-or-negative duration.
+		past := "Mon, 01 Jan 2001 00:00:00 GMT"
+		got := parseRetryAfter(past, fallback)
+		if got != 0 {
+			t.Errorf("expected 0 for past date, got %v", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// retryableDo / 429 backoff tests
+// ---------------------------------------------------------------------------
+
+// make429Handler returns a handler that serves 429 for the first `failCount`
+// requests (with an optional Retry-After header) then responds with a valid
+// JSON-RPC result.
+func make429Handler(t *testing.T, failCount int, retryAfterHeader string) http.HandlerFunc {
+	t.Helper()
+	var calls int
+	return func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= failCount {
+			if retryAfterHeader != "" {
+				w.Header().Set("Retry-After", retryAfterHeader)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprintln(w, "rate limited")
+			return
+		}
+		// Decode incoming JSON-RPC request to echo the ID back.
+		var req jsonrpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(makeJSONRPCResp(req.ID, map[string]string{"status": "ok"}))
+	}
+}
+
+// fastRetryOpts returns client options that make retry backoff effectively
+// instant (1 µs), keeping unit tests fast.
+func fastRetryOpts() []ClientOption {
+	return []ClientOption{withRetryBackoff(time.Microsecond, time.Microsecond)}
+}
+
+func TestRetryableDo_429WithRetryAfterHeader(t *testing.T) {
+	// Server returns 429 twice with "Retry-After: 0", then 200.
+	srv := httptest.NewServer(make429Handler(t, 2, "0"))
+	defer srv.Close()
+
+	opts := append(fastRetryOpts(), WithMaxRetries(3))
+	c := NewHTTPClient(srv.URL, opts...)
+
+	raw, err := c.call(t.Context(), "test/method", nil)
+	if err != nil {
+		t.Fatalf("unexpected error after retries: %v", err)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if got["status"] != "ok" {
+		t.Errorf("expected status ok, got %q", got["status"])
+	}
+
+	if c.RetryCount() != 2 {
+		t.Errorf("expected 2 retries, got %d", c.RetryCount())
+	}
+}
+
+func TestRetryableDo_429WithoutRetryAfterHeader(t *testing.T) {
+	// Server returns 429 once with no Retry-After header, then 200.
+	// Uses instant backoff so the test doesn't sleep.
+	srv := httptest.NewServer(make429Handler(t, 1, ""))
+	defer srv.Close()
+
+	opts := append(fastRetryOpts(), WithMaxRetries(3))
+	c := NewHTTPClient(srv.URL, opts...)
+
+	raw, err := c.call(t.Context(), "test/method", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if got["status"] != "ok" {
+		t.Errorf("expected status ok, got %q", got["status"])
+	}
+
+	if c.RetryCount() != 1 {
+		t.Errorf("expected 1 retry, got %d", c.RetryCount())
+	}
+}
+
+func TestRetryableDo_MaxRetriesExceeded(t *testing.T) {
+	// Server always returns 429; client should exhaust retries and return an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	opts := append(fastRetryOpts(), WithMaxRetries(2))
+	c := NewHTTPClient(srv.URL, opts...)
+
+	_, err := c.call(t.Context(), "test/method", nil)
+	if err == nil {
+		t.Fatal("expected error when max retries exceeded, got nil")
+	}
+
+	var rateLimitErr *ErrMaxRetriesExceeded
+	if !strings.Contains(err.Error(), "rate limited") && !strings.Contains(err.Error(), "429") {
+		t.Errorf("expected rate-limit error, got: %v", err)
+	}
+	// The error should unwrap to *ErrMaxRetriesExceeded.
+	if !errors.As(err, &rateLimitErr) {
+		t.Errorf("expected *ErrMaxRetriesExceeded in error chain, got %T: %v", err, err)
+	}
+	if rateLimitErr.Retries != 2 {
+		t.Errorf("expected Retries=2, got %d", rateLimitErr.Retries)
+	}
+}
+
+func TestRetryableDo_SSE429WithRetryAfterHeader(t *testing.T) {
+	// SSE transport: server returns 429 once with Retry-After: 0, then a valid SSE response.
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		var req jsonrpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		respBytes := makeJSONRPCResp(req.ID, map[string]string{"transport": "sse-retry"})
+		fmt.Fprintf(w, "data: %s\n\n", string(respBytes))
+	}))
+	defer srv.Close()
+
+	opts := append(fastRetryOpts(), WithMaxRetries(3))
+	c := NewSSEClient(srv.URL, opts...)
+
+	raw, err := c.call(t.Context(), "test/method", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["transport"] != "sse-retry" {
+		t.Errorf("expected 'sse-retry', got %q", got["transport"])
+	}
+
+	if c.RetryCount() != 1 {
+		t.Errorf("expected 1 retry, got %d", c.RetryCount())
+	}
+}
+
+func TestRetryableDo_ZeroMaxRetries(t *testing.T) {
+	// When maxRetries=0, a single 429 should immediately return an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, WithMaxRetries(0))
+
+	_, err := c.call(t.Context(), "test/method", nil)
+	if err == nil {
+		t.Fatal("expected error for 429 with maxRetries=0")
+	}
+
+	var rateLimitErr *ErrMaxRetriesExceeded
+	if !errors.As(err, &rateLimitErr) {
+		t.Errorf("expected *ErrMaxRetriesExceeded, got %T: %v", err, err)
+	}
+	if c.RetryCount() != 0 {
+		t.Errorf("expected 0 retries (no sleep performed), got %d", c.RetryCount())
+	}
 }

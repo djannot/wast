@@ -41,8 +41,16 @@ func BuildBulkScanSummary(records []BulkScanRecord) BulkScanSummary {
 			if rec.Unreachable {
 				summary.Unreachable++
 			}
+			if rec.RateLimited {
+				summary.RateLimited++
+			}
 			summary.Servers = append(summary.Servers, brief)
 			continue
+		}
+
+		// Count rate-limited successful scans (retried but eventually succeeded).
+		if rec.RateLimited {
+			summary.RateLimited++
 		}
 
 		summary.Scanned++
