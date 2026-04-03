@@ -141,13 +141,13 @@ const (
 
 // CWE references for MCP scan vulnerabilities
 const (
-	CWEMCPPrompt      = "CWE-94"  // Code Injection (prompt injection)
-	CWEMCPInjection   = "CWE-74"  // Injection
-	CWEMCPExposure    = "CWE-200" // Information Exposure
-	CWEMCPSSRFVal     = "CWE-918" // Server-Side Request Forgery
-	CWEMCPAuth        = "CWE-287" // Improper Authentication
-	CWEMCPPermissions = "CWE-269" // Improper Privilege Management
-	CWEMCPShadowing   = "CWE-349" // Acceptance of Extraneous Untrusted Data
+	CWEMCPPrompt      = "CWE-94"   // Code Injection (prompt injection)
+	CWEMCPInjection   = "CWE-74"   // Injection
+	CWEMCPExposure    = "CWE-200"  // Information Exposure
+	CWEMCPSSRFVal     = "CWE-918"  // Server-Side Request Forgery
+	CWEMCPAuth        = "CWE-287"  // Improper Authentication
+	CWEMCPPermissions = "CWE-269"  // Improper Privilege Management
+	CWEMCPShadowing   = "CWE-349"  // Acceptance of Extraneous Untrusted Data
 	CWEMCPDependency  = "CWE-1104" // Use of Unmaintained Third Party Components
 )
 
