@@ -156,3 +156,82 @@ type DiscoveryResult struct {
 	// Findings lists security findings from dependency scanning (e.g. outdated packages).
 	Findings []MCPFinding `json:"findings,omitempty" yaml:"findings,omitempty"`
 }
+
+// ServerScanBrief is a concise per-server entry in a BulkScanSummary.
+type ServerScanBrief struct {
+	// Name is the human-readable server name.
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// Target is the connection target.
+	Target string `json:"target" yaml:"target"`
+	// FindingCount is the total number of findings for this server.
+	FindingCount int `json:"finding_count" yaml:"finding_count"`
+	// TopSeverity is the highest severity observed (empty if no findings).
+	TopSeverity string `json:"top_severity,omitempty" yaml:"top_severity,omitempty"`
+	// Errored is true if the scan returned an error.
+	Errored bool `json:"errored,omitempty" yaml:"errored,omitempty"`
+	// AuthRequired is true if the server requires authentication.
+	AuthRequired bool `json:"auth_required,omitempty" yaml:"auth_required,omitempty"`
+	// Unreachable is true if the server could not be reached.
+	Unreachable bool `json:"unreachable,omitempty" yaml:"unreachable,omitempty"`
+}
+
+// TopFinding tracks how many servers share a finding with a given title.
+type TopFinding struct {
+	// Title is the finding title.
+	Title string `json:"title" yaml:"title"`
+	// ServerCount is the number of servers that have this finding.
+	ServerCount int `json:"server_count" yaml:"server_count"`
+}
+
+// BulkScanSummary is the aggregated summary after scanning multiple MCP servers.
+type BulkScanSummary struct {
+	// TotalServers is the total number of servers in the target list.
+	TotalServers int `json:"total_servers" yaml:"total_servers"`
+	// Scanned is the number of servers actually scanned (excluding skipped).
+	Scanned int `json:"scanned" yaml:"scanned"`
+	// Skipped is the number of servers skipped (e.g., stdio servers).
+	Skipped int `json:"skipped" yaml:"skipped"`
+	// Errored is the number of servers where the scan returned an error.
+	Errored int `json:"errored" yaml:"errored"`
+	// AuthRequired is the number of servers that require authentication.
+	AuthRequired int `json:"auth_required" yaml:"auth_required"`
+	// Unreachable is the number of servers that could not be reached (network errors).
+	Unreachable int `json:"unreachable" yaml:"unreachable"`
+	// TotalFindings is the total number of findings across all scanned servers.
+	TotalFindings int `json:"total_findings" yaml:"total_findings"`
+	// BySeverity maps severity strings to total finding counts.
+	BySeverity map[string]int `json:"by_severity" yaml:"by_severity"`
+	// ByCategory maps category strings to total finding counts.
+	ByCategory map[string]int `json:"by_category" yaml:"by_category"`
+	// TopFindings lists the most common findings across servers (by finding title).
+	TopFindings []TopFinding `json:"top_findings,omitempty" yaml:"top_findings,omitempty"`
+	// Servers provides per-server drill-down data.
+	Servers []ServerScanBrief `json:"servers,omitempty" yaml:"servers,omitempty"`
+}
+
+// BulkScanRecord is a single server entry used to build a BulkScanSummary.
+type BulkScanRecord struct {
+	// Name is the human-readable server name.
+	Name string
+	// Target is the connection target.
+	Target string
+	// Result is the scan result (nil if the scan failed before producing a result).
+	Result *MCPScanResult
+	// Skipped is true if this server was skipped (e.g., stdio transport).
+	Skipped bool
+	// Errored is true if the scan returned a non-nil error.
+	Errored bool
+	// Unreachable is true if the error appears to be a connectivity failure.
+	Unreachable bool
+}
+
+// BulkScanResult is the top-level result for a bulk scan, wrapping per-server
+// results alongside the aggregated summary. This is the structure emitted for
+// JSON/YAML output so AI agents can parse the overview without processing every
+// individual result.
+type BulkScanResult struct {
+	// BulkSummary is the aggregated summary across all servers.
+	BulkSummary BulkScanSummary `json:"bulk_summary" yaml:"bulk_summary"`
+	// Results contains each per-server scan result (nil entries omitted).
+	Results []*MCPScanResult `json:"results,omitempty" yaml:"results,omitempty"`
+}

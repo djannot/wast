@@ -214,3 +214,149 @@ func TestMCPScanCmd_Concurrency1_AllServersScanned(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPScanCmd_BulkSummaryPrinted verifies that the aggregated summary block
+// is always printed after a bulk scan, regardless of server count.
+func TestMCPScanCmd_BulkSummaryPrinted(t *testing.T) {
+	const numServers = 3
+	urls := make([]string, numServers)
+	for i := range urls {
+		u, _ := startMockMCPServer(t, 0)
+		urls[i] = u
+	}
+	targetsFile := buildTargetsFile(t, urls)
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--timeout", "5",
+	})
+	_ = cmd.Execute()
+
+	got := buf.String()
+	if !strings.Contains(got, "Bulk Scan Summary") {
+		t.Errorf("Expected 'Bulk Scan Summary' header in output, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Servers:") {
+		t.Errorf("Expected 'Servers:' line in bulk summary, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Findings:") {
+		t.Errorf("Expected 'Findings:' line in bulk summary, got:\n%s", got)
+	}
+}
+
+// TestMCPScanCmd_SummaryOnlyFlag verifies that --summary-only suppresses
+// per-server detail while still printing the aggregated summary.
+func TestMCPScanCmd_SummaryOnlyFlag(t *testing.T) {
+	const numServers = 2
+	urls := make([]string, numServers)
+	for i := range urls {
+		u, _ := startMockMCPServer(t, 0)
+		urls[i] = u
+	}
+	targetsFile := buildTargetsFile(t, urls)
+
+	var fullBuf, summaryBuf bytes.Buffer
+
+	// Full run (no --summary-only).
+	fullCmd := NewMCPScanCmd(newTestMCPScanCmd(&fullBuf))
+	fullCmd.SetArgs([]string{"scan", "--targets", targetsFile, "--timeout", "5"})
+	_ = fullCmd.Execute()
+	fullOut := fullBuf.String()
+
+	// Summary-only run.
+	sumCmd := NewMCPScanCmd(newTestMCPScanCmd(&summaryBuf))
+	sumCmd.SetArgs([]string{"scan", "--targets", targetsFile, "--summary-only", "--timeout", "5"})
+	_ = sumCmd.Execute()
+	sumOut := summaryBuf.String()
+
+	// Summary-only output must still contain the summary header.
+	if !strings.Contains(sumOut, "Bulk Scan Summary") {
+		t.Errorf("--summary-only: expected 'Bulk Scan Summary' in output, got:\n%s", sumOut)
+	}
+
+	// Summary-only output must be shorter (no per-server detail lines).
+	if len(sumOut) >= len(fullOut) {
+		t.Errorf("--summary-only output (%d bytes) should be shorter than full output (%d bytes)",
+			len(sumOut), len(fullOut))
+	}
+}
+
+// TestMCPScanCmd_SummaryOnlyFlagRegistered verifies the flag is present.
+func TestMCPScanCmd_SummaryOnlyFlagRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+
+	var scanSubcmd *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "scan" {
+			scanSubcmd = sub
+			break
+		}
+	}
+	if scanSubcmd == nil {
+		t.Fatal("scan subcommand not found")
+	}
+
+	flag := scanSubcmd.Flag("summary-only")
+	if flag == nil {
+		t.Fatal("Expected 'summary-only' flag to be registered on 'scan' subcommand")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("Expected default summary-only=false, got %q", flag.DefValue)
+	}
+}
+
+// TestMCPScanCmd_BulkSummaryScannedCount verifies that the Servers count in
+// the text summary matches the number of mock servers scanned.
+func TestMCPScanCmd_BulkSummaryScannedCount(t *testing.T) {
+	const numServers = 3
+	urls := make([]string, numServers)
+	for i := range urls {
+		u, _ := startMockMCPServer(t, 0)
+		urls[i] = u
+	}
+	targetsFile := buildTargetsFile(t, urls)
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--concurrency", "1",
+		"--timeout", "5",
+	})
+	_ = cmd.Execute()
+
+	got := buf.String()
+	// The summary line should mention "3 total".
+	if !strings.Contains(got, fmt.Sprintf("%d total", numServers)) {
+		t.Errorf("Expected '%d total' in summary output, got:\n%s", numServers, got)
+	}
+}
+
+// TestIsUnreachableError verifies heuristic error classification.
+func TestIsUnreachableError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"connection refused", fmt.Errorf("dial tcp 127.0.0.1:9999: connect: connection refused"), true},
+		{"no such host", fmt.Errorf("dial tcp: lookup no-such-host.invalid: no such host"), true},
+		{"timeout", fmt.Errorf("context deadline exceeded"), true},
+		{"application error", fmt.Errorf("JSON-RPC error -32600: invalid request"), false},
+		{"parse error", fmt.Errorf("failed to parse response: unexpected EOF"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isUnreachableError(tt.err)
+			if got != tt.want {
+				t.Errorf("isUnreachableError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

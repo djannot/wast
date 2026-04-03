@@ -255,6 +255,7 @@ pyproject.toml for outdated MCP server dependencies:
 	var scanNetwork string
 	var scanDeep bool
 	var concurrency int
+	var summaryOnly bool
 
 	scanCmd := &cobra.Command{
 		Use:   "scan",
@@ -275,6 +276,7 @@ local execution and should be scanned individually via 'wast mcpscan stdio'.
 Examples:
   wast mcpscan scan --targets targets.json
   wast mcpscan scan --targets targets.json --active
+  wast mcpscan scan --targets targets.json --summary-only
   wast mcpscan scan --discover --active
   wast mcpscan scan --discover --network example.com --deep --active`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -353,8 +355,7 @@ Examples:
 
 			var (
 				mu      sync.Mutex
-				scanned int
-				skipped int
+				records []mcpscan.BulkScanRecord
 			)
 
 			g, gctx := errgroup.WithContext(ctx)
@@ -366,11 +367,15 @@ Examples:
 					// Skip stdio servers — they need local execution
 					if server.Transport == "stdio" {
 						mu.Lock()
-						skipped++
-						if formatter.Format() == output.FormatText {
+						if !summaryOnly && formatter.Format() == output.FormatText {
 							formatter.Info(fmt.Sprintf("  [%d/%d] Skipping stdio server %s (use 'wast mcpscan stdio' to scan locally)",
 								i+1, len(servers), server.Name))
 						}
+						records = append(records, mcpscan.BulkScanRecord{
+							Name:    server.Name,
+							Target:  server.Target,
+							Skipped: true,
+						})
 						mu.Unlock()
 						return nil
 					}
@@ -381,7 +386,7 @@ Examples:
 					}
 
 					mu.Lock()
-					if formatter.Format() == output.FormatText {
+					if !summaryOnly && formatter.Format() == output.FormatText {
 						name := server.Target
 						if server.Name != "" {
 							name = server.Name + " (" + server.Target + ")"
@@ -397,16 +402,25 @@ Examples:
 						ActiveMode: activeMode,
 					}
 
-					if err := runMCPScanLocked(gctx, cfg, formatter, &mu); err != nil {
+					result, scanErr := runMCPScanLocked(gctx, cfg, formatter, &mu, summaryOnly)
+
+					rec := mcpscan.BulkScanRecord{
+						Name:   server.Name,
+						Target: server.Target,
+						Result: result,
+					}
+					if scanErr != nil {
+						rec.Errored = true
+						rec.Unreachable = isUnreachableError(scanErr)
 						mu.Lock()
-						if formatter.Format() == output.FormatText {
-							formatter.Info(fmt.Sprintf("    Error: %v", err))
+						if !summaryOnly && formatter.Format() == output.FormatText {
+							formatter.Info(fmt.Sprintf("    Error: %v", scanErr))
 						}
 						mu.Unlock()
 					}
 
 					mu.Lock()
-					scanned++
+					records = append(records, rec)
 					mu.Unlock()
 					return nil
 				})
@@ -416,10 +430,36 @@ Examples:
 				return err
 			}
 
+			// Build the aggregated summary from all collected records.
+			bulkSummary := mcpscan.BuildBulkScanSummary(records)
+
 			if formatter.Format() == output.FormatText {
-				formatter.Info(fmt.Sprintf("\nScanned %d/%d servers (%d stdio servers skipped)",
-					scanned, len(servers), skipped))
+				if !summaryOnly {
+					formatter.Info(fmt.Sprintf("\nScanned %d/%d servers (%d stdio servers skipped)",
+						bulkSummary.Scanned, len(servers), bulkSummary.Skipped))
+				}
+				printBulkScanSummaryText(formatter, bulkSummary)
 			}
+
+			// Collect non-nil results for structured output.
+			var results []*mcpscan.MCPScanResult
+			for _, rec := range records {
+				if rec.Result != nil {
+					results = append(results, rec.Result)
+				}
+			}
+			bulkResult := mcpscan.BulkScanResult{
+				BulkSummary: bulkSummary,
+			}
+			if !summaryOnly {
+				bulkResult.Results = results
+			}
+
+			formatter.Success("mcpscan scan",
+				fmt.Sprintf("Bulk scan complete: %d/%d servers scanned, %d finding(s)",
+					bulkSummary.Scanned, len(servers), bulkSummary.TotalFindings),
+				bulkResult)
+
 			return nil
 		},
 	}
@@ -434,14 +474,18 @@ Examples:
 		"Enumerate subdomains before probing (used with --discover --network)")
 	scanCmd.Flags().IntVar(&concurrency, "concurrency", 5,
 		"Number of servers to scan in parallel (default 5, use 1 for sequential)")
+	scanCmd.Flags().BoolVar(&summaryOnly, "summary-only", false,
+		"Print only the aggregated summary; suppress per-server detail (useful for large fleets)")
 
 	cmd.AddCommand(stdioCmd, sseCmd, httpCmd, discoverCmd, scanCmd)
 
 	return cmd
 }
 
-// runMCPScanLocked executes the MCP scan and outputs the result while holding mu for all formatter writes.
-func runMCPScanLocked(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.Formatter, mu *sync.Mutex) error {
+// runMCPScanLocked executes the MCP scan and (unless summaryOnly is true) outputs
+// the per-server result while holding mu for all formatter writes.
+// It returns the scan result for bulk aggregation regardless of summaryOnly.
+func runMCPScanLocked(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.Formatter, mu *sync.Mutex, summaryOnly bool) (*mcpscan.MCPScanResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -449,25 +493,97 @@ func runMCPScanLocked(ctx context.Context, cfg mcpscan.ScanConfig, formatter *ou
 	scanner := mcpscan.NewScanner(cfg)
 	result, err := scanner.Scan(ctx)
 	if err != nil {
+		if !summaryOnly {
+			mu.Lock()
+			formatter.Failure("mcpscan", "Scan failed", map[string]interface{}{
+				"error":     err.Error(),
+				"transport": string(cfg.Transport),
+				"target":    cfg.Target,
+			})
+			mu.Unlock()
+		}
+		return nil, err
+	}
+
+	if !summaryOnly {
 		mu.Lock()
-		formatter.Failure("mcpscan", "Scan failed", map[string]interface{}{
-			"error":     err.Error(),
-			"transport": string(cfg.Transport),
-			"target":    cfg.Target,
-		})
-		mu.Unlock()
-		return err
+		defer mu.Unlock()
+
+		if formatter.Format() == output.FormatText {
+			printMCPScanResultText(formatter, result)
+		}
+
+		formatter.Success("mcpscan", fmt.Sprintf("Scan complete: %d finding(s)", result.Summary.TotalFindings), result)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	return result, nil
+}
 
-	if formatter.Format() == output.FormatText {
-		printMCPScanResultText(formatter, result)
+// isUnreachableError reports whether err looks like a network connectivity
+// failure (as opposed to an application-level error).
+func isUnreachableError(err error) bool {
+	if err == nil {
+		return false
 	}
+	msg := strings.ToLower(err.Error())
+	for _, keyword := range []string{
+		"connection refused",
+		"no such host",
+		"dial tcp",
+		"i/o timeout",
+		"network unreachable",
+		"no route to host",
+		"connection reset by peer",
+		"context deadline exceeded",
+	} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
+}
 
-	formatter.Success("mcpscan", fmt.Sprintf("Scan complete: %d finding(s)", result.Summary.TotalFindings), result)
-	return nil
+// printBulkScanSummaryText prints the aggregated bulk scan summary in a
+// human-readable format.
+func printBulkScanSummaryText(formatter *output.Formatter, summary mcpscan.BulkScanSummary) {
+	formatter.Info("\n══ Bulk Scan Summary ══")
+
+	// Servers line.
+	serversLine := fmt.Sprintf("Servers: %d total | %d scanned | %d auth-required | %d unreachable | %d stdio-skipped",
+		summary.TotalServers, summary.Scanned, summary.AuthRequired, summary.Unreachable, summary.Skipped)
+	if errored := summary.Errored - summary.Unreachable; errored > 0 {
+		serversLine += fmt.Sprintf(" | %d errored", errored)
+	}
+	formatter.Info(serversLine)
+
+	// Findings line.
+	crit := summary.BySeverity["critical"]
+	high := summary.BySeverity["high"]
+	med := summary.BySeverity["medium"]
+	lowInfo := summary.BySeverity["low"] + summary.BySeverity["info"]
+
+	findingsParts := []string{fmt.Sprintf("Findings: %d total", summary.TotalFindings)}
+	if crit > 0 {
+		findingsParts = append(findingsParts, fmt.Sprintf("%d critical", crit))
+	}
+	if high > 0 {
+		findingsParts = append(findingsParts, fmt.Sprintf("%d high", high))
+	}
+	if med > 0 {
+		findingsParts = append(findingsParts, fmt.Sprintf("%d medium", med))
+	}
+	if lowInfo > 0 {
+		findingsParts = append(findingsParts, fmt.Sprintf("%d low/info", lowInfo))
+	}
+	formatter.Info(strings.Join(findingsParts, " | "))
+
+	// Top findings.
+	if len(summary.TopFindings) > 0 {
+		formatter.Info("Top findings:")
+		for i, f := range summary.TopFindings {
+			formatter.Info(fmt.Sprintf("  %d. %s (%d servers)", i+1, f.Title, f.ServerCount))
+		}
+	}
 }
 
 // runMCPScan executes the MCP scan and outputs the result.
