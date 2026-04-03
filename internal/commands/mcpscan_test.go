@@ -337,6 +337,179 @@ func TestMCPScanCmd_BulkSummaryScannedCount(t *testing.T) {
 	}
 }
 
+// buildTargetsFileWithAuth writes a DiscoveryResult JSON file where some
+// servers are marked as auth-required. openURLs will have AuthRequired=false
+// and authURLs will have AuthRequired=true.
+func buildTargetsFileWithAuth(t *testing.T, openURLs, authURLs []string) string {
+	t.Helper()
+	var servers []mcpscan.DiscoveredServer
+	for i, u := range openURLs {
+		servers = append(servers, mcpscan.DiscoveredServer{
+			Name:         fmt.Sprintf("open-%d", i),
+			Transport:    "http",
+			Target:       u,
+			Source:       "test",
+			AuthRequired: false,
+		})
+	}
+	for i, u := range authURLs {
+		servers = append(servers, mcpscan.DiscoveredServer{
+			Name:         fmt.Sprintf("auth-%d", i),
+			Transport:    "http",
+			Target:       u,
+			Source:       "test",
+			AuthRequired: true,
+		})
+	}
+	discovery := mcpscan.DiscoveryResult{Servers: servers}
+	data, err := json.Marshal(discovery)
+	if err != nil {
+		t.Fatalf("failed to marshal targets: %v", err)
+	}
+	f, err := os.CreateTemp(t.TempDir(), "targets-auth-*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp targets file: %v", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatalf("failed to write targets file: %v", err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+// TestMCPScanCmd_OpenOnlyFlagRegistered verifies the flag is present with the
+// correct default and documentation.
+func TestMCPScanCmd_OpenOnlyFlagRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+
+	var scanSubcmd *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "scan" {
+			scanSubcmd = sub
+			break
+		}
+	}
+	if scanSubcmd == nil {
+		t.Fatal("scan subcommand not found")
+	}
+
+	flag := scanSubcmd.Flag("open-only")
+	if flag == nil {
+		t.Fatal("Expected 'open-only' flag to be registered on 'scan' subcommand")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("Expected default open-only=false, got %q", flag.DefValue)
+	}
+	if !strings.Contains(strings.ToLower(flag.Usage), "auth") {
+		t.Errorf("Expected open-only flag usage to mention 'auth', got: %s", flag.Usage)
+	}
+}
+
+// TestMCPScanCmd_OpenOnly_FiltersAuthRequired verifies that --open-only skips
+// servers where AuthRequired==true and only scans the open ones.
+func TestMCPScanCmd_OpenOnly_FiltersAuthRequired(t *testing.T) {
+	// Start one real mock server (open) and use a non-existent URL for auth server.
+	openURL, _ := startMockMCPServer(t, 0)
+	// Auth-required server — won't be contacted at all with --open-only.
+	authURL := "http://127.0.0.1:1" // unreachable but doesn't matter; should be filtered
+
+	targetsFile := buildTargetsFileWithAuth(t, []string{openURL}, []string{authURL})
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--open-only",
+		"--timeout", "5",
+	})
+	_ = cmd.Execute()
+
+	got := buf.String()
+
+	// Should mention filtering.
+	if !strings.Contains(got, "Filtered out 1 auth-required") {
+		t.Errorf("Expected 'Filtered out 1 auth-required' in output, got:\n%s", got)
+	}
+
+	// The auth server URL should NOT appear in output (it was filtered, not scanned).
+	if strings.Contains(got, authURL) {
+		t.Errorf("Auth-required server URL %q should not appear in output when --open-only is set, got:\n%s", authURL, got)
+	}
+}
+
+// TestMCPScanCmd_OpenOnly_NoAuthServers verifies that when no servers are
+// auth-required, --open-only has no effect on the scan.
+func TestMCPScanCmd_OpenOnly_NoAuthServers(t *testing.T) {
+	u1, _ := startMockMCPServer(t, 0)
+	u2, _ := startMockMCPServer(t, 0)
+
+	targetsFile := buildTargetsFileWithAuth(t, []string{u1, u2}, nil)
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--open-only",
+		"--timeout", "5",
+	})
+	_ = cmd.Execute()
+
+	got := buf.String()
+
+	// No filtering message since nothing was filtered.
+	if strings.Contains(got, "Filtered out") {
+		t.Errorf("Expected no filtering message when no auth-required servers present, got:\n%s", got)
+	}
+
+	// Both servers should appear in output.
+	if !strings.Contains(got, u1) {
+		t.Errorf("Expected open server %s to appear in output, got:\n%s", u1, got)
+	}
+	if !strings.Contains(got, u2) {
+		t.Errorf("Expected open server %s to appear in output, got:\n%s", u2, got)
+	}
+}
+
+// TestMCPScanCmd_OpenOnly_AllServersFiltered verifies the early-exit path when
+// every server in the targets file is auth-required and --open-only is set.
+func TestMCPScanCmd_OpenOnly_AllServersFiltered(t *testing.T) {
+	// Two auth-required servers — both should be filtered, leaving nothing to scan.
+	authURL1 := "http://127.0.0.1:1"
+	authURL2 := "http://127.0.0.1:2"
+
+	targetsFile := buildTargetsFileWithAuth(t, nil, []string{authURL1, authURL2})
+
+	var buf bytes.Buffer
+	cmd := NewMCPScanCmd(newTestMCPScanCmd(&buf))
+	cmd.SetArgs([]string{
+		"scan",
+		"--targets", targetsFile,
+		"--open-only",
+		"--timeout", "5",
+	})
+	err := cmd.Execute()
+
+	// Command should not return an error — it exits cleanly with an info message.
+	if err != nil {
+		t.Errorf("Expected nil error when all servers filtered, got: %v", err)
+	}
+
+	got := buf.String()
+
+	// Should surface how many servers were filtered.
+	if !strings.Contains(got, "Filtered out 2 auth-required") {
+		t.Errorf("Expected 'Filtered out 2 auth-required' in output, got:\n%s", got)
+	}
+
+	// Should print the no-servers-remaining message.
+	if !strings.Contains(got, "No MCP servers to scan after filtering") {
+		t.Errorf("Expected 'No MCP servers to scan after filtering' in output, got:\n%s", got)
+	}
+}
+
 // TestIsUnreachableError verifies heuristic error classification.
 func TestIsUnreachableError(t *testing.T) {
 	tests := []struct {
