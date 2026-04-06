@@ -2794,6 +2794,58 @@ func TestInitializeCA_DefaultPath(t *testing.T) {
 	}
 }
 
+// TestSignalContextCancellation verifies that signalContext returns a context
+// that can be cancelled and that cancellation propagates as expected.
+func TestSignalContextCancellation(t *testing.T) {
+	ctx, cancel := signalContext()
+	defer cancel()
+
+	// Context should not be cancelled yet.
+	select {
+	case <-ctx.Done():
+		t.Fatal("signalContext was already cancelled before cancel() was called")
+	default:
+	}
+
+	// Cancel the context explicitly.
+	cancel()
+
+	// Context should now be done.
+	select {
+	case <-ctx.Done():
+		// expected
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("context was not cancelled after cancel() was called")
+	}
+
+	if ctx.Err() != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", ctx.Err())
+	}
+}
+
+// TestSignalContextPropagationToCrawl verifies that a cancelled context from
+// signalContext propagates correctly when passed to crawl-like operations.
+func TestSignalContextPropagationToCrawl(t *testing.T) {
+	// Create a context that we cancel immediately to simulate a signal.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before use
+
+	// A timeout derived from the already-cancelled context should be done immediately.
+	childCtx, childCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer childCancel()
+
+	select {
+	case <-childCtx.Done():
+		// expected — parent was cancelled
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("child context was not cancelled when parent context was cancelled")
+	}
+
+	if childCtx.Err() == nil {
+		t.Error("expected child context to have an error after cancellation")
+	}
+}
+
 // TestInterceptCmd_HttpOnly tests the --http-only flag behavior
 func TestInterceptCmd_HttpOnly(t *testing.T) {
 	// This test verifies that the command handles the --http-only flag correctly

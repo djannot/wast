@@ -131,8 +131,11 @@ Examples:
 
 			c := crawler.NewCrawler(opts...)
 
-			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), timeout*time.Duration(depth+1))
+			// Create a signal-aware context so Ctrl+C cancels in-flight requests,
+			// then layer a timeout on top of it.
+			sigCtx, sigCancel := signalContext()
+			defer sigCancel()
+			ctx, cancel := context.WithTimeout(sigCtx, timeout*time.Duration(depth+1))
 			defer cancel()
 
 			// Perform the crawl

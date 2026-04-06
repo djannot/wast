@@ -86,13 +86,17 @@ Examples:
 			}
 			target = validatedDomain
 
+			// Create a signal-aware context so Ctrl+C cancels in-flight requests.
+			sigCtx, sigCancel := signalContext()
+			defer sigCancel()
+
 			// Perform DNS enumeration
 			enumerator := dns.NewEnumerator(dns.WithTimeout(timeout))
 			dnsResult := enumerator.Enumerate(target)
 
 			// Perform subdomain discovery if enabled
 			if subdomains {
-				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				ctx, cancel := context.WithTimeout(sigCtx, timeout)
 				defer cancel()
 
 				discoverer := dns.NewSubdomainDiscoverer(dns.WithSubdomainTimeout(timeout))

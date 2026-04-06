@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -179,8 +178,9 @@ Examples:
 				formatter.Info("⚠️  ACTIVE TESTING ENABLED: Sending potentially dangerous payloads to " + target + ". Ensure you have permission to test this target.")
 			}
 
-			// Create scan configuration
-			ctx := context.Background()
+			// Create a signal-aware context so Ctrl+C cancels in-flight requests.
+			ctx, cancel := signalContext()
+			defer cancel()
 
 			var unifiedResult *scanner.UnifiedScanResult
 			var stats *scanner.ScanStats
