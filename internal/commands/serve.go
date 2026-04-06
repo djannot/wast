@@ -14,7 +14,7 @@ import (
 )
 
 // NewServeCmd creates and returns the serve command for MCP server mode.
-func NewServeCmd(getFormatter func() *output.Formatter) *cobra.Command {
+func NewServeCmd(getFormatter func() *output.Formatter, version ...string) *cobra.Command {
 	var mcpMode bool
 	var callbackServerAddr string
 	var callbackDNSDomain string
@@ -89,6 +89,9 @@ Examples:
 
 			// Create and start MCP server
 			server := mcp.NewServer()
+			if len(version) > 0 && version[0] != "" {
+				server.SetVersion(version[0])
+			}
 
 			switch transport {
 			case "http":

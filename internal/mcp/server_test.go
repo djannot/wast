@@ -117,6 +117,61 @@ func TestInitializeRequest(t *testing.T) {
 	}
 }
 
+func TestInitializeVersionDefault(t *testing.T) {
+	server := NewServer()
+
+	var out bytes.Buffer
+	server.writer = &out
+
+	request := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	server.handleRequest(context.Background(), &request)
+
+	var response JSONRPCResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	resultMap, ok := response.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result is not a map")
+	}
+	si, ok := resultMap["serverInfo"].(map[string]interface{})
+	if !ok {
+		t.Fatal("serverInfo is missing or not a map")
+	}
+	if si["version"] != "dev" {
+		t.Errorf("expected default version 'dev', got %v", si["version"])
+	}
+}
+
+func TestInitializeVersionSetVersion(t *testing.T) {
+	server := NewServer()
+	server.SetVersion("2.3.4")
+
+	var out bytes.Buffer
+	server.writer = &out
+
+	request := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	server.handleRequest(context.Background(), &request)
+
+	var response JSONRPCResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	resultMap, ok := response.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result is not a map")
+	}
+	si, ok := resultMap["serverInfo"].(map[string]interface{})
+	if !ok {
+		t.Fatal("serverInfo is missing or not a map")
+	}
+	if si["version"] != "2.3.4" {
+		t.Errorf("expected version '2.3.4', got %v", si["version"])
+	}
+}
+
 func TestInvalidJSONRPCVersion(t *testing.T) {
 	server := NewServer()
 

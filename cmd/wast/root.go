@@ -120,6 +120,7 @@ func runMCPServerImpl() {
 // This allows for better testing by controlling the context lifecycle
 func runMCPServerWithContext(parentCtx context.Context) {
 	server := mcp.NewServer()
+	server.SetVersion(version)
 
 	// Set up context with cancellation
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -219,7 +220,7 @@ func init() {
 	rootCmd.AddCommand(commands.NewInterceptCmd(getFormatter, getAuthConfig))
 	rootCmd.AddCommand(commands.NewScanCmd(getFormatter, getAuthConfig, getRateLimitConfig))
 	rootCmd.AddCommand(commands.NewAPICmd(getFormatter, getAuthConfig, getRateLimitConfig))
-	rootCmd.AddCommand(commands.NewServeCmd(getFormatter))
+	rootCmd.AddCommand(commands.NewServeCmd(getFormatter, version))
 	rootCmd.AddCommand(commands.NewMCPScanCmd(getFormatter))
 }
 

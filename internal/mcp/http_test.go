@@ -186,6 +186,36 @@ func TestHTTP_Initialize(t *testing.T) {
 	}
 }
 
+func TestHTTP_InitializeVersionPropagation(t *testing.T) {
+	s := newTestServer()
+	s.SetVersion("3.1.4")
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	w := doMCPPost(t, s, req, "application/json")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	resp := parseJSONRPCResponse(t, w)
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+
+	result, ok := resp.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("result is not a map")
+	}
+
+	si, ok := result["serverInfo"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected serverInfo in result")
+	}
+	if si["version"] != "3.1.4" {
+		t.Errorf("expected serverInfo.version=3.1.4, got %v", si["version"])
+	}
+}
+
 func TestHTTP_ToolsList(t *testing.T) {
 	s := newTestServer()
 
