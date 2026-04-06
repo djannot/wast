@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -544,7 +543,7 @@ func (s *NoSQLiScanner) getBaseline(ctx context.Context, baseURL *url.URL, param
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -582,7 +581,7 @@ func (s *NoSQLiScanner) getBaselinePOST(ctx context.Context, baseURL *url.URL, p
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -624,7 +623,7 @@ func (s *NoSQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, pa
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -698,7 +697,7 @@ func (s *NoSQLiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -773,7 +772,7 @@ func (s *NoSQLiScanner) testWithBaseline(ctx context.Context, baseURL *url.URL, 
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -858,7 +857,7 @@ func (s *NoSQLiScanner) testWithBaselinePOST(ctx context.Context, baseURL *url.U
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -952,7 +951,7 @@ func (s *NoSQLiScanner) testArrayPollution(ctx context.Context, baseURL *url.URL
 		return nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -1065,7 +1064,7 @@ func (s *NoSQLiScanner) confirmVarianceIsInjection(ctx context.Context, baseURL 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return true
 	}
@@ -1114,7 +1113,7 @@ func (s *NoSQLiScanner) confirmVarianceIsInjectionPOST(ctx context.Context, base
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return true
 	}
@@ -1298,7 +1297,7 @@ func (s *NoSQLiScanner) VerifyFinding(ctx context.Context, finding *NoSQLiFindin
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

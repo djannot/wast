@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/httputil"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"github.com/djannot/wast/pkg/scanner"
 )
@@ -393,7 +393,7 @@ func (s *SecurityTester) testMassAssignment(ctx context.Context, fullURL string,
 	defer resp.Body.Close()
 
 	// Read response to check if extra fields were accepted
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return vulns
 	}

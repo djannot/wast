@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/djannot/wast/pkg/httputil"
 	"github.com/miekg/dns"
 )
 
@@ -203,7 +203,7 @@ func (d *SubdomainDiscoverer) discoverFromCT(ctx context.Context, domain string)
 	}
 
 	// Read and parse the response
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

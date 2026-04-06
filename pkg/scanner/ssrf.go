@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -323,7 +322,7 @@ func (s *SSRFScanner) fetchBaseline(ctx context.Context, targetURL string, metho
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -697,7 +696,7 @@ func (s *SSRFScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -777,7 +776,7 @@ func (s *SSRFScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -1666,7 +1665,7 @@ func (s *SSRFScanner) VerifyFinding(ctx context.Context, finding *SSRFFinding, c
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

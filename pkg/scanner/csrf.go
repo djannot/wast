@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -221,7 +220,7 @@ func (s *CSRFScanner) Scan(ctx context.Context, targetURL string) *CSRFScanResul
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to read response: %s", err.Error()))
 		return result
@@ -487,7 +486,7 @@ func (s *CSRFScanner) isTokenEnforced(ctx context.Context, form crawler.FormInfo
 	}
 
 	// Read response body to look for rejection messages
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return true
 	}
@@ -678,7 +677,7 @@ func (s *CSRFScanner) verifyMissingTokenFinding(ctx context.Context, finding *CS
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

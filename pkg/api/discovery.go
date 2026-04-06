@@ -6,13 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/httputil"
 	"github.com/djannot/wast/pkg/ratelimit"
 )
 
@@ -340,7 +340,7 @@ func (d *Discoverer) probeEndpoint(ctx context.Context, baseURL string, ep endpo
 	contentType := resp.Header.Get("Content-Type")
 
 	// Read body for spec version detection
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		body = nil
 	}
@@ -391,7 +391,7 @@ func (d *Discoverer) probeGraphQLEndpoint(ctx context.Context, fullURL string, e
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}

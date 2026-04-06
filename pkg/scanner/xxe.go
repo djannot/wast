@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -444,7 +443,7 @@ func (s *XXEScanner) sendXXERequest(ctx context.Context, targetURL, payload stri
 			}
 
 			// Read response body
-			body, err := io.ReadAll(resp.Body)
+			body, err := readResponseBody(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				continue
@@ -600,7 +599,7 @@ func (s *XXEScanner) VerifyFinding(ctx context.Context, finding *XXEFinding, con
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
