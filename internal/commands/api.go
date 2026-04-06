@@ -76,9 +76,13 @@ Examples:
 			authConfig := getAuthConfig()
 			rateLimitConfig := getRateLimitConfig()
 
+			// Create a signal-aware context so Ctrl+C cancels in-flight requests.
+			ctx, cancel := signalContext()
+			defer cancel()
+
 			// If --spec is provided, parse the specification and optionally test endpoints
 			if specPath != "" {
-				runAPITesting(formatter, authConfig, rateLimitConfig, specPath, baseURL, dryRun, timeout, respectRateLimits)
+				runAPITesting(ctx, formatter, authConfig, rateLimitConfig, specPath, baseURL, dryRun, timeout, respectRateLimits)
 				return
 			}
 
@@ -120,7 +124,7 @@ Examples:
 			}
 			target = validatedURL
 
-			runAPIDiscovery(formatter, authConfig, rateLimitConfig, target, timeout)
+			runAPIDiscovery(ctx, formatter, authConfig, rateLimitConfig, target, timeout)
 		},
 	}
 
@@ -135,7 +139,7 @@ Examples:
 }
 
 // runAPITesting parses an API specification and tests the endpoints.
-func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, specPath, baseURL string, dryRun bool, timeout int, respectRateLimits bool) {
+func runAPITesting(ctx context.Context, formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, specPath, baseURL string, dryRun bool, timeout int, respectRateLimits bool) {
 	// Parse the specification
 	spec, err := api.ParseSpec(specPath)
 	if err != nil {
@@ -170,7 +174,6 @@ func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, rat
 
 	// Create tester and run tests
 	tester := api.NewTester(opts...)
-	ctx := context.Background()
 	result := tester.TestAll(ctx, spec)
 
 	// Determine success message based on mode
@@ -190,7 +193,7 @@ func runAPITesting(formatter *output.Formatter, authConfig *auth.AuthConfig, rat
 }
 
 // runAPIDiscovery performs API endpoint discovery on the target URL.
-func runAPIDiscovery(formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, target string, timeout int) {
+func runAPIDiscovery(ctx context.Context, formatter *output.Formatter, authConfig *auth.AuthConfig, rateLimitConfig ratelimit.Config, target string, timeout int) {
 	// Build discoverer options
 	opts := []api.DiscovererOption{
 		api.WithDiscovererTimeout(time.Duration(timeout) * time.Second),
@@ -208,7 +211,6 @@ func runAPIDiscovery(formatter *output.Formatter, authConfig *auth.AuthConfig, r
 
 	// Create discoverer and run discovery
 	discoverer := api.NewDiscoverer(opts...)
-	ctx := context.Background()
 	result := discoverer.Discover(ctx, target)
 
 	// Determine success/failure based on results

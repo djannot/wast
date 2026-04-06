@@ -224,7 +224,9 @@ Use --registry to pull servers directly from the public MCP registry:
 			formatter := getFormatter()
 			ctx := cmd.Context()
 			if ctx == nil {
-				ctx = context.Background()
+				var cancel context.CancelFunc
+				ctx, cancel = signalContext()
+				defer cancel()
 			}
 
 			discoverer := mcpscan.NewDiscoverer()
@@ -355,7 +357,9 @@ Examples:
 			formatter := getFormatter()
 			ctx := cmd.Context()
 			if ctx == nil {
-				ctx = context.Background()
+				var cancel context.CancelFunc
+				ctx, cancel = signalContext()
+				defer cancel()
 			}
 
 			var servers []mcpscan.DiscoveredServer
@@ -672,7 +676,9 @@ Examples:
 // It returns the scan result for bulk aggregation regardless of summaryOnly.
 func runMCPScanLocked(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.Formatter, mu *sync.Mutex, summaryOnly bool) (*mcpscan.MCPScanResult, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		var cancel context.CancelFunc
+		ctx, cancel = signalContext()
+		defer cancel()
 	}
 
 	scanner := mcpscan.NewScanner(cfg)
@@ -780,7 +786,9 @@ func printBulkScanSummaryText(formatter *output.Formatter, summary mcpscan.BulkS
 // runMCPScan executes the MCP scan and outputs the result.
 func runMCPScan(ctx context.Context, cfg mcpscan.ScanConfig, formatter *output.Formatter) error {
 	if ctx == nil {
-		ctx = context.Background()
+		var cancel context.CancelFunc
+		ctx, cancel = signalContext()
+		defer cancel()
 	}
 
 	scanner := mcpscan.NewScanner(cfg)
