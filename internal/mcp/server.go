@@ -5,10 +5,14 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,11 +63,12 @@ type ProgressNotification struct {
 
 // Server represents an MCP server instance.
 type Server struct {
-	reader      io.Reader
-	writer      io.Writer
-	tools       map[string]Tool
-	tracer      trace.Tracer
-	writerMutex sync.Mutex // protects concurrent writes to writer
+	reader        io.Reader
+	writer        io.Writer
+	tools         map[string]Tool
+	tracer        trace.Tracer
+	writerMutex   sync.Mutex // protects concurrent writes to writer
+	httpRequestMu sync.Mutex // serializes HTTP requests to safely swap s.writer
 }
 
 // Tool represents an MCP tool implementation.
@@ -325,6 +330,172 @@ func (s *Server) sendError(id interface{}, code int, message string, data interf
 		return
 	}
 	fmt.Fprintln(s.writer, string(responseData))
+}
+
+// sseWriter wraps an http.ResponseWriter and formats writes as Server-Sent Events.
+type sseWriter struct {
+	w       io.Writer
+	flusher http.Flusher
+}
+
+// Write formats p as an SSE data event and flushes it to the underlying writer.
+// It strips the trailing newline that fmt.Fprintln adds before formatting as SSE.
+func (sw *sseWriter) Write(p []byte) (n int, err error) {
+	data := strings.TrimRight(string(p), "\n")
+	if data == "" {
+		return len(p), nil
+	}
+	if _, err = fmt.Fprintf(sw.w, "data: %s\n\n", data); err != nil {
+		return 0, err
+	}
+	if sw.flusher != nil {
+		sw.flusher.Flush()
+	}
+	return len(p), nil
+}
+
+// generateSessionID creates a random 16-byte hex session identifier.
+func generateSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: use a counter-based ID (should not happen in practice)
+		return fmt.Sprintf("session-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// ServeHTTP starts an HTTP server that accepts MCP JSON-RPC requests at POST /mcp,
+// implementing the MCP Streamable HTTP transport (protocol version 2024-11-05+).
+//
+// Clients may send:
+//   - Accept: application/json  — synchronous JSON response
+//   - Accept: text/event-stream — streaming SSE response with progress notifications
+//
+// Session tracking is provided via the Mcp-Session-Id response header.
+func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", s.mcpHTTPHandler)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Shutdown the HTTP server when the context is cancelled.
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx) //nolint:errcheck
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("http server error: %w", err)
+	}
+	return nil
+}
+
+// mcpHTTPHandler is the http.HandlerFunc for POST /mcp.
+func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
+	// Only POST is allowed per the MCP Streamable HTTP spec.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read the full request body.
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeHTTPJSONRPCError(w, nil, -32700, "Parse error", err.Error())
+		return
+	}
+
+	// Parse the JSON-RPC request.
+	var req JSONRPCRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		writeHTTPJSONRPCError(w, nil, -32700, "Parse error", err.Error())
+		return
+	}
+
+	// Session management: echo an existing session ID or mint a new one.
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	if sessionID == "" {
+		sessionID = generateSessionID()
+	}
+
+	// Determine transport mode from the Accept header.
+	acceptSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+
+	// Serialise HTTP requests: swap s.writer to the per-request writer, call
+	// handleRequest, then restore s.writer.  This ensures concurrent HTTP
+	// callers do not interleave their writes.
+	s.httpRequestMu.Lock()
+	defer s.httpRequestMu.Unlock()
+
+	if acceptSSE {
+		// ---- SSE (streaming) mode ----
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Mcp-Session-Id", sessionID)
+		w.WriteHeader(http.StatusOK)
+
+		origWriter := s.writer
+		s.writer = &sseWriter{w: w, flusher: flusher}
+		s.handleRequest(r.Context(), &req)
+		s.writer = origWriter
+	} else {
+		// ---- JSON (non-streaming) mode ----
+		var buf strings.Builder
+		origWriter := s.writer
+		s.writer = &stringWriter{sb: &buf}
+		s.handleRequest(r.Context(), &req)
+		s.writer = origWriter
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", sessionID)
+		w.WriteHeader(http.StatusOK)
+		// handleRequest writes a complete JSON-RPC line (with trailing \n via
+		// fmt.Fprintln).  Trim the newline so the HTTP body is clean JSON.
+		fmt.Fprint(w, strings.TrimRight(buf.String(), "\n"))
+	}
+}
+
+// stringWriter wraps a strings.Builder to satisfy io.Writer.
+type stringWriter struct {
+	sb *strings.Builder
+}
+
+func (sw *stringWriter) Write(p []byte) (n int, err error) {
+	return sw.sb.Write(p)
+}
+
+// writeHTTPJSONRPCError writes a JSON-RPC error response directly to w.
+func writeHTTPJSONRPCError(w http.ResponseWriter, id interface{}, code int, message, data string) {
+	resp := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &RPCError{
+			Code:    code,
+			Message: message,
+			Data:    data,
+		},
+	}
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(respBytes) //nolint:errcheck
 }
 
 // ReconTool implements the wast_recon MCP tool.

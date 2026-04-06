@@ -8,23 +8,111 @@ WAST implements the MCP (Model Context Protocol) specification to enable seamles
 
 ### Protocol Details
 
-- **Protocol**: JSON-RPC 2.0 over stdio
+- **Protocol**: JSON-RPC 2.0
 - **Specification**: [MCP Specification](https://spec.modelcontextprotocol.io/)
 - **Protocol Version**: 2024-11-05
-- **Transport**: Standard input/output (stdio)
+- **Transports**:
+  - `stdio` (default) — standard input/output; required for desktop MCP clients
+  - `http` — Streamable HTTP (`POST /mcp`); recommended for networked / containerised deployments
 
 ## Starting the MCP Server
 
-```bash
-# Start MCP server
-wast serve --mcp
+### Stdio transport (default)
 
-# Or use the shorthand flag
-wast --mcp
+The default transport uses standard input/output (stdio), which is required by MCP desktop clients such as Claude Desktop.
+
+```bash
+# Start MCP server (stdio)
+wast serve --mcp
 
 # With OpenTelemetry tracing
 export WAST_OTEL_ENDPOINT=localhost:4317
 wast --mcp --telemetry-endpoint localhost:4317
+```
+
+### Streamable HTTP transport
+
+The Streamable HTTP transport (MCP spec 2024-11-05+) exposes WAST as a networked service. This enables remote AI agent integration, containerised deployment, and shared-service architectures.
+
+```bash
+# Start MCP server over HTTP on the default address (:8080)
+wast serve --mcp --transport http
+
+# Start on a custom address
+wast serve --mcp --transport http --addr :9090
+
+# Start on a specific interface
+wast serve --mcp --transport http --addr 0.0.0.0:8080
+```
+
+#### HTTP endpoint
+
+All JSON-RPC requests must be sent as `POST /mcp`.
+
+```bash
+# Send an initialize request
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}'
+```
+
+#### Session management
+
+The server issues a `Mcp-Session-Id` response header on every reply. Include this header in subsequent requests to maintain session context:
+
+```bash
+SESSION_ID=$(curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}' \
+  -D - | grep -i mcp-session-id | awk '{print $2}' | tr -d '\r')
+
+# Use the session ID in follow-up requests
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+#### Streaming (Server-Sent Events)
+
+Set `Accept: text/event-stream` to receive progress notifications during long-running scans as SSE events:
+
+```bash
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"wast_recon","arguments":{"target":"example.com"}}}'
+```
+
+Each event is delivered as:
+
+```
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"phase":"dns","completed":0,"total":0,"message":"Running DNS enumeration"}}
+
+data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"..."}]}}
+
+```
+
+#### Docker / container deployment
+
+```dockerfile
+FROM debian:bookworm-slim
+COPY wast /usr/local/bin/wast
+EXPOSE 8080
+CMD ["wast", "serve", "--mcp", "--transport", "http", "--addr", ":8080"]
+```
+
+```yaml
+# docker-compose.yml
+services:
+  wast-mcp:
+    image: wast:latest
+    ports:
+      - "8080:8080"
+    command: ["serve", "--mcp", "--transport", "http", "--addr", ":8080"]
 ```
 
 ## MCP Tools Reference
