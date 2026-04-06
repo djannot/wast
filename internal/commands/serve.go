@@ -22,6 +22,8 @@ func NewServeCmd(getFormatter func() *output.Formatter) *cobra.Command {
 	var addr string
 	var authToken string
 	var corsOrigin string
+	var rateLimit float64
+	var maxConcurrent int
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -93,6 +95,8 @@ Examples:
 				if corsOrigin != "" {
 					server.SetCORSOrigin(corsOrigin)
 				}
+				server.SetRateLimit(rateLimit)
+				server.SetMaxConcurrent(maxConcurrent)
 				if authToken != "" {
 					server.SetAuthToken(authToken)
 				} else {
@@ -127,6 +131,8 @@ Examples:
 	cmd.Flags().StringVar(&addr, "addr", ":8080", "Listen address for HTTP transport (e.g., :8080, 0.0.0.0:9090)")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token required for HTTP transport requests (recommended for any exposed endpoint)")
 	cmd.Flags().StringVar(&corsOrigin, "cors-origin", "", "Allowed CORS origin for HTTP transport (e.g., \"*\" for all origins, or \"https://example.com\" for a specific origin)")
+	cmd.Flags().Float64Var(&rateLimit, "rate-limit", 10, "Maximum inbound requests per second for HTTP transport (0 = disabled, default: 10)")
+	cmd.Flags().IntVar(&maxConcurrent, "max-concurrent", 5, "Maximum concurrent tool executions for HTTP transport (0 = disabled, default: 5)")
 
 	return cmd
 }
