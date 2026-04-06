@@ -82,6 +82,7 @@ type Server struct {
 	tracer      trace.Tracer
 	writerMutex sync.Mutex // protects concurrent writes to writer (stdio transport)
 	authToken   string     // optional Bearer token required on every HTTP request
+	corsOrigin  string     // optional CORS origin (empty = disabled, "*" = allow all)
 }
 
 // Tool represents an MCP tool implementation.
@@ -116,6 +117,13 @@ func (s *Server) SetTracer(tracer trace.Tracer) {
 // authentication is performed.
 func (s *Server) SetAuthToken(token string) {
 	s.authToken = token
+}
+
+// SetCORSOrigin configures the Access-Control-Allow-Origin header value for
+// the HTTP transport.  When empty (the default), no CORS headers are added.
+// Use "*" to allow all origins or a specific origin string (e.g., "https://example.com").
+func (s *Server) SetCORSOrigin(origin string) {
+	s.corsOrigin = origin
 }
 
 // registerTools registers all WAST command tools.
@@ -456,6 +464,21 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 
 // mcpHTTPHandler is the http.HandlerFunc for POST /mcp.
 func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
+	// CORS: if configured, set the appropriate headers on every response so that
+	// browser-based MCP clients can reach the endpoint.
+	if s.corsOrigin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", s.corsOrigin)
+		w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+
+		// Handle OPTIONS preflight requests and return early.
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Mcp-Session-Id")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+
 	// Only POST is allowed per the MCP Streamable HTTP spec.
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)

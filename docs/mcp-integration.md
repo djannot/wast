@@ -96,6 +96,22 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"..."}]
 
 ```
 
+#### CORS support for browser-based clients
+
+By default, the HTTP transport sets no CORS headers. To allow browser-based MCP clients (web UIs, browser extensions, etc.) to reach the server, pass `--cors-origin`:
+
+```bash
+# Allow all origins (development / open access)
+wast serve --mcp --transport http --cors-origin "*"
+
+# Allow a specific origin (production)
+wast serve --mcp --transport http --cors-origin "https://myapp.example.com"
+```
+
+When configured, the server:
+- Responds to `OPTIONS` preflight requests with `204 No Content` and the appropriate `Access-Control-Allow-*` headers.
+- Adds `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers: Mcp-Session-Id` to all `POST` responses so browsers can read the session header.
+
 #### Docker / container deployment
 
 ```dockerfile
