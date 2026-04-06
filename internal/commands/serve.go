@@ -95,12 +95,8 @@ Examples:
 				if corsOrigin != "" {
 					server.SetCORSOrigin(corsOrigin)
 				}
-				if rateLimit > 0 {
-					server.SetRateLimit(rateLimit)
-				}
-				if maxConcurrent > 0 {
-					server.SetMaxConcurrent(maxConcurrent)
-				}
+				server.SetRateLimit(rateLimit)
+				server.SetMaxConcurrent(maxConcurrent)
 				if authToken != "" {
 					server.SetAuthToken(authToken)
 				} else {

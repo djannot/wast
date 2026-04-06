@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/djannot/wast/pkg/ratelimit"
 )
@@ -32,12 +31,11 @@ func concurrencyLimitMiddleware(next http.HandlerFunc, sem chan struct{}) http.H
 			defer func() { <-sem }()
 			next(w, r)
 		default:
-			// Semaphore full — reject immediately.
-			retryAfter := strconv.Itoa(cap(sem))
-			if retryAfter == "0" {
-				retryAfter = "1"
-			}
-			w.Header().Set("Retry-After", retryAfter)
+			// Semaphore full — reject immediately. Use "1" as a conservative
+			// lower-bound; the actual wait time may be much shorter (milliseconds)
+			// or longer depending on the running request, but 1 second is a
+			// reasonable hint that does not mislead clients the way cap(sem) would.
+			w.Header().Set("Retry-After", "1")
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		}
 	}

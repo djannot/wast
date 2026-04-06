@@ -102,7 +102,7 @@ The HTTP transport includes built-in rate limiting and concurrency control to pr
 
 **Rate limiting** (`--rate-limit`) caps the number of inbound requests accepted per second using a token-bucket algorithm. Requests that exceed the limit receive HTTP 429 with a `Retry-After: 1` header.
 
-**Concurrency limiting** (`--max-concurrent`) caps the number of tool executions (`tools/call`) that may run simultaneously. Requests that would exceed the limit are rejected immediately with HTTP 429 and a `Retry-After` header.
+**Concurrency limiting** (`--max-concurrent`) caps the number of concurrent requests to the `/mcp` endpoint that may run simultaneously. This applies to all request types (`initialize`, `tools/list`, `tools/call`, etc.). Requests that would exceed the limit are rejected immediately with HTTP 429 and a `Retry-After` header.
 
 ```bash
 # Use default limits (10 req/s, 5 concurrent)
@@ -118,7 +118,7 @@ wast serve --mcp --transport http --rate-limit 0 --max-concurrent 0
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--rate-limit` | `10` | Maximum inbound requests per second (0 = disabled) |
-| `--max-concurrent` | `5` | Maximum concurrent tool executions (0 = disabled) |
+| `--max-concurrent` | `5` | Maximum concurrent requests to `/mcp` (0 = disabled) |
 
 #### CORS support for browser-based clients
 

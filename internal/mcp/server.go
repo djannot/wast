@@ -142,6 +142,10 @@ func (s *Server) SetRateLimit(requestsPerSecond float64) {
 // requests for the HTTP transport.  When maxConcurrent is <= 0, concurrency
 // limiting is disabled.
 func (s *Server) SetMaxConcurrent(maxConcurrent int) {
+	if maxConcurrent <= 0 {
+		s.maxConcurrent = 0
+		return
+	}
 	s.maxConcurrent = maxConcurrent
 }
 
@@ -457,7 +461,10 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 
 	mux := http.NewServeMux()
 
-	// Build the handler chain: concurrency limit → rate limit → business logic.
+	// Build the handler chain: rate limit → concurrency limit → business logic.
+	// The last middleware applied is the outermost (first to execute), so
+	// rateLimitMiddleware is applied last and therefore runs first — cheap
+	// rejection happens before the more expensive semaphore acquisition.
 	handler := http.HandlerFunc(s.mcpHTTPHandler)
 	if s.maxConcurrent > 0 {
 		sem := make(chan struct{}, s.maxConcurrent)

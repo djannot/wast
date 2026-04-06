@@ -256,6 +256,26 @@ func TestServer_SetMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestServer_SetMaxConcurrent_DisablesOnZero(t *testing.T) {
+	s := NewServer()
+	s.SetMaxConcurrent(5)
+	s.SetMaxConcurrent(0)
+
+	if s.maxConcurrent != 0 {
+		t.Fatalf("expected maxConcurrent to be 0 after setting 0, got %d", s.maxConcurrent)
+	}
+}
+
+func TestServer_SetMaxConcurrent_DisablesOnNegative(t *testing.T) {
+	s := NewServer()
+	s.SetMaxConcurrent(5)
+	s.SetMaxConcurrent(-1)
+
+	if s.maxConcurrent != 0 {
+		t.Fatalf("expected maxConcurrent to be 0 after setting -1, got %d", s.maxConcurrent)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // HTTP integration test via mcpHTTPHandler with rate limiting active
 // ---------------------------------------------------------------------------
@@ -264,7 +284,7 @@ func TestHTTP_RateLimit_Returns429(t *testing.T) {
 	s := NewServer()
 	s.SetRateLimit(0.001) // burst=1, never replenishes
 
-	// Build the same handler chain as ListenAndServe.
+	// Build a handler chain with rate limiting (concurrency middleware omitted here).
 	handler := http.HandlerFunc(s.mcpHTTPHandler)
 	handler = rateLimitMiddleware(handler, s.rateLimiter)
 
