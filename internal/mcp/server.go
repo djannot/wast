@@ -292,7 +292,14 @@ func (s *Server) handleToolsCall(ctx context.Context, req *JSONRPCRequest) {
 	// Execute tool
 	result, err := tool.Execute(ctx, params.Arguments)
 	if err != nil {
-		s.sendError(ctx, req.ID, -32603, "Internal error", err.Error())
+		response := map[string]interface{}{
+			"content": []map[string]interface{}{{
+				"type": "text",
+				"text": err.Error(),
+			}},
+			"isError": true,
+		}
+		s.sendResponse(ctx, req.ID, response)
 		return
 	}
 
