@@ -599,6 +599,83 @@ func TestHTTP_NonSSE_ProgressNotificationsDiscarded(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CORS tests
+// ---------------------------------------------------------------------------
+
+func TestHTTP_CORS_NoCORSHeadersWhenNotConfigured(t *testing.T) {
+	s := newTestServer()
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	w := doMCPPost(t, s, req, "application/json")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "" {
+		t.Errorf("expected no Access-Control-Allow-Origin header, got %q", origin)
+	}
+	if expose := w.Header().Get("Access-Control-Expose-Headers"); expose != "" {
+		t.Errorf("expected no Access-Control-Expose-Headers header, got %q", expose)
+	}
+}
+
+func TestHTTP_CORS_OPTIONS_Preflight(t *testing.T) {
+	s := newTestServer()
+	s.SetCORSOrigin("*")
+
+	r := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 for OPTIONS preflight, got %d", w.Code)
+	}
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %q", origin)
+	}
+	if methods := w.Header().Get("Access-Control-Allow-Methods"); methods != "POST" {
+		t.Errorf("expected Access-Control-Allow-Methods: POST, got %q", methods)
+	}
+	if headers := w.Header().Get("Access-Control-Allow-Headers"); headers == "" {
+		t.Error("expected Access-Control-Allow-Headers to be set")
+	}
+	if expose := w.Header().Get("Access-Control-Expose-Headers"); expose != "Mcp-Session-Id" {
+		t.Errorf("expected Access-Control-Expose-Headers: Mcp-Session-Id, got %q", expose)
+	}
+}
+
+func TestHTTP_CORS_POST_IncludesCORSHeaders(t *testing.T) {
+	s := newTestServer()
+	s.SetCORSOrigin("https://example.com")
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	w := doMCPPost(t, s, req, "application/json")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if origin := w.Header().Get("Access-Control-Allow-Origin"); origin != "https://example.com" {
+		t.Errorf("expected Access-Control-Allow-Origin: https://example.com, got %q", origin)
+	}
+	if expose := w.Header().Get("Access-Control-Expose-Headers"); expose != "Mcp-Session-Id" {
+		t.Errorf("expected Access-Control-Expose-Headers: Mcp-Session-Id, got %q", expose)
+	}
+}
+
+func TestHTTP_CORS_OPTIONS_WithoutCORSConfig_MethodNotAllowed(t *testing.T) {
+	s := newTestServer()
+	// CORS not configured — OPTIONS should be treated as an unknown method.
+
+	r := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for OPTIONS without CORS config, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // isValidSessionID unit tests
 // ---------------------------------------------------------------------------
 

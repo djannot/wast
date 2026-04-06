@@ -566,6 +566,10 @@ wast serve --mcp [flags]
 |------|------|---------|-------------|
 | `--mcp` | boolean | false | Start MCP server mode |
 | `--telemetry-endpoint` | string | - | OpenTelemetry collector endpoint |
+| `--transport` | string | stdio | MCP transport type: stdio or http |
+| `--addr` | string | :8080 | Listen address for HTTP transport |
+| `--auth-token` | string | - | Bearer token required for HTTP transport requests |
+| `--cors-origin` | string | - | Allowed CORS origin for HTTP transport (e.g., `*` or `https://example.com`) |
 
 #### Examples
 

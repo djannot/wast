@@ -21,6 +21,7 @@ func NewServeCmd(getFormatter func() *output.Formatter) *cobra.Command {
 	var transport string
 	var addr string
 	var authToken string
+	var corsOrigin string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -89,6 +90,9 @@ Examples:
 
 			switch transport {
 			case "http":
+				if corsOrigin != "" {
+					server.SetCORSOrigin(corsOrigin)
+				}
 				if authToken != "" {
 					server.SetAuthToken(authToken)
 				} else {
@@ -122,6 +126,7 @@ Examples:
 	cmd.Flags().StringVar(&transport, "transport", "stdio", "MCP transport type: stdio or http")
 	cmd.Flags().StringVar(&addr, "addr", ":8080", "Listen address for HTTP transport (e.g., :8080, 0.0.0.0:9090)")
 	cmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token required for HTTP transport requests (recommended for any exposed endpoint)")
+	cmd.Flags().StringVar(&corsOrigin, "cors-origin", "", "Allowed CORS origin for HTTP transport (e.g., \"*\" for all origins, or \"https://example.com\" for a specific origin)")
 
 	return cmd
 }
