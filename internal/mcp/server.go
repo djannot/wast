@@ -76,13 +76,15 @@ func contextWithWriter(ctx context.Context, w io.Writer) context.Context {
 
 // Server represents an MCP server instance.
 type Server struct {
-	reader      io.Reader
-	writer      io.Writer
-	tools       map[string]Tool
-	tracer      trace.Tracer
-	writerMutex sync.Mutex // protects concurrent writes to writer (stdio transport)
-	authToken   string     // optional Bearer token required on every HTTP request
-	corsOrigin  string     // optional CORS origin (empty = disabled, "*" = allow all)
+	reader         io.Reader
+	writer         io.Writer
+	tools          map[string]Tool
+	tracer         trace.Tracer
+	writerMutex    sync.Mutex // protects concurrent writes to writer (stdio transport)
+	authToken      string     // optional Bearer token required on every HTTP request
+	corsOrigin     string     // optional CORS origin (empty = disabled, "*" = allow all)
+	rateLimiter    ratelimit.Limiter // inbound request rate limiter (nil = no limit)
+	maxConcurrent  int               // max concurrent tool executions (0 = no limit)
 }
 
 // Tool represents an MCP tool implementation.
@@ -124,6 +126,23 @@ func (s *Server) SetAuthToken(token string) {
 // Use "*" to allow all origins or a specific origin string (e.g., "https://example.com").
 func (s *Server) SetCORSOrigin(origin string) {
 	s.corsOrigin = origin
+}
+
+// SetRateLimit configures the inbound per-second request rate limit for the
+// HTTP transport.  When requestsPerSecond is <= 0, rate limiting is disabled.
+func (s *Server) SetRateLimit(requestsPerSecond float64) {
+	if requestsPerSecond <= 0 {
+		s.rateLimiter = nil
+		return
+	}
+	s.rateLimiter = ratelimit.NewLimiter(requestsPerSecond)
+}
+
+// SetMaxConcurrent configures the maximum number of concurrently executing
+// requests for the HTTP transport.  When maxConcurrent is <= 0, concurrency
+// limiting is disabled.
+func (s *Server) SetMaxConcurrent(maxConcurrent int) {
+	s.maxConcurrent = maxConcurrent
 }
 
 // registerTools registers all WAST command tools.
@@ -437,7 +456,17 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", s.mcpHTTPHandler)
+
+	// Build the handler chain: concurrency limit → rate limit → business logic.
+	handler := http.HandlerFunc(s.mcpHTTPHandler)
+	if s.maxConcurrent > 0 {
+		sem := make(chan struct{}, s.maxConcurrent)
+		handler = concurrencyLimitMiddleware(handler, sem)
+	}
+	if s.rateLimiter != nil {
+		handler = rateLimitMiddleware(handler, s.rateLimiter)
+	}
+	mux.HandleFunc("/mcp", handler)
 
 	srv := &http.Server{
 		Handler: mux,

@@ -96,6 +96,30 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"..."}]
 
 ```
 
+#### Rate limiting and concurrency control
+
+The HTTP transport includes built-in rate limiting and concurrency control to protect the server from resource exhaustion.
+
+**Rate limiting** (`--rate-limit`) caps the number of inbound requests accepted per second using a token-bucket algorithm. Requests that exceed the limit receive HTTP 429 with a `Retry-After: 1` header.
+
+**Concurrency limiting** (`--max-concurrent`) caps the number of tool executions (`tools/call`) that may run simultaneously. Requests that would exceed the limit are rejected immediately with HTTP 429 and a `Retry-After` header.
+
+```bash
+# Use default limits (10 req/s, 5 concurrent)
+wast serve --mcp --transport http
+
+# Higher limits for a trusted internal deployment
+wast serve --mcp --transport http --rate-limit 50 --max-concurrent 20
+
+# Disable both limits (not recommended for public endpoints)
+wast serve --mcp --transport http --rate-limit 0 --max-concurrent 0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--rate-limit` | `10` | Maximum inbound requests per second (0 = disabled) |
+| `--max-concurrent` | `5` | Maximum concurrent tool executions (0 = disabled) |
+
 #### CORS support for browser-based clients
 
 By default, the HTTP transport sets no CORS headers. To allow browser-based MCP clients (web UIs, browser extensions, etc.) to reach the server, pass `--cors-origin`:
