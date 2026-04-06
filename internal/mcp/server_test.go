@@ -1499,7 +1499,7 @@ func TestSendResponseWithMarshalError(t *testing.T) {
 	ch := make(chan int)
 	defer close(ch)
 
-	server.sendResponse(1, ch)
+	server.sendResponse(context.Background(), 1, ch)
 
 	// Should have received a fallback error response
 	outputStr := output.String()
@@ -1523,7 +1523,7 @@ func TestSendErrorWithMarshalError(t *testing.T) {
 	ch := make(chan int)
 	defer close(ch)
 
-	server.sendError(1, -32603, "Test error", ch)
+	server.sendError(context.Background(), 1, -32603, "Test error", ch)
 
 	// Should have received a fallback error response
 	outputStr := output.String()
@@ -1592,7 +1592,7 @@ func TestSendErrorWithComplexData(t *testing.T) {
 			var output bytes.Buffer
 			server.writer = &output
 
-			server.sendError(tt.id, tt.code, tt.msg, tt.data)
+			server.sendError(context.Background(), tt.id, tt.code, tt.msg, tt.data)
 
 			// Parse response
 			var response JSONRPCResponse
@@ -2171,7 +2171,7 @@ func TestSendProgress(t *testing.T) {
 	server.writer = &output
 
 	// Send a progress notification
-	server.sendProgress("crawling", 5, 10, "crawling: visited 5 pages")
+	server.sendProgress(context.Background(), "crawling", 5, 10, "crawling: visited 5 pages")
 
 	// Parse the notification
 	var notif JSONRPCNotification
@@ -2219,7 +2219,7 @@ func TestSendNotification(t *testing.T) {
 		"status": "running",
 		"phase":  "scanning",
 	}
-	server.sendNotification("custom/notification", params)
+	server.sendNotification(context.Background(), "custom/notification", params)
 
 	// Parse the notification
 	var notif JSONRPCNotification
@@ -2258,7 +2258,7 @@ func TestConcurrentProgressNotifications(t *testing.T) {
 	// Send multiple progress notifications concurrently
 	for i := 0; i < numNotifications; i++ {
 		go func(n int) {
-			server.sendProgress("test", n, numNotifications, fmt.Sprintf("progress %d", n))
+			server.sendProgress(context.Background(), "test", n, numNotifications, fmt.Sprintf("progress %d", n))
 			done <- true
 		}(i)
 	}

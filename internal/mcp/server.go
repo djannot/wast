@@ -62,21 +62,26 @@ type ProgressNotification struct {
 	Message   string `json:"message"`   // human-readable status
 }
 
+// writerCtxKey is the context key used to store a per-request io.Writer.
+// Using a private struct type avoids collisions with other packages.
+type writerCtxKey struct{}
+
+// contextWithWriter returns a new context carrying w as the per-request writer.
+// Handlers that write JSON-RPC responses should call contextWithWriter to
+// obtain a derived context instead of accessing s.writer directly so that HTTP
+// requests each get their own writer and do not require serialisation.
+func contextWithWriter(ctx context.Context, w io.Writer) context.Context {
+	return context.WithValue(ctx, writerCtxKey{}, w)
+}
+
 // Server represents an MCP server instance.
 type Server struct {
 	reader      io.Reader
 	writer      io.Writer
 	tools       map[string]Tool
 	tracer      trace.Tracer
-	writerMutex sync.Mutex // protects concurrent writes to writer
-	// httpRequestMu serialises HTTP requests so that s.writer can be safely
-	// swapped per-request without a data race.  This makes the HTTP transport
-	// effectively single-threaded; a single slow tool call will block all other
-	// HTTP clients for its entire duration.  This is a known limitation —
-	// per-request writer isolation without serialisation requires a refactor of
-	// the writer model and is tracked as a future improvement.
-	httpRequestMu sync.Mutex
-	authToken     string // optional Bearer token required on every HTTP request
+	writerMutex sync.Mutex // protects concurrent writes to writer (stdio transport)
+	authToken   string     // optional Bearer token required on every HTTP request
 }
 
 // Tool represents an MCP tool implementation.
@@ -144,7 +149,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Parse JSON-RPC request
 			var req JSONRPCRequest
 			if err := json.Unmarshal(line, &req); err != nil {
-				s.sendError(nil, -32700, "Parse error", err.Error())
+				s.sendError(ctx, nil, -32700, "Parse error", err.Error())
 				continue
 			}
 
@@ -164,33 +169,33 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) {
 	// Validate JSON-RPC version
 	if req.JSONRPC != "2.0" {
-		s.sendError(req.ID, -32600, "Invalid Request", "jsonrpc must be 2.0")
+		s.sendError(ctx, req.ID, -32600, "Invalid Request", "jsonrpc must be 2.0")
 		return
 	}
 
 	// Handle different methods
 	switch req.Method {
 	case "initialize":
-		s.handleInitialize(req)
+		s.handleInitialize(ctx, req)
 	case "tools/list":
-		s.handleToolsList(req)
+		s.handleToolsList(ctx, req)
 	case "tools/call":
 		s.handleToolsCall(ctx, req)
 	case "ping":
-		s.sendResponse(req.ID, map[string]interface{}{})
+		s.sendResponse(ctx, req.ID, map[string]interface{}{})
 	case "notifications/initialized":
 		// Notifications require no response; silently accept.
 	default:
 		// Per the MCP spec, messages without an id are notifications and must
 		// never receive an error response.
 		if req.ID != nil {
-			s.sendError(req.ID, -32601, "Method not found", fmt.Sprintf("Unknown method: %s", req.Method))
+			s.sendError(ctx, req.ID, -32601, "Method not found", fmt.Sprintf("Unknown method: %s", req.Method))
 		}
 	}
 }
 
 // handleInitialize handles the MCP initialize request.
-func (s *Server) handleInitialize(req *JSONRPCRequest) {
+func (s *Server) handleInitialize(ctx context.Context, req *JSONRPCRequest) {
 	result := map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"serverInfo": map[string]interface{}{
@@ -202,11 +207,11 @@ func (s *Server) handleInitialize(req *JSONRPCRequest) {
 		},
 	}
 
-	s.sendResponse(req.ID, result)
+	s.sendResponse(ctx, req.ID, result)
 }
 
 // handleToolsList handles the tools/list request.
-func (s *Server) handleToolsList(req *JSONRPCRequest) {
+func (s *Server) handleToolsList(ctx context.Context, req *JSONRPCRequest) {
 	toolsList := make([]map[string]interface{}, 0, len(s.tools))
 	for _, tool := range s.tools {
 		toolsList = append(toolsList, map[string]interface{}{
@@ -220,7 +225,7 @@ func (s *Server) handleToolsList(req *JSONRPCRequest) {
 		"tools": toolsList,
 	}
 
-	s.sendResponse(req.ID, result)
+	s.sendResponse(ctx, req.ID, result)
 }
 
 // handleToolsCall handles the tools/call request.
@@ -231,21 +236,21 @@ func (s *Server) handleToolsCall(ctx context.Context, req *JSONRPCRequest) {
 	}
 
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		s.sendError(req.ID, -32602, "Invalid params", err.Error())
+		s.sendError(ctx, req.ID, -32602, "Invalid params", err.Error())
 		return
 	}
 
 	// Find tool
 	tool, ok := s.tools[params.Name]
 	if !ok {
-		s.sendError(req.ID, -32602, "Invalid params", fmt.Sprintf("Unknown tool: %s", params.Name))
+		s.sendError(ctx, req.ID, -32602, "Invalid params", fmt.Sprintf("Unknown tool: %s", params.Name))
 		return
 	}
 
 	// Execute tool
 	result, err := tool.Execute(ctx, params.Arguments)
 	if err != nil {
-		s.sendError(req.ID, -32603, "Internal error", err.Error())
+		s.sendError(ctx, req.ID, -32603, "Internal error", err.Error())
 		return
 	}
 
@@ -259,7 +264,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *JSONRPCRequest) {
 		},
 	}
 
-	s.sendResponse(req.ID, response)
+	s.sendResponse(ctx, req.ID, response)
 }
 
 // formatToolResult formats tool execution result as JSON text.
@@ -271,11 +276,32 @@ func formatToolResult(result interface{}) string {
 	return string(data)
 }
 
-// sendResponse sends a JSON-RPC success response.
-func (s *Server) sendResponse(id interface{}, result interface{}) {
-	s.writerMutex.Lock()
-	defer s.writerMutex.Unlock()
+// writerForCtx returns the per-request writer stored in ctx, or nil if none is
+// present.  When nil is returned the caller should use s.writer under
+// s.writerMutex (stdio transport).
+func (s *Server) writerForCtx(ctx context.Context) io.Writer {
+	if w, ok := ctx.Value(writerCtxKey{}).(io.Writer); ok {
+		return w
+	}
+	return nil
+}
 
+// fprintlnWriter writes data followed by a newline to w, acquiring
+// s.writerMutex only when w is nil (i.e., the stdio fallback path).
+func (s *Server) fprintlnWriter(ctx context.Context, data string) {
+	if w := s.writerForCtx(ctx); w != nil {
+		// Per-request writer (HTTP transport) — no shared state, no mutex needed.
+		fmt.Fprintln(w, data)
+	} else {
+		// Shared writer (stdio transport) — serialise with mutex.
+		s.writerMutex.Lock()
+		defer s.writerMutex.Unlock()
+		fmt.Fprintln(s.writer, data)
+	}
+}
+
+// sendResponse sends a JSON-RPC success response.
+func (s *Server) sendResponse(ctx context.Context, id interface{}, result interface{}) {
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -286,17 +312,14 @@ func (s *Server) sendResponse(id interface{}, result interface{}) {
 	if err != nil {
 		// Fallback response for marshal errors
 		fallback := fmt.Sprintf(`{"jsonrpc":"2.0","id":%v,"error":{"code":-32603,"message":"Internal error: failed to marshal response"}}`, id)
-		fmt.Fprintln(s.writer, fallback)
+		s.fprintlnWriter(ctx, fallback)
 		return
 	}
-	fmt.Fprintln(s.writer, string(data))
+	s.fprintlnWriter(ctx, string(data))
 }
 
 // sendNotification sends a JSON-RPC notification (no response expected).
-func (s *Server) sendNotification(method string, params interface{}) {
-	s.writerMutex.Lock()
-	defer s.writerMutex.Unlock()
-
+func (s *Server) sendNotification(ctx context.Context, method string, params interface{}) {
 	notif := JSONRPCNotification{
 		JSONRPC: "2.0",
 		Method:  method,
@@ -308,25 +331,22 @@ func (s *Server) sendNotification(method string, params interface{}) {
 		// Silently fail on notification marshal errors
 		return
 	}
-	fmt.Fprintln(s.writer, string(data))
+	s.fprintlnWriter(ctx, string(data))
 }
 
 // sendProgress sends a progress notification to the MCP client.
-func (s *Server) sendProgress(phase string, completed, total int, message string) {
+func (s *Server) sendProgress(ctx context.Context, phase string, completed, total int, message string) {
 	progress := ProgressNotification{
 		Phase:     phase,
 		Completed: completed,
 		Total:     total,
 		Message:   message,
 	}
-	s.sendNotification("notifications/progress", progress)
+	s.sendNotification(ctx, "notifications/progress", progress)
 }
 
 // sendError sends a JSON-RPC error response.
-func (s *Server) sendError(id interface{}, code int, message string, data interface{}) {
-	s.writerMutex.Lock()
-	defer s.writerMutex.Unlock()
-
+func (s *Server) sendError(ctx context.Context, id interface{}, code int, message string, data interface{}) {
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -341,21 +361,29 @@ func (s *Server) sendError(id interface{}, code int, message string, data interf
 	if err != nil {
 		// Fallback response for marshal errors
 		fallback := fmt.Sprintf(`{"jsonrpc":"2.0","id":%v,"error":{"code":-32603,"message":"Internal error: failed to marshal error response"}}`, id)
-		fmt.Fprintln(s.writer, fallback)
+		s.fprintlnWriter(ctx, fallback)
 		return
 	}
-	fmt.Fprintln(s.writer, string(responseData))
+	s.fprintlnWriter(ctx, string(responseData))
 }
 
 // sseWriter wraps an http.ResponseWriter and formats writes as Server-Sent Events.
+// mu serialises concurrent writes from tool-internal goroutines (e.g. progress
+// callbacks fired by a pool of scanner/crawler workers) that share the same
+// per-request SSE connection.  http.ResponseWriter is not safe for concurrent
+// use, so all writes must be protected.
 type sseWriter struct {
+	mu      sync.Mutex
 	w       io.Writer
 	flusher http.Flusher
 }
 
 // Write formats p as an SSE data event and flushes it to the underlying writer.
 // It strips the trailing newline that fmt.Fprintln adds before formatting as SSE.
+// Write is safe to call from multiple goroutines concurrently.
 func (sw *sseWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	data := strings.TrimRight(string(p), "\n")
 	if data == "" {
 		return len(p), nil
@@ -473,17 +501,11 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 	// Determine transport mode from the Accept header.
 	acceptSSE := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 
-	// Serialise HTTP requests: swap s.writer to the per-request writer, call
-	// handleRequest, then restore s.writer.  This ensures concurrent HTTP
-	// callers do not interleave their writes.
-	// WARNING: this serialises all HTTP requests — a single slow tool call
-	// blocks every other HTTP client for its entire duration.  See the
-	// httpRequestMu field comment for context.
-	s.httpRequestMu.Lock()
-	defer s.httpRequestMu.Unlock()
-
 	if acceptSSE {
 		// ---- SSE (streaming) mode ----
+		// Each request gets its own sseWriter; store it in the context so that
+		// all send helpers (sendResponse, sendNotification, …) write directly
+		// to this request's connection without any shared-state mutex.
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
@@ -496,26 +518,19 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Mcp-Session-Id", sessionID)
 		w.WriteHeader(http.StatusOK)
 
-		origWriter := s.writer
-		// Restore s.writer even if handleRequest panics.
-		defer func() { s.writer = origWriter }()
-		s.writer = &sseWriter{w: w, flusher: flusher}
-		s.handleRequest(r.Context(), &req)
+		ctx := contextWithWriter(r.Context(), &sseWriter{w: w, flusher: flusher})
+		s.handleRequest(ctx, &req)
 	} else {
 		// ---- JSON (non-streaming) mode ----
-		// Buffer all writes; after handleRequest returns, extract the last
+		// Buffer all writes via a per-request stringWriter stored in the
+		// context.  After handleRequest returns, extract the last
 		// newline-delimited JSON object as the HTTP response body.  Any
 		// progress notifications emitted before the final response are
 		// intentionally discarded: they are NDJSON and not valid
 		// application/json.  Clients that need notifications must use SSE.
 		var buf strings.Builder
-		origWriter := s.writer
-		// Restore s.writer even if handleRequest panics.
-		defer func() { s.writer = origWriter }()
-		s.writer = &stringWriter{sb: &buf}
-		s.handleRequest(r.Context(), &req)
-		// Restore eagerly so the deferred restore is a no-op.
-		s.writer = origWriter
+		ctx := contextWithWriter(r.Context(), &stringWriter{sb: &buf})
+		s.handleRequest(ctx, &req)
 
 		// The final response is always the last non-empty line in the buffer.
 		responseBody := lastLine(buf.String())
@@ -555,11 +570,18 @@ func isValidSessionID(id string) bool {
 }
 
 // stringWriter wraps a strings.Builder to satisfy io.Writer.
+// mu serialises concurrent writes from tool-internal goroutines (e.g. progress
+// callbacks fired by a pool of scanner/crawler workers) that share the same
+// per-request buffer.  strings.Builder.Write is not safe for concurrent use.
 type stringWriter struct {
+	mu sync.Mutex
 	sb *strings.Builder
 }
 
+// Write is safe to call from multiple goroutines concurrently.
 func (sw *stringWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	return sw.sb.Write(p)
 }
 
@@ -652,9 +674,10 @@ func (t *ReconTool) Execute(ctx context.Context, params json.RawMessage) (interf
 		}
 	}
 
-	// Create progress callback
+	// Create progress callback — captures ctx so progress notifications are
+	// routed to the correct per-request writer.
 	progressCallback := func(phase, message string) {
-		t.server.sendProgress(phase, 0, 0, message)
+		t.server.sendProgress(ctx, phase, 0, 0, message)
 	}
 
 	// Execute recon command logic
@@ -878,13 +901,14 @@ func (t *ScanTool) Execute(ctx context.Context, params json.RawMessage) (interfa
 
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
-	// Create progress callback
+	// Create progress callback — captures ctx so progress notifications are
+	// routed to the correct per-request writer.
 	progressCallback := func(completed, total int, phase string) {
 		message := fmt.Sprintf("%s: %d", phase, completed)
 		if total > 0 {
 			message = fmt.Sprintf("%s: %d/%d", phase, completed, total)
 		}
-		t.server.sendProgress(phase, completed, total, message)
+		t.server.sendProgress(ctx, phase, completed, total, message)
 	}
 
 	// Execute scan command logic
@@ -1093,10 +1117,11 @@ func (t *CrawlTool) Execute(ctx context.Context, params json.RawMessage) (interf
 
 	rateLimitConfig := ratelimit.Config{RequestsPerSecond: args.RequestsPerSecond}
 
-	// Create progress callback
+	// Create progress callback — captures ctx so progress notifications are
+	// routed to the correct per-request writer.
 	progressCallback := func(visited, discovered int, phase string) {
 		message := fmt.Sprintf("crawling: visited %d pages, discovered %d links", visited, discovered)
-		t.server.sendProgress(phase, visited, 0, message)
+		t.server.sendProgress(ctx, phase, visited, 0, message)
 	}
 
 	// Execute crawl command logic

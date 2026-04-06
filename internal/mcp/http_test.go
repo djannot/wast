@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -557,8 +559,8 @@ func (pt *progressTool) Description() string { return "emits a progress notifica
 func (pt *progressTool) InputSchema() map[string]interface{} {
 	return map[string]interface{}{"type": "object"}
 }
-func (pt *progressTool) Execute(_ context.Context, _ json.RawMessage) (interface{}, error) {
-	pt.server.sendProgress("testing", 1, 1, "step 1")
+func (pt *progressTool) Execute(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+	pt.server.sendProgress(ctx, "testing", 1, 1, "step 1")
 	return map[string]string{"status": "done"}, nil
 }
 
@@ -639,5 +641,165 @@ func TestGenerateSessionID(t *testing.T) {
 	// IDs should be valid hex strings of length 32 (16 bytes * 2).
 	if len(id1) != 32 {
 		t.Errorf("expected session ID length 32, got %d", len(id1))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent HTTP request test
+// ---------------------------------------------------------------------------
+
+// slowTool is a minimal Tool that sleeps for a configurable duration before
+// returning, simulating a long-running operation like a full wast_scan.
+type slowTool struct {
+	sleep time.Duration
+}
+
+func (st *slowTool) Name() string        { return "test_slow" }
+func (st *slowTool) Description() string { return "slow tool for concurrency testing" }
+func (st *slowTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
+}
+func (st *slowTool) Execute(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+	select {
+	case <-time.After(st.sleep):
+		return map[string]string{"status": "done"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestHTTP_ConcurrentRequests verifies that the HTTP transport handles multiple
+// requests in parallel rather than serialising them behind a mutex.  Two
+// simultaneous slow-tool calls should complete in approximately the time of
+// one call, not the sum of both.
+func TestHTTP_ConcurrentRequests(t *testing.T) {
+	const toolSleep = 100 * time.Millisecond
+
+	s := newTestServer()
+	s.tools["test_slow"] = &slowTool{sleep: toolSleep}
+
+	// Build a tools/call request that invokes test_slow.
+	params, _ := json.Marshal(map[string]interface{}{
+		"name":      "test_slow",
+		"arguments": map[string]interface{}{},
+	})
+	reqBody, _ := json.Marshal(JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  params,
+	})
+
+	// Use a real HTTP test server so that Go's net/http stack dispatches each
+	// inbound connection to a separate goroutine — giving us true concurrency.
+	srv := httptest.NewServer(http.HandlerFunc(s.mcpHTTPHandler))
+	defer srv.Close()
+
+	const numRequests = 2
+	var wg sync.WaitGroup
+	wg.Add(numRequests)
+
+	start := time.Now()
+	for i := 0; i < numRequests; i++ {
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post(srv.URL+"/mcp", "application/json", bytes.NewReader(reqBody))
+			if err != nil {
+				t.Errorf("concurrent request failed: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+			io.ReadAll(resp.Body) //nolint:errcheck
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// If requests were serialised the wall-clock time would be ≥ 2×toolSleep.
+	// In parallel it should be close to 1×toolSleep.  We allow generous
+	// headroom (1.8×) to avoid flakiness on slow CI runners.
+	maxSerial := time.Duration(float64(toolSleep) * 1.8)
+	if elapsed >= maxSerial {
+		t.Errorf("HTTP requests appear to be serialised: elapsed=%v, want < %v (parallel threshold)", elapsed, maxSerial)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Intra-request concurrent progress notification test
+// ---------------------------------------------------------------------------
+
+// concurrentProgressTool is a tool that fires multiple sendProgress calls
+// concurrently from goroutines, simulating tool-internal worker pools (e.g.
+// scanner discovery goroutines) calling progressCallback in parallel within a
+// single request.
+type concurrentProgressTool struct {
+	server     *Server
+	numWorkers int
+}
+
+func (ct *concurrentProgressTool) Name() string { return "test_concurrent_progress" }
+func (ct *concurrentProgressTool) Description() string {
+	return "fires progress from concurrent goroutines"
+}
+func (ct *concurrentProgressTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
+}
+func (ct *concurrentProgressTool) Execute(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+	var wg sync.WaitGroup
+	wg.Add(ct.numWorkers)
+	// All goroutines start simultaneously to maximise the chance of concurrent
+	// writes hitting the per-request writer.
+	start := make(chan struct{})
+	for i := 0; i < ct.numWorkers; i++ {
+		go func(n int) {
+			defer wg.Done()
+			<-start // wait for the starting gun
+			ct.server.sendProgress(ctx, "test", n, ct.numWorkers, fmt.Sprintf("worker %d done", n))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return map[string]string{"status": "done"}, nil
+}
+
+// TestHTTP_SSE_ConcurrentProgressNotifications verifies that concurrent
+// sendProgress calls from tool-internal goroutines sharing a single SSE
+// connection do not cause a data race.  Run with -race to get the full benefit.
+func TestHTTP_SSE_ConcurrentProgressNotifications(t *testing.T) {
+	const numWorkers = 20
+
+	s := newTestServer()
+	s.tools["test_concurrent_progress"] = &concurrentProgressTool{server: s, numWorkers: numWorkers}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"name":      "test_concurrent_progress",
+		"arguments": map[string]interface{}{},
+	})
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  params,
+	}
+
+	// Use the SSE path so that all concurrent progress notifications are routed
+	// through the per-request sseWriter, which must be concurrency-safe.
+	w := doMCPPost(t, s, req, "text/event-stream")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// We expect exactly numWorkers progress events plus one final result event.
+	body := w.Body.String()
+	dataLines := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			dataLines++
+		}
+	}
+	// numWorkers progress notifications + 1 final tools/call result = numWorkers+1
+	if dataLines != numWorkers+1 {
+		t.Errorf("expected %d SSE data lines, got %d\nbody:\n%s", numWorkers+1, dataLines, body)
 	}
 }
