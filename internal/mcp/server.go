@@ -67,9 +67,9 @@ type ProgressNotification struct {
 type writerCtxKey struct{}
 
 // contextWithWriter returns a new context carrying w as the per-request writer.
-// Handlers that write JSON-RPC responses should call writeToCtx instead of
-// accessing s.writer directly so that HTTP requests each get their own writer
-// and do not require serialisation.
+// Handlers that write JSON-RPC responses should call contextWithWriter to
+// obtain a derived context instead of accessing s.writer directly so that HTTP
+// requests each get their own writer and do not require serialisation.
 func contextWithWriter(ctx context.Context, w io.Writer) context.Context {
 	return context.WithValue(ctx, writerCtxKey{}, w)
 }
@@ -368,14 +368,22 @@ func (s *Server) sendError(ctx context.Context, id interface{}, code int, messag
 }
 
 // sseWriter wraps an http.ResponseWriter and formats writes as Server-Sent Events.
+// mu serialises concurrent writes from tool-internal goroutines (e.g. progress
+// callbacks fired by a pool of scanner/crawler workers) that share the same
+// per-request SSE connection.  http.ResponseWriter is not safe for concurrent
+// use, so all writes must be protected.
 type sseWriter struct {
+	mu      sync.Mutex
 	w       io.Writer
 	flusher http.Flusher
 }
 
 // Write formats p as an SSE data event and flushes it to the underlying writer.
 // It strips the trailing newline that fmt.Fprintln adds before formatting as SSE.
+// Write is safe to call from multiple goroutines concurrently.
 func (sw *sseWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	data := strings.TrimRight(string(p), "\n")
 	if data == "" {
 		return len(p), nil
@@ -562,11 +570,18 @@ func isValidSessionID(id string) bool {
 }
 
 // stringWriter wraps a strings.Builder to satisfy io.Writer.
+// mu serialises concurrent writes from tool-internal goroutines (e.g. progress
+// callbacks fired by a pool of scanner/crawler workers) that share the same
+// per-request buffer.  strings.Builder.Write is not safe for concurrent use.
 type stringWriter struct {
+	mu sync.Mutex
 	sb *strings.Builder
 }
 
+// Write is safe to call from multiple goroutines concurrently.
 func (sw *stringWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 	return sw.sb.Write(p)
 }
 

@@ -723,3 +723,81 @@ func TestHTTP_ConcurrentRequests(t *testing.T) {
 		t.Errorf("HTTP requests appear to be serialised: elapsed=%v, want < %v (parallel threshold)", elapsed, maxSerial)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Intra-request concurrent progress notification test
+// ---------------------------------------------------------------------------
+
+// concurrentProgressTool is a tool that fires multiple sendProgress calls
+// concurrently from goroutines, simulating tool-internal worker pools (e.g.
+// scanner discovery goroutines) calling progressCallback in parallel within a
+// single request.
+type concurrentProgressTool struct {
+	server     *Server
+	numWorkers int
+}
+
+func (ct *concurrentProgressTool) Name() string        { return "test_concurrent_progress" }
+func (ct *concurrentProgressTool) Description() string { return "fires progress from concurrent goroutines" }
+func (ct *concurrentProgressTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
+}
+func (ct *concurrentProgressTool) Execute(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+	var wg sync.WaitGroup
+	wg.Add(ct.numWorkers)
+	// All goroutines start simultaneously to maximise the chance of concurrent
+	// writes hitting the per-request writer.
+	start := make(chan struct{})
+	for i := 0; i < ct.numWorkers; i++ {
+		go func(n int) {
+			defer wg.Done()
+			<-start // wait for the starting gun
+			ct.server.sendProgress(ctx, "test", n, ct.numWorkers, fmt.Sprintf("worker %d done", n))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return map[string]string{"status": "done"}, nil
+}
+
+// TestHTTP_SSE_ConcurrentProgressNotifications verifies that concurrent
+// sendProgress calls from tool-internal goroutines sharing a single SSE
+// connection do not cause a data race.  Run with -race to get the full benefit.
+func TestHTTP_SSE_ConcurrentProgressNotifications(t *testing.T) {
+	const numWorkers = 20
+
+	s := newTestServer()
+	s.tools["test_concurrent_progress"] = &concurrentProgressTool{server: s, numWorkers: numWorkers}
+
+	params, _ := json.Marshal(map[string]interface{}{
+		"name":      "test_concurrent_progress",
+		"arguments": map[string]interface{}{},
+	})
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  params,
+	}
+
+	// Use the SSE path so that all concurrent progress notifications are routed
+	// through the per-request sseWriter, which must be concurrency-safe.
+	w := doMCPPost(t, s, req, "text/event-stream")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// We expect exactly numWorkers progress events plus one final result event.
+	body := w.Body.String()
+	dataLines := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			dataLines++
+		}
+	}
+	// numWorkers progress notifications + 1 final tools/call result = numWorkers+1
+	if dataLines != numWorkers+1 {
+		t.Errorf("expected %d SSE data lines, got %d\nbody:\n%s", numWorkers+1, dataLines, body)
+	}
+}
