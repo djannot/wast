@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -68,7 +69,14 @@ type Server struct {
 	tools         map[string]Tool
 	tracer        trace.Tracer
 	writerMutex   sync.Mutex // protects concurrent writes to writer
-	httpRequestMu sync.Mutex // serializes HTTP requests to safely swap s.writer
+	// httpRequestMu serialises HTTP requests so that s.writer can be safely
+	// swapped per-request without a data race.  This makes the HTTP transport
+	// effectively single-threaded; a single slow tool call will block all other
+	// HTTP clients for its entire duration.  This is a known limitation —
+	// per-request writer isolation without serialisation requires a refactor of
+	// the writer model and is tracked as a future improvement.
+	httpRequestMu sync.Mutex
+	authToken     string // optional Bearer token required on every HTTP request
 }
 
 // Tool represents an MCP tool implementation.
@@ -96,6 +104,13 @@ func NewServer() *Server {
 // SetTracer sets the OpenTelemetry tracer for the server.
 func (s *Server) SetTracer(tracer trace.Tracer) {
 	s.tracer = tracer
+}
+
+// SetAuthToken configures an optional Bearer token that must be present in the
+// Authorization header of every HTTP request.  When empty (the default), no
+// authentication is performed.
+func (s *Server) SetAuthToken(token string) {
+	s.authToken = token
 }
 
 // registerTools registers all WAST command tools.
@@ -364,21 +379,37 @@ func generateSessionID() string {
 	return hex.EncodeToString(b)
 }
 
-// ServeHTTP starts an HTTP server that accepts MCP JSON-RPC requests at POST /mcp,
-// implementing the MCP Streamable HTTP transport (protocol version 2024-11-05+).
+// ListenAndServe starts an HTTP server that accepts MCP JSON-RPC requests at
+// POST /mcp, implementing the MCP Streamable HTTP transport (protocol version
+// 2024-11-05+).
 //
 // Clients may send:
 //   - Accept: application/json  — synchronous JSON response
 //   - Accept: text/event-stream — streaming SSE response with progress notifications
 //
 // Session tracking is provided via the Mcp-Session-Id response header.
-func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
+//
+// Security note: by default the endpoint has no authentication.  It should be
+// firewalled or fronted by an authenticating reverse proxy in production.
+// Use SetAuthToken to require a Bearer token on every request.
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	// Bind the listener before starting the shutdown goroutine so that context
+	// cancellation (even an already-cancelled context) reliably stops the server.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen error: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", s.mcpHTTPHandler)
 
 	srv := &http.Server{
-		Addr:    addr,
 		Handler: mux,
+		// Conservative timeouts; WriteTimeout is generous to accommodate
+		// long-running tools (recon, scanning, crawling).
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Shutdown the HTTP server when the context is cancelled.
@@ -389,7 +420,7 @@ func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
 		srv.Shutdown(shutdownCtx) //nolint:errcheck
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("http server error: %w", err)
 	}
 	return nil
@@ -404,7 +435,17 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the full request body.
+	// Optional Bearer token authentication.
+	if s.authToken != "" {
+		if r.Header.Get("Authorization") != "Bearer "+s.authToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Limit request body to 1 MiB to prevent memory exhaustion from a
+	// malicious or misbehaving client.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeHTTPJSONRPCError(w, nil, -32700, "Parse error", err.Error())
@@ -418,8 +459,13 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Session management: echo an existing session ID or mint a new one.
+	// Session management: echo a valid existing session ID or mint a new one.
+	// Client-supplied IDs are validated to prevent header injection.
 	sessionID := r.Header.Get("Mcp-Session-Id")
+	if sessionID != "" && !isValidSessionID(sessionID) {
+		http.Error(w, "Bad Request: invalid Mcp-Session-Id", http.StatusBadRequest)
+		return
+	}
 	if sessionID == "" {
 		sessionID = generateSessionID()
 	}
@@ -430,6 +476,9 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 	// Serialise HTTP requests: swap s.writer to the per-request writer, call
 	// handleRequest, then restore s.writer.  This ensures concurrent HTTP
 	// callers do not interleave their writes.
+	// WARNING: this serialises all HTTP requests — a single slow tool call
+	// blocks every other HTTP client for its entire duration.  See the
+	// httpRequestMu field comment for context.
 	s.httpRequestMu.Lock()
 	defer s.httpRequestMu.Unlock()
 
@@ -448,24 +497,61 @@ func (s *Server) mcpHTTPHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 		origWriter := s.writer
+		// Restore s.writer even if handleRequest panics.
+		defer func() { s.writer = origWriter }()
 		s.writer = &sseWriter{w: w, flusher: flusher}
 		s.handleRequest(r.Context(), &req)
-		s.writer = origWriter
 	} else {
 		// ---- JSON (non-streaming) mode ----
+		// Buffer all writes; after handleRequest returns, extract the last
+		// newline-delimited JSON object as the HTTP response body.  Any
+		// progress notifications emitted before the final response are
+		// intentionally discarded: they are NDJSON and not valid
+		// application/json.  Clients that need notifications must use SSE.
 		var buf strings.Builder
 		origWriter := s.writer
+		// Restore s.writer even if handleRequest panics.
+		defer func() { s.writer = origWriter }()
 		s.writer = &stringWriter{sb: &buf}
 		s.handleRequest(r.Context(), &req)
+		// Restore eagerly so the deferred restore is a no-op.
 		s.writer = origWriter
+
+		// The final response is always the last non-empty line in the buffer.
+		responseBody := lastLine(buf.String())
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Mcp-Session-Id", sessionID)
 		w.WriteHeader(http.StatusOK)
-		// handleRequest writes a complete JSON-RPC line (with trailing \n via
-		// fmt.Fprintln).  Trim the newline so the HTTP body is clean JSON.
-		fmt.Fprint(w, strings.TrimRight(buf.String(), "\n"))
+		fmt.Fprint(w, responseBody)
 	}
+}
+
+// lastLine returns the last non-empty newline-delimited token in s.
+func lastLine(s string) string {
+	result := ""
+	for _, line := range strings.Split(s, "\n") {
+		if line != "" {
+			result = line
+		}
+	}
+	return result
+}
+
+// isValidSessionID returns true if id consists only of ASCII alphanumeric
+// characters and hyphens, and is at most 64 characters long.  This prevents
+// untrusted client input from being echoed as an arbitrary response header.
+func isValidSessionID(id string) bool {
+	if len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // stringWriter wraps a strings.Builder to satisfy io.Writer.

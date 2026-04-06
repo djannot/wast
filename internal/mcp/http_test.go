@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestServer creates a Server suitable for HTTP handler tests.
@@ -376,24 +378,247 @@ func TestHTTP_SSE_Initialize(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ServeHTTP integration test (full HTTP server lifecycle)
+// ListenAndServe integration test (full HTTP server lifecycle)
 // ---------------------------------------------------------------------------
 
-func TestHTTP_ServeHTTP_LifecycleCancel(t *testing.T) {
+func TestHTTP_ListenAndServe_LifecycleCancel(t *testing.T) {
 	s := newTestServer()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Use a ready channel so we know the server is up before cancelling.
+	// We start the server in a goroutine and give it a brief moment to bind.
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- s.ServeHTTP(ctx, "127.0.0.1:0")
+		errCh <- s.ListenAndServe(ctx, "127.0.0.1:0")
 	}()
 
-	// Cancel the context immediately; the server should shut down cleanly.
+	// Give the server a moment to start listening before cancelling.
+	time.Sleep(20 * time.Millisecond)
 	cancel()
 
-	if err := <-errCh; err != nil {
-		t.Errorf("ServeHTTP returned unexpected error after context cancel: %v", err)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("ListenAndServe returned unexpected error after context cancel: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ListenAndServe did not return within 3 seconds after context cancel")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input validation tests
+// ---------------------------------------------------------------------------
+
+func TestHTTP_InvalidSessionID_TooLong(t *testing.T) {
+	s := newTestServer()
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	reqBytes, _ := json.Marshal(req)
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(reqBytes))
+	r.Header.Set("Content-Type", "application/json")
+	// 65-character session ID — exceeds the 64-char limit.
+	r.Header.Set("Mcp-Session-Id", strings.Repeat("a", 65))
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized session ID, got %d", w.Code)
+	}
+}
+
+func TestHTTP_InvalidSessionID_BadChars(t *testing.T) {
+	s := newTestServer()
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	reqBytes, _ := json.Marshal(req)
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(reqBytes))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Mcp-Session-Id", "bad session\r\ninjection")
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid session ID chars, got %d", w.Code)
+	}
+}
+
+func TestHTTP_ValidSessionID_AlphanumericHyphen(t *testing.T) {
+	s := newTestServer()
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	reqBytes, _ := json.Marshal(req)
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(reqBytes))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Mcp-Session-Id", "abc-123-XYZ")
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for valid session ID, got %d", w.Code)
+	}
+	if got := w.Header().Get("Mcp-Session-Id"); got != "abc-123-XYZ" {
+		t.Errorf("expected session ID to be echoed back as-is, got %q", got)
+	}
+}
+
+func TestHTTP_BodySizeLimit(t *testing.T) {
+	s := newTestServer()
+
+	// Send a body that exceeds 1 MiB.
+	oversized := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":"%s"}`,
+		strings.Repeat("x", 1<<20+1))
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(oversized))
+	r.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	// The handler should return a JSON-RPC parse error when reading fails.
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with JSON-RPC error body, got %d", w.Code)
+	}
+	resp := parseJSONRPCResponse(t, w)
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error for oversized body, got nil")
+	}
+}
+
+func TestHTTP_AuthToken_Missing(t *testing.T) {
+	s := newTestServer()
+	s.SetAuthToken("secret-token")
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	w := doMCPPost(t, s, req, "application/json")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when auth token missing, got %d", w.Code)
+	}
+}
+
+func TestHTTP_AuthToken_Wrong(t *testing.T) {
+	s := newTestServer()
+	s.SetAuthToken("secret-token")
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	reqBytes, _ := json.Marshal(req)
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(reqBytes))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer wrong-token")
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for wrong auth token, got %d", w.Code)
+	}
+}
+
+func TestHTTP_AuthToken_Correct(t *testing.T) {
+	s := newTestServer()
+	s.SetAuthToken("secret-token")
+
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
+	reqBytes, _ := json.Marshal(req)
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(reqBytes))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer secret-token")
+
+	w := httptest.NewRecorder()
+	s.mcpHTTPHandler(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for correct auth token, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Non-SSE progress notification stripping test
+// ---------------------------------------------------------------------------
+
+// progressTool is a minimal Tool that emits a progress notification before
+// returning a result.  It exercises the non-SSE multi-JSON body fix.
+type progressTool struct {
+	server *Server
+}
+
+func (pt *progressTool) Name() string        { return "test_progress" }
+func (pt *progressTool) Description() string { return "emits a progress notification" }
+func (pt *progressTool) InputSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
+}
+func (pt *progressTool) Execute(_ context.Context, _ json.RawMessage) (interface{}, error) {
+	pt.server.sendProgress("testing", 1, 1, "step 1")
+	return map[string]string{"status": "done"}, nil
+}
+
+func TestHTTP_NonSSE_ProgressNotificationsDiscarded(t *testing.T) {
+	s := newTestServer()
+	pt := &progressTool{server: s}
+	s.tools["test_progress"] = pt
+
+	params := map[string]interface{}{
+		"name":      "test_progress",
+		"arguments": map[string]interface{}{},
+	}
+	paramsBytes, _ := json.Marshal(params)
+
+	req := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      99,
+		Method:  "tools/call",
+		Params:  paramsBytes,
+	}
+
+	w := doMCPPost(t, s, req, "application/json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Body must be valid JSON (a single object, not NDJSON).
+	resp := parseJSONRPCResponse(t, w)
+	if resp.Error != nil {
+		t.Fatalf("unexpected JSON-RPC error: %+v", resp.Error)
+	}
+	// The response should have the tool result, not a progress notification.
+	if resp.ID == nil {
+		t.Error("expected response ID to be set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isValidSessionID unit tests
+// ---------------------------------------------------------------------------
+
+func TestIsValidSessionID(t *testing.T) {
+	tests := []struct {
+		id    string
+		valid bool
+	}{
+		{"abc-123", true},
+		{"ABC-xyz-000", true},
+		{strings.Repeat("a", 64), true},
+		{strings.Repeat("a", 65), false},        // too long
+		{"bad session", false},                   // space
+		{"inject\r\nHeader: val", false},         // CRLF injection
+		{"under_score", false},                   // underscore not allowed
+		{"", true},                               // empty is handled before validation
+	}
+	for _, tc := range tests {
+		got := isValidSessionID(tc.id)
+		if got != tc.valid {
+			t.Errorf("isValidSessionID(%q) = %v, want %v", tc.id, got, tc.valid)
+		}
 	}
 }
 
