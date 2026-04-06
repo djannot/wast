@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/djannot/wast/pkg/httputil"
 )
 
 // Listener defines the interface for network listeners, allowing for mock implementations in tests.
@@ -303,7 +305,7 @@ func (p *Proxy) captureResponse(resp *http.Response, reqID string, startTime tim
 	// Read body
 	var bodyStr string
 	if resp.Body != nil {
-		body, err := io.ReadAll(resp.Body)
+		body, err := httputil.ReadResponseBody(resp.Body)
 		if err == nil {
 			bodyStr = string(body)
 			// Reset the body for returning to client

@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -671,7 +670,7 @@ func (s *XSSScanner) testParameter(ctx context.Context, baseURL *url.URL, paramN
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -810,7 +809,7 @@ func (s *XSSScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, pa
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -1112,7 +1111,7 @@ func (s *XSSScanner) scanForDOMXSS(ctx context.Context, targetURL *url.URL) []XS
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return findings
 	}
@@ -1389,7 +1388,7 @@ func (s *XSSScanner) VerifyFinding(ctx context.Context, finding *XSSFinding, con
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

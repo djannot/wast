@@ -6,8 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+
+	"github.com/djannot/wast/pkg/httputil"
 )
 
 // GraphQLSecurityResult represents the result of GraphQL security testing.
@@ -116,7 +117,7 @@ func (d *Discoverer) testGraphQLIntrospection(ctx context.Context, url string) (
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return false, nil
 	}

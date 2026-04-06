@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/djannot/wast/pkg/httputil"
 )
 
 // MITMConfig holds the configuration for MITM proxy.
@@ -279,7 +281,7 @@ func (m *MITMHandler) captureRequest(r *http.Request, reqID string) *Intercepted
 func (m *MITMHandler) captureResponse(resp *http.Response, reqID string, startTime time.Time) *InterceptedResponse {
 	var bodyStr string
 	if resp.Body != nil {
-		body, err := io.ReadAll(resp.Body)
+		body, err := httputil.ReadResponseBody(resp.Body)
 		if err == nil {
 			bodyStr = string(body)
 			resp.Body = io.NopCloser(bytes.NewReader(body))

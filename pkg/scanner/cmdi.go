@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"fmt"
 	"html"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -761,7 +760,7 @@ func (s *CMDiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, 0
 	}
@@ -818,7 +817,7 @@ func (s *CMDiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, 0
 	}
@@ -899,7 +898,7 @@ func (s *CMDiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -979,7 +978,7 @@ func (s *CMDiScanner) testOutputBased(ctx context.Context, baseURL *url.URL, par
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -1084,7 +1083,7 @@ func (s *CMDiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 		}
 
 		// Read response body to check for shell errors (which would indicate even higher confidence)
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -1177,7 +1176,7 @@ func (s *CMDiScanner) testErrorBasedPOST(ctx context.Context, baseURL *url.URL, 
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -1260,7 +1259,7 @@ func (s *CMDiScanner) testOutputBasedPOST(ctx context.Context, baseURL *url.URL,
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -1372,7 +1371,7 @@ func (s *CMDiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, p
 		}
 
 		// Read response body to check for shell errors
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -1641,7 +1640,7 @@ func (s *CMDiScanner) VerifyFinding(ctx context.Context, finding *CMDiFinding, c
 				continue
 			}
 
-			body, err := io.ReadAll(resp.Body)
+			body, err := readResponseBody(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				continue

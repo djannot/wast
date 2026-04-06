@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -446,7 +445,7 @@ func (s *PathTraversalScanner) testURLPathTraversal(ctx context.Context, parsedU
 		}
 
 		// Close body explicitly (not via defer) to avoid resource leak in loop.
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := readResponseBody(resp.Body)
 		resp.Body.Close()
 
 		if readErr != nil {
@@ -632,7 +631,7 @@ func (s *PathTraversalScanner) testParameterPOST(ctx context.Context, baseURL *u
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -773,7 +772,7 @@ func (s *PathTraversalScanner) testPayloadVariant(ctx context.Context, baseURL *
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -1146,7 +1145,7 @@ func (s *PathTraversalScanner) VerifyFinding(ctx context.Context, finding *PathT
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

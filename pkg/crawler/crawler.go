@@ -3,7 +3,6 @@ package crawler
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/djannot/wast/pkg/auth"
+	"github.com/djannot/wast/pkg/httputil"
 	"github.com/djannot/wast/pkg/ratelimit"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/html"
@@ -706,7 +706,7 @@ func (c *Crawler) fetchPageHTTP(ctx context.Context, targetURL string) (string, 
 		return "", &httpError{statusCode: resp.StatusCode}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return "", err
 	}

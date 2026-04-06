@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -21,9 +20,6 @@ import (
 )
 
 const (
-	// maxResponseSize is the maximum response size to analyze (10MB) to prevent memory exhaustion
-	maxResponseSize = 10 * 1024 * 1024
-
 	// Content-based detection thresholds - these are baseline values
 	// Actual thresholds are adaptive based on response characteristics
 	minWordCountDifference         = 2  // Minimum word count difference to consider significant (lowered from 3 for DVWA)
@@ -713,7 +709,7 @@ func (s *SQLiScanner) getBaselineWithTiming(ctx context.Context, baseURL *url.UR
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, 0
 	}
@@ -769,7 +765,7 @@ func (s *SQLiScanner) getBaselineWithTimingPOST(ctx context.Context, baseURL *ur
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, 0
 	}
@@ -828,7 +824,7 @@ func (s *SQLiScanner) testErrorBased(ctx context.Context, baseURL *url.URL, para
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -924,8 +920,8 @@ func isNonDataParameter(paramName string) bool {
 
 func extractBodyContent(htmlStr string) string {
 	// Limit input size to prevent memory exhaustion
-	if len(htmlStr) > maxResponseSize {
-		htmlStr = htmlStr[:maxResponseSize]
+	if len(htmlStr) > maxResponseBodySize {
+		htmlStr = htmlStr[:maxResponseBodySize]
 	}
 
 	doc, err := html.Parse(strings.NewReader(htmlStr))
@@ -975,8 +971,8 @@ func extractDataContent(htmlStr string) string {
 	htmlStr = normalizeResponseContent(htmlStr)
 
 	// Limit input size to prevent memory exhaustion
-	if len(htmlStr) > maxResponseSize {
-		htmlStr = htmlStr[:maxResponseSize]
+	if len(htmlStr) > maxResponseBodySize {
+		htmlStr = htmlStr[:maxResponseBodySize]
 	}
 
 	doc, err := html.Parse(strings.NewReader(htmlStr))
@@ -1059,8 +1055,8 @@ func countWords(body string) int {
 // Uses pre-compiled regex patterns for performance
 func countStructuralElements(htmlStr string) int {
 	// Limit input size to prevent excessive processing
-	if len(htmlStr) > maxResponseSize {
-		htmlStr = htmlStr[:maxResponseSize]
+	if len(htmlStr) > maxResponseBodySize {
+		htmlStr = htmlStr[:maxResponseBodySize]
 	}
 
 	count := 0
@@ -1082,8 +1078,8 @@ func countStructuralElements(htmlStr string) int {
 // responses where the difference is in the number of data rows returned
 func countDataRows(htmlStr string) int {
 	// Limit input size to prevent excessive processing
-	if len(htmlStr) > maxResponseSize {
-		htmlStr = htmlStr[:maxResponseSize]
+	if len(htmlStr) > maxResponseBodySize {
+		htmlStr = htmlStr[:maxResponseBodySize]
 	}
 
 	// Parse HTML to count rows with data cells
@@ -1314,7 +1310,7 @@ func (s *SQLiScanner) makeRequest(ctx context.Context, baseURL *url.URL, paramNa
 		return nil, fmt.Errorf("rate limited")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -1368,7 +1364,7 @@ func (s *SQLiScanner) makeRequestPOST(ctx context.Context, baseURL *url.URL, par
 		return nil, fmt.Errorf("rate limited")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -1816,7 +1812,7 @@ func (s *SQLiScanner) testTimeBased(ctx context.Context, baseURL *url.URL, param
 	}
 
 	// Read response body to check for SQL errors (which would indicate even higher confidence)
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -2237,7 +2233,7 @@ func (s *SQLiScanner) testTimeBasedPOST(ctx context.Context, baseURL *url.URL, p
 	}
 
 	// Read response body to check for SQL errors
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}

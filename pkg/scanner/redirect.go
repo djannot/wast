@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -505,7 +504,7 @@ func (s *RedirectScanner) testParameterPOST(ctx context.Context, baseURL *url.UR
 	}
 
 	// Read response body (if any)
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -571,7 +570,7 @@ func (s *RedirectScanner) testParameter(ctx context.Context, baseURL *url.URL, p
 	}
 
 	// Read response body (if any)
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -877,7 +876,7 @@ func (s *RedirectScanner) VerifyFinding(ctx context.Context, finding *RedirectFi
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue

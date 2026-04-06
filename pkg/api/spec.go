@@ -3,12 +3,12 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/djannot/wast/pkg/httputil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -92,7 +92,7 @@ func loadFromURL(url string) ([]byte, error) {
 		return nil, fmt.Errorf("unexpected status code %d from %s", resp.StatusCode, url)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := httputil.ReadResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response from %s: %w", url, err)
 	}

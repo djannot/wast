@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -407,7 +406,7 @@ func (s *SSTIScanner) getBaselineResponse(ctx context.Context, baseURL *url.URL,
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return ""
 	}
@@ -453,7 +452,7 @@ func (s *SSTIScanner) getBaselineResponsePOST(ctx context.Context, baseURL *url.
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return ""
 	}
@@ -504,7 +503,7 @@ func (s *SSTIScanner) testParameter(ctx context.Context, baseURL *url.URL, param
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -579,7 +578,7 @@ func (s *SSTIScanner) testParameterPOST(ctx context.Context, baseURL *url.URL, p
 	}
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil
 	}
@@ -861,7 +860,7 @@ func (s *SSTIScanner) VerifyFinding(ctx context.Context, finding *SSTIFinding, c
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readResponseBody(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			continue
