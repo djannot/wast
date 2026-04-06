@@ -586,13 +586,20 @@ func TestMCPServerIntegration_HeadersTool(t *testing.T) {
 	}
 }
 
-// TestMCPServerIntegration_ErrorHandling tests error handling for invalid targets
+// TestMCPServerIntegration_ErrorHandling tests error handling for invalid targets.
+//
+// Per the MCP specification, tool execution failures (e.g. missing required
+// parameters, invalid argument values) must be returned as a *successful*
+// JSON-RPC response with isError: true in the content array.  JSON-RPC error
+// codes (-32xxx) are reserved for protocol-level issues such as malformed
+// params or unknown methods.
 func TestMCPServerIntegration_ErrorHandling(t *testing.T) {
 	tests := []struct {
-		name     string
-		toolName string
-		args     map[string]interface{}
-		wantErr  bool
+		name        string
+		toolName    string
+		args        map[string]interface{}
+		wantRPCErr  bool // true → expect a JSON-RPC error (protocol error)
+		wantIsError bool // true → expect isError:true content (tool execution error)
 	}{
 		{
 			name:     "invalid target URL",
@@ -600,22 +607,29 @@ func TestMCPServerIntegration_ErrorHandling(t *testing.T) {
 			args: map[string]interface{}{
 				"target": "not-a-valid-url",
 			},
-			wantErr: false, // Should complete but may have errors in result
+			wantRPCErr:  false,
+			wantIsError: false, // completes normally; result may contain scan findings
 		},
 		{
-			name:     "missing required target",
-			toolName: "wast_scan",
-			args:     map[string]interface{}{},
-			wantErr:  true,
+			// Missing required "target" — tool.Execute() returns an error which
+			// must now be surfaced as isError:true content, not a JSON-RPC error.
+			name:        "missing required target",
+			toolName:    "wast_scan",
+			args:        map[string]interface{}{},
+			wantRPCErr:  false,
+			wantIsError: true,
 		},
 		{
+			// Invalid timeout format — tool.Execute() returns an error which
+			// must be surfaced as isError:true content, not a JSON-RPC error.
 			name:     "invalid timeout format",
 			toolName: "wast_recon",
 			args: map[string]interface{}{
 				"target":  "example.com",
 				"timeout": "invalid-timeout",
 			},
-			wantErr: true,
+			wantRPCErr:  false,
+			wantIsError: true,
 		},
 	}
 
@@ -659,16 +673,144 @@ func TestMCPServerIntegration_ErrorHandling(t *testing.T) {
 				}
 			}
 
-			if tt.wantErr {
+			if tt.wantRPCErr {
 				if response.Error == nil {
-					t.Error("Expected error in response")
+					t.Error("Expected JSON-RPC error in response")
 				}
-			} else {
-				if response.Error != nil {
-					t.Logf("Got error (may be expected): %v", response.Error)
+				return
+			}
+
+			// For tool execution errors the response must be a successful
+			// JSON-RPC response (no .error field).
+			if response.Error != nil {
+				t.Errorf("Expected no JSON-RPC error; tool execution errors should be isError content, got code %d: %s",
+					response.Error.Code, response.Error.Message)
+			}
+
+			if tt.wantIsError {
+				if response.Result == nil {
+					t.Fatal("Expected non-nil result with isError:true")
+				}
+				resultMap, ok := response.Result.(map[string]interface{})
+				if !ok {
+					t.Fatal("Result should be a map")
+				}
+				isError, ok := resultMap["isError"].(bool)
+				if !ok || !isError {
+					t.Errorf("Expected isError:true in result for tool execution error, got isError=%v", resultMap["isError"])
+				}
+				content, ok := resultMap["content"].([]interface{})
+				if !ok || len(content) == 0 {
+					t.Fatal("Expected non-empty content array with error text")
+				}
+				firstItem, ok := content[0].(map[string]interface{})
+				if !ok {
+					t.Fatal("First content item should be a map")
+				}
+				if firstItem["type"] != "text" {
+					t.Errorf("Expected content type 'text', got %v", firstItem["type"])
+				}
+				if text, ok := firstItem["text"].(string); !ok || text == "" {
+					t.Error("Expected non-empty error text in content")
 				}
 			}
 		})
+	}
+}
+
+// TestMCPServerIntegration_ToolExecutionErrorIsContent verifies end-to-end that a
+// tool execution error (tool.Execute returns an error) is delivered to the caller
+// as a successful JSON-RPC response with isError:true, not as a JSON-RPC error.
+func TestMCPServerIntegration_ToolExecutionErrorIsContent(t *testing.T) {
+	input := bytes.NewBuffer(nil)
+	output := &bytes.Buffer{}
+
+	server := NewServer()
+	server.reader = input
+	server.writer = output
+
+	// Trigger a tool execution error: wast_recon with missing required target.
+	args := map[string]interface{}{} // intentionally empty — target is required
+	argsJSON, _ := json.Marshal(args)
+
+	params := map[string]interface{}{
+		"name":      "wast_recon",
+		"arguments": json.RawMessage(argsJSON),
+	}
+	paramsJSON, _ := json.Marshal(params)
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      99,
+		Method:  "tools/call",
+		Params:  paramsJSON,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	server.handleRequest(ctx, &request)
+
+	outputStr := output.String()
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	if len(lines) == 0 || outputStr == "" {
+		t.Fatal("No output received")
+	}
+
+	var response JSONRPCResponse
+	var found bool
+	for i := len(lines) - 1; i >= 0; i-- {
+		if err := json.Unmarshal([]byte(lines[i]), &response); err == nil {
+			if response.ID != nil {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("No valid response found in output: %s", outputStr)
+	}
+
+	// JSON-RPC layer must report success.
+	if response.JSONRPC != "2.0" {
+		t.Errorf("Expected jsonrpc 2.0, got %s", response.JSONRPC)
+	}
+	if response.Error != nil {
+		t.Errorf("Tool execution errors must not produce a JSON-RPC error; got code %d: %s",
+			response.Error.Code, response.Error.Message)
+	}
+	if response.Result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	resultMap, ok := response.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result should be a map")
+	}
+
+	isError, ok := resultMap["isError"].(bool)
+	if !ok || !isError {
+		t.Errorf("Expected isError:true for a tool execution error, got isError=%v", resultMap["isError"])
+	}
+
+	content, ok := resultMap["content"].([]interface{})
+	if !ok || len(content) == 0 {
+		t.Fatal("Expected non-empty content array")
+	}
+
+	firstItem, ok := content[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("First content item should be a map")
+	}
+	if firstItem["type"] != "text" {
+		t.Errorf("Expected content type 'text', got %v", firstItem["type"])
+	}
+	text, ok := firstItem["text"].(string)
+	if !ok || text == "" {
+		t.Error("Expected non-empty error text in content")
+	}
+	if !strings.Contains(strings.ToLower(text), "target") {
+		t.Errorf("Error text should mention 'target', got: %s", text)
 	}
 }
 

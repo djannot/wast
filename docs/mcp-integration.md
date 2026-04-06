@@ -15,6 +15,59 @@ WAST implements the MCP (Model Context Protocol) specification to enable seamles
   - `stdio` (default) — standard input/output; required for desktop MCP clients
   - `http` — Streamable HTTP (`POST /mcp`); recommended for networked / containerised deployments
 
+## Error Handling
+
+WAST follows the MCP specification for error handling, distinguishing between two kinds of failures:
+
+### Protocol-level errors (JSON-RPC errors)
+
+These are returned as standard JSON-RPC error responses and indicate problems at the transport or protocol level — not tool execution failures. AI agent clients should treat these as unrecoverable for the specific request.
+
+| Code    | Meaning           | When it occurs |
+|---------|-------------------|----------------|
+| `-32700` | Parse error       | The request body is not valid JSON |
+| `-32600` | Invalid request   | The JSON-RPC envelope is malformed (e.g. wrong `jsonrpc` version) |
+| `-32601` | Method not found  | The requested method (e.g. `unknown/method`) does not exist |
+| `-32602` | Invalid params    | Required params are missing or the params JSON cannot be decoded |
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": "target is required"
+  }
+}
+```
+
+### Tool execution errors (`isError: true`)
+
+When a tool's execution fails (e.g. the target is unreachable, a scan times out, or required arguments are semantically invalid), the server returns a **successful** JSON-RPC response whose result contains `"isError": true` and a human-readable error message in the content array.
+
+This design lets AI agent clients reason about the failure, adjust their strategy, and potentially retry with different parameters — exactly as they would handle a tool that returns an error finding.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "target is required"
+      }
+    ],
+    "isError": true
+  }
+}
+```
+
+AI agents should inspect `result.isError` after every `tools/call` response and treat a `true` value as a tool-level failure that may be retried or reported to the user.
+
+---
+
 ## Starting the MCP Server
 
 ### Stdio transport (default)
@@ -208,14 +261,20 @@ Perform reconnaissance on a target domain including DNS enumeration, subdomain d
 
 #### Error Response Example
 
+When the tool cannot execute (e.g. a required argument is missing or invalid), the server returns a **successful** JSON-RPC response with `isError: true`:
+
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "error": {
-    "code": -32602,
-    "message": "Invalid params",
-    "data": "target is required"
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "target is required"
+      }
+    ],
+    "isError": true
   }
 }
 ```

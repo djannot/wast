@@ -2300,6 +2300,94 @@ func TestSendNotification(t *testing.T) {
 	}
 }
 
+// TestToolsCallExecutionErrorReturnsIsError verifies that when tool.Execute() returns
+// an error, the server responds with a successful JSON-RPC response containing
+// isError: true in the content array (per MCP specification), rather than a
+// JSON-RPC error (-32603).
+func TestToolsCallExecutionErrorReturnsIsError(t *testing.T) {
+	server := NewServer()
+
+	var output bytes.Buffer
+	server.writer = &output
+
+	// Use wast_recon with a missing target — tool.Execute() will return an error
+	params := map[string]interface{}{
+		"name":      "wast_recon",
+		"arguments": map[string]interface{}{}, // missing required "target"
+	}
+	paramsJSON, _ := json.Marshal(params)
+
+	request := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  paramsJSON,
+	}
+
+	server.handleRequest(context.Background(), &request)
+
+	// The output may contain multiple JSON objects; find the response line.
+	outputStr := output.String()
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	if len(lines) == 0 || outputStr == "" {
+		t.Fatal("No output received from server")
+	}
+
+	var response JSONRPCResponse
+	var found bool
+	for i := len(lines) - 1; i >= 0; i-- {
+		if err := json.Unmarshal([]byte(lines[i]), &response); err == nil {
+			if response.ID != nil {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("No valid response with ID found in output: %s", outputStr)
+	}
+
+	// Must be a successful JSON-RPC response (no JSON-RPC error field).
+	if response.Error != nil {
+		t.Errorf("Expected no JSON-RPC error for tool execution failure; got code %d: %s",
+			response.Error.Code, response.Error.Message)
+	}
+
+	if response.Result == nil {
+		t.Fatal("Expected a non-nil result for tool execution error")
+	}
+
+	resultMap, ok := response.Result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result should be a map")
+	}
+
+	// isError must be true.
+	isError, ok := resultMap["isError"].(bool)
+	if !ok || !isError {
+		t.Errorf("Expected isError: true in result, got isError=%v", resultMap["isError"])
+	}
+
+	// content must be a non-empty array.
+	content, ok := resultMap["content"].([]interface{})
+	if !ok || len(content) == 0 {
+		t.Fatal("Expected non-empty content array in result")
+	}
+
+	// First content item must be a text entry containing the error message.
+	firstItem, ok := content[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("First content item should be a map")
+	}
+	if firstItem["type"] != "text" {
+		t.Errorf("Expected content type 'text', got %v", firstItem["type"])
+	}
+	text, ok := firstItem["text"].(string)
+	if !ok || text == "" {
+		t.Error("Expected non-empty error text in content")
+	}
+}
+
 // TestConcurrentProgressNotifications tests thread-safety of progress notifications
 func TestConcurrentProgressNotifications(t *testing.T) {
 	server := NewServer()
