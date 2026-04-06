@@ -83,6 +83,7 @@ type Server struct {
 	writerMutex   sync.Mutex        // protects concurrent writes to writer (stdio transport)
 	authToken     string            // optional Bearer token required on every HTTP request
 	corsOrigin    string            // optional CORS origin (empty = disabled, "*" = allow all)
+	version       string            // build-time version reported in initialize response
 	rateLimiter   ratelimit.Limiter // inbound request rate limiter (nil = no limit)
 	maxConcurrent int               // max concurrent tool executions (0 = no limit)
 }
@@ -126,6 +127,12 @@ func (s *Server) SetAuthToken(token string) {
 // Use "*" to allow all origins or a specific origin string (e.g., "https://example.com").
 func (s *Server) SetCORSOrigin(origin string) {
 	s.corsOrigin = origin
+}
+
+// SetVersion sets the build-time version string reported in the MCP initialize
+// response.  When empty (the default), the response falls back to "dev".
+func (s *Server) SetVersion(v string) {
+	s.version = v
 }
 
 // SetRateLimit configures the inbound per-second request rate limit for the
@@ -227,11 +234,15 @@ func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) {
 
 // handleInitialize handles the MCP initialize request.
 func (s *Server) handleInitialize(ctx context.Context, req *JSONRPCRequest) {
+	v := s.version
+	if v == "" {
+		v = "dev"
+	}
 	result := map[string]interface{}{
 		"protocolVersion": "2024-11-05",
 		"serverInfo": map[string]interface{}{
 			"name":    "wast",
-			"version": "1.0.0",
+			"version": v,
 		},
 		"capabilities": map[string]interface{}{
 			"tools": map[string]interface{}{},
