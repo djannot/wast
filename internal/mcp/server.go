@@ -76,15 +76,15 @@ func contextWithWriter(ctx context.Context, w io.Writer) context.Context {
 
 // Server represents an MCP server instance.
 type Server struct {
-	reader         io.Reader
-	writer         io.Writer
-	tools          map[string]Tool
-	tracer         trace.Tracer
-	writerMutex    sync.Mutex // protects concurrent writes to writer (stdio transport)
-	authToken      string     // optional Bearer token required on every HTTP request
-	corsOrigin     string     // optional CORS origin (empty = disabled, "*" = allow all)
-	rateLimiter    ratelimit.Limiter // inbound request rate limiter (nil = no limit)
-	maxConcurrent  int               // max concurrent tool executions (0 = no limit)
+	reader        io.Reader
+	writer        io.Writer
+	tools         map[string]Tool
+	tracer        trace.Tracer
+	writerMutex   sync.Mutex        // protects concurrent writes to writer (stdio transport)
+	authToken     string            // optional Bearer token required on every HTTP request
+	corsOrigin    string            // optional CORS origin (empty = disabled, "*" = allow all)
+	rateLimiter   ratelimit.Limiter // inbound request rate limiter (nil = no limit)
+	maxConcurrent int               // max concurrent tool executions (0 = no limit)
 }
 
 // Tool represents an MCP tool implementation.
