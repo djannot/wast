@@ -737,8 +737,10 @@ type concurrentProgressTool struct {
 	numWorkers int
 }
 
-func (ct *concurrentProgressTool) Name() string        { return "test_concurrent_progress" }
-func (ct *concurrentProgressTool) Description() string { return "fires progress from concurrent goroutines" }
+func (ct *concurrentProgressTool) Name() string { return "test_concurrent_progress" }
+func (ct *concurrentProgressTool) Description() string {
+	return "fires progress from concurrent goroutines"
+}
 func (ct *concurrentProgressTool) InputSchema() map[string]interface{} {
 	return map[string]interface{}{"type": "object"}
 }
