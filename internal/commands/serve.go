@@ -18,6 +18,9 @@ func NewServeCmd(getFormatter func() *output.Formatter) *cobra.Command {
 	var mcpMode bool
 	var callbackServerAddr string
 	var callbackDNSDomain string
+	var transport string
+	var addr string
+	var authToken string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -26,7 +29,7 @@ func NewServeCmd(getFormatter func() *output.Formatter) *cobra.Command {
 
 The MCP server exposes WAST's security testing capabilities as standardized tools
 that can be invoked by AI agents and assistants like Claude. The server uses
-JSON-RPC 2.0 over stdio to communicate.
+JSON-RPC 2.0 over stdio (default) or Streamable HTTP transport.
 
 Available MCP Tools:
   - wast_recon: Reconnaissance and information gathering
@@ -37,8 +40,10 @@ Available MCP Tools:
 The server will run until interrupted (Ctrl+C).
 
 Examples:
-  wast serve --mcp                                    # Start MCP server
-  wast serve --callback-server :8888                  # Start with HTTP callback server
+  wast serve --mcp                                        # Start MCP server (stdio)
+  wast serve --mcp --transport http                       # Start MCP over HTTP on :8080
+  wast serve --mcp --transport http --addr :9090          # Start MCP over HTTP on :9090
+  wast serve --callback-server :8888                      # Start with HTTP callback server
   wast serve --callback-server :8888 --callback-dns-domain cb.example.com  # With DNS callbacks`,
 		Run: func(cmd *cobra.Command, args []string) {
 			formatter := getFormatter()
@@ -82,9 +87,30 @@ Examples:
 			// Create and start MCP server
 			server := mcp.NewServer()
 
-			// Run MCP server
-			if err := server.Run(ctx); err != nil && err != context.Canceled {
-				formatter.Error(fmt.Sprintf("MCP server error: %v", err))
+			switch transport {
+			case "http":
+				if authToken != "" {
+					server.SetAuthToken(authToken)
+				} else {
+					// Warn operators that the endpoint is unauthenticated.
+					formatter.Info("WARNING: HTTP transport has no authentication. " +
+						"Restrict network access or use --auth-token to require a Bearer token.")
+				}
+				formatter.Info(fmt.Sprintf("Starting MCP server (HTTP transport) on %s", addr))
+				if err := server.ListenAndServe(ctx, addr); err != nil && err != context.Canceled {
+					formatter.Error(fmt.Sprintf("MCP HTTP server error: %v", err))
+					os.Exit(1)
+				}
+			case "stdio", "":
+				if cmd.Flags().Changed("addr") {
+					formatter.Info("WARNING: --addr is ignored when --transport is stdio")
+				}
+				if err := server.Run(ctx); err != nil && err != context.Canceled {
+					formatter.Error(fmt.Sprintf("MCP server error: %v", err))
+					os.Exit(1)
+				}
+			default:
+				formatter.Error(fmt.Sprintf("unknown transport %q: must be \"stdio\" or \"http\"", transport))
 				os.Exit(1)
 			}
 		},
@@ -93,6 +119,9 @@ Examples:
 	cmd.Flags().BoolVar(&mcpMode, "mcp", true, "Run in MCP (Model Context Protocol) server mode")
 	cmd.Flags().StringVar(&callbackServerAddr, "callback-server", "", "Address for callback server (e.g., :8888)")
 	cmd.Flags().StringVar(&callbackDNSDomain, "callback-dns-domain", "", "Base domain for DNS callbacks (e.g., cb.example.com)")
+	cmd.Flags().StringVar(&transport, "transport", "stdio", "MCP transport type: stdio or http")
+	cmd.Flags().StringVar(&addr, "addr", ":8080", "Listen address for HTTP transport (e.g., :8080, 0.0.0.0:9090)")
+	cmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token required for HTTP transport requests (recommended for any exposed endpoint)")
 
 	return cmd
 }
