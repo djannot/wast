@@ -64,11 +64,11 @@ type ProgressNotification struct {
 
 // Server represents an MCP server instance.
 type Server struct {
-	reader        io.Reader
-	writer        io.Writer
-	tools         map[string]Tool
-	tracer        trace.Tracer
-	writerMutex   sync.Mutex // protects concurrent writes to writer
+	reader      io.Reader
+	writer      io.Writer
+	tools       map[string]Tool
+	tracer      trace.Tracer
+	writerMutex sync.Mutex // protects concurrent writes to writer
 	// httpRequestMu serialises HTTP requests so that s.writer can be safely
 	// swapped per-request without a data race.  This makes the HTTP transport
 	// effectively single-threaded; a single slow tool call will block all other

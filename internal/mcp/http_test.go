@@ -608,11 +608,11 @@ func TestIsValidSessionID(t *testing.T) {
 		{"abc-123", true},
 		{"ABC-xyz-000", true},
 		{strings.Repeat("a", 64), true},
-		{strings.Repeat("a", 65), false},        // too long
-		{"bad session", false},                   // space
-		{"inject\r\nHeader: val", false},         // CRLF injection
-		{"under_score", false},                   // underscore not allowed
-		{"", true},                               // empty is handled before validation
+		{strings.Repeat("a", 65), false}, // too long
+		{"bad session", false},           // space
+		{"inject\r\nHeader: val", false}, // CRLF injection
+		{"under_score", false},           // underscore not allowed
+		{"", true},                       // empty is handled before validation
 	}
 	for _, tc := range tests {
 		got := isValidSessionID(tc.id)
